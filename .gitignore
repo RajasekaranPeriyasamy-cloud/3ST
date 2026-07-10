@@ -1,0 +1,18 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.streamlit/secrets.toml
+data/
+*.csv
+.venv/
+venv/
+web/node_modules/
+web/dist/
+Pixel Perfect UI/node_modules/
+Pixel Perfect UI/.output/
+Pixel Perfect UI/.wrangler/
+Pixel Perfect UI.zip
+*.session.json
+access_token*
+.kite_session.json

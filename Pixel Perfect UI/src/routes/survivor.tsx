@@ -1,0 +1,168 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
+import { ArrowLeft, Play, RefreshCw, Save, Square } from "lucide-react";
+
+import { api } from "@/lib/api";
+import type { SurvivorConfig, SurvivorLogEntry, SurvivorStatus } from "@/lib/types";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+export const Route = createFileRoute("/survivor")({
+  component: SurvivorPage,
+});
+
+const DEFAULT: SurvivorConfig = {
+  underlying: "NIFTY",
+  expiry: "",
+  symbol_initials: "",
+  pe_gap: 20,
+  ce_gap: 20,
+  pe_quantity: 75,
+  ce_quantity: 75,
+  pe_symbol_gap: 200,
+  ce_symbol_gap: 200,
+  min_price_to_sell: 15,
+  sell_multiplier_threshold: 5,
+  tick_interval_sec: 15,
+  product_type: "NRML",
+  tag: "Survivor",
+  auto_start_on_boot: false,
+};
+
+function SurvivorPage() {
+  const [config, setConfig] = useState<SurvivorConfig>(DEFAULT);
+  const [status, setStatus] = useState<SurvivorStatus | null>(null);
+  const [logs, setLogs] = useState<SurvivorLogEntry[]>([]);
+  const [expiries, setExpiries] = useState<string[]>([]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [cfg, st, logRes] = await Promise.all([
+        api.get<SurvivorConfig>("/live/survivor/config", { silent: true }),
+        api.get<SurvivorStatus>("/live/survivor/status", { silent: true }),
+        api.get<{ items?: SurvivorLogEntry[] }>("/live/survivor/log?limit=40", { silent: true }),
+      ]);
+      setConfig({ ...DEFAULT, ...cfg });
+      setStatus(st);
+      setLogs(logRes.items ?? []);
+    } catch {
+      /* silent */
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  useEffect(() => {
+    api
+      .get<{ expiries?: string[] }>(`/options/expiries?underlying=${config.underlying}`, { silent: true })
+      .then((r) => setExpiries(r.expiries ?? []))
+      .catch(() => setExpiries([]));
+  }, [config.underlying]);
+
+  async function saveConfig() {
+    await api.post("/live/survivor/config", config);
+    toast.success("Survivor config saved");
+    refresh();
+  }
+
+  const running = status?.state?.runner === "running";
+
+  return (
+    <div className="mx-auto flex max-w-4xl flex-col gap-6 pb-10">
+      <header className="flex items-center gap-3">
+        <Button asChild variant="ghost" size="icon">
+          <Link to="/execution"><ArrowLeft className="h-4 w-4" /></Link>
+        </Button>
+        <div>
+          <h1 className="text-2xl font-semibold">Survivor Strategy</h1>
+          <p className="text-sm text-muted-foreground">
+            Gap-based NIFTY option premium selling (ported from trading-algo)
+          </p>
+        </div>
+      </header>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Status</CardTitle></CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
+          <Badge variant={running ? "default" : "secondary"}>{running ? "RUNNING" : "STOPPED"}</Badge>
+          <Badge variant="outline">Spot {status?.state?.last_spot?.toFixed(2) ?? "—"}</Badge>
+          <Badge variant="outline">PE ref {status?.state?.nifty_pe_last_value?.toFixed(0) ?? "—"}</Badge>
+          <Badge variant="outline">CE ref {status?.state?.nifty_ce_last_value?.toFixed(0) ?? "—"}</Badge>
+          {status?.state?.last_error ? (
+            <Badge variant="destructive">{status.state.last_error}</Badge>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Config</CardTitle></CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-3">
+          <div>
+            <Label>Underlying</Label>
+            <Select value={config.underlying} onValueChange={(v) => setConfig((c) => ({ ...c, underlying: v as SurvivorConfig["underlying"] }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {["NIFTY", "BANKNIFTY", "SENSEX"].map((u) => (
+                  <SelectItem key={u} value={u}>{u}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Expiry</Label>
+            <Select value={config.expiry || undefined} onValueChange={(v) => setConfig((c) => ({ ...c, expiry: v }))}>
+              <SelectTrigger><SelectValue placeholder="Nearest" /></SelectTrigger>
+              <SelectContent>
+                {expiries.map((e) => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Symbol initials (optional)</Label>
+            <Input value={config.symbol_initials ?? ""} onChange={(e) => setConfig((c) => ({ ...c, symbol_initials: e.target.value }))} placeholder="Auto from expiry" />
+          </div>
+          <div><Label>PE gap</Label><Input type="number" value={config.pe_gap} onChange={(e) => setConfig((c) => ({ ...c, pe_gap: Number(e.target.value) }))} /></div>
+          <div><Label>CE gap</Label><Input type="number" value={config.ce_gap} onChange={(e) => setConfig((c) => ({ ...c, ce_gap: Number(e.target.value) }))} /></div>
+          <div><Label>PE qty</Label><Input type="number" value={config.pe_quantity} onChange={(e) => setConfig((c) => ({ ...c, pe_quantity: Number(e.target.value) }))} /></div>
+          <div><Label>CE qty</Label><Input type="number" value={config.ce_quantity} onChange={(e) => setConfig((c) => ({ ...c, ce_quantity: Number(e.target.value) }))} /></div>
+          <div><Label>Min premium</Label><Input type="number" value={config.min_price_to_sell} onChange={(e) => setConfig((c) => ({ ...c, min_price_to_sell: Number(e.target.value) }))} /></div>
+          <div><Label>Tick interval (s)</Label><Input type="number" value={config.tick_interval_sec} onChange={(e) => setConfig((c) => ({ ...c, tick_interval_sec: Number(e.target.value) }))} /></div>
+        </CardContent>
+      </Card>
+
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={saveConfig}><Save className="mr-2 h-4 w-4" />Save</Button>
+        <Button variant="outline" onClick={() => api.post("/live/survivor/tick").then(refresh)}><RefreshCw className="mr-2 h-4 w-4" />Tick now</Button>
+        {!running ? (
+          <Button onClick={() => api.post("/live/survivor/start").then(refresh)}><Play className="mr-2 h-4 w-4" />Start</Button>
+        ) : (
+          <Button variant="destructive" onClick={() => api.post("/live/survivor/stop").then(refresh)}><Square className="mr-2 h-4 w-4" />Stop</Button>
+        )}
+      </div>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Log</CardTitle></CardHeader>
+        <CardContent className="max-h-64 overflow-y-auto font-mono text-xs">
+          {logs.map((row, i) => (
+            <div key={i} className="border-b border-border/40 py-1">{row.at} · {row.event} · {row.detail}</div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

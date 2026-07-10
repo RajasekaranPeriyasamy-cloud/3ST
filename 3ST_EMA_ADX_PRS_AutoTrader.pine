@@ -1,0 +1,489 @@
+//@version=6
+strategy("3ST · EMA · ADX · PRS AutoTrader",
+     shorttitle              = "3ST.FILTER",
+     overlay                 = true,
+     default_qty_type        = strategy.fixed,
+     default_qty_value       = 1,
+     pyramiding              = 0,
+     initial_capital         = 300000,
+     currency                = currency.NONE,
+     commission_value        = 0,
+     commission_type         = strategy.commission.percent,
+     process_orders_on_close = false,
+     calc_on_every_tick      = true,
+     calc_on_order_fills     = false)
+
+// ════════════════════════════════════════════════════════
+// INPUTS — SUPERTREND
+// ════════════════════════════════════════════════════════
+atr1    = input.int(21,    "ATR Period", minval = 1,             group = "SuperTrend 1  (Slow)")
+factor1 = input.float(1.0, "ATR Factor", minval = 0.1, step = 0.5, group = "SuperTrend 1  (Slow)")
+
+atr2    = input.int(14,    "ATR Period", minval = 1,             group = "SuperTrend 2  (Medium)")
+factor2 = input.float(2.0, "ATR Factor", minval = 0.1, step = 0.5, group = "SuperTrend 2  (Medium)")
+
+atr3    = input.int(7,     "ATR Period", minval = 1,             group = "SuperTrend 3  (Fast)")
+factor3 = input.float(3.0, "ATR Factor", minval = 0.1, step = 0.5, group = "SuperTrend 3  (Fast)")
+
+// ════════════════════════════════════════════════════════
+// INPUTS — EMA + ADX
+// ════════════════════════════════════════════════════════
+grpF = "EMA + ADX Filters"
+
+emaEnabled = input.bool(true,  "Enable EMA Filter", group = grpF)
+emaPeriod  = input.int(200,    "EMA Period", minval = 50, group = grpF)
+adxEnabled = input.bool(true,  "Enable ADX Filter", group = grpF)
+adxPeriod  = input.int(14,     "ADX Period", minval = 5, group = grpF)
+adxThresh  = input.float(20.0, "Min ADX Threshold", minval = 5, step = 1, group = grpF,
+     tooltip = "Enter only when ADX is above this value. 20 = confirmed trend")
+showEMA    = input.bool(true,  "Show EMA Line on Chart", group = grpF)
+
+// ════════════════════════════════════════════════════════
+// INPUTS — SESSION
+// ════════════════════════════════════════════════════════
+grpSES = "Session Settings"
+
+paraSystemMode = input.string("Intraday", "System Mode",
+     options = ["Intraday", "Positional"], group = grpSES)
+
+sessionStart = input.session("0920-2315", "Entry Window", group = grpSES,
+     tooltip = "9:20 AM to 11:15 PM covers full MCX day session")
+
+sessionExit = input.session("2325-2330", "Force Exit Window", group = grpSES,
+     tooltip = "Force exit at 11:25 PM before MCX close")
+
+paraTradeMode = input.string("Both", "Trade Mode",
+     options = ["Both", "LongOnly", "ShortOnly"], group = grpSES)
+
+// ════════════════════════════════════════════════════════
+// INPUTS — TARGET / SL / TSL
+// ════════════════════════════════════════════════════════
+paraTGTMode = input.string("Off", "Target : ",   options = ["Off", "%", "Pts"], inline = "TGT", group = "Target Settings")
+paraTGT     = input.float(1.0,   "Value : ",     minval = 0.1,                 inline = "TGT", group = "Target Settings")
+
+paraSLMode  = input.string("Off", "Stoploss : ", options = ["Off", "%", "Pts"], inline = "SL",  group = "Stoploss Settings")
+paraSL      = input.float(1.0,   "Value : ",     minval = 0.1,                 inline = "SL",  group = "Stoploss Settings")
+
+paraTSLMode = input.string("Off", "Trail SL : ", options = ["Off", "%", "Pts"], inline = "TSL", group = "TSL Settings")
+paraTSL     = input.float(0.5,   "Value : ",     minval = 0.1,                 inline = "TSL", group = "TSL Settings")
+
+paraShowDashboard = input.bool(true, "Show PRS Dashboard")
+
+// ════════════════════════════════════════════════════════
+// INPUTS — PRS / WEBHOOK
+// ════════════════════════════════════════════════════════
+grpPRS = "PRS Setup:"
+
+paraCode = input.string("361296", "Webhook Secret", group = grpPRS,
+     tooltip = "Must match WEBHOOK_SECRET in your .env file")
+
+paraProductType = input.string("NRML", "Product Type",
+     options = ["MIS", "NRML", "CNC"], group = grpPRS,
+     tooltip = "MIS=Intraday  NRML=Positional  CNC=Delivery")
+
+paraQtyType = input.string("Fixed", "Quantity Type",
+     options = ["Fixed", "Exposure"], group = grpPRS)
+
+paraQty = input.int(1, "Quantity / Lots", minval = 1, group = grpPRS,
+     tooltip = "Number of lots to trade")
+
+paraOptExpiry = input.string("26MAR2026", "Expiry Date", group = grpPRS,
+     tooltip = "Format: 26MAR2026 — update each expiry rollover")
+
+paraOptTrade = input.string("Long", "Options Trade",
+     options = ["Long", "Short"], group = grpPRS,
+     tooltip = "Long = Buy CE or PE  |  Short = Write CE or PE")
+
+paraOptSteps = input.int(100, "Strike Step", group = grpPRS,
+     tooltip = "50 for NIFTY  |  100 for BANKNIFTY  |  10 to 50 for Stocks")
+
+paraOptMulti = input.int(1, "Strike Multiplier", group = grpPRS,
+     tooltip = "0=ATM  1=1OTM  2=2OTM  -1=1ITM")
+
+// ════════════════════════════════════════════════════════
+// AUTO SYMBOL / EXCHANGE
+// ════════════════════════════════════════════════════════
+autoSymbol = str.replace(str.replace(str.replace(syminfo.ticker, "1!", ""), "2!", ""), "!", "")
+
+autoExchange =
+     syminfo.prefix == "MCX" ? "MCX" :
+     syminfo.prefix == "NFO" ? "NFO" :
+     syminfo.prefix == "NSE" ? "NSE" :
+     syminfo.prefix == "BSE" ? "BSE" :
+     syminfo.prefix == "CDS" ? "CDS" : syminfo.prefix
+
+autoInstr =
+     syminfo.prefix == "MCX" ? "FUTCOM" :
+     syminfo.prefix == "NFO" ? "FUTIDX" :
+     syminfo.prefix == "NSE" ? "EQ" :
+     syminfo.prefix == "BSE" ? "EQ" : "EQ"
+
+// ════════════════════════════════════════════════════════
+// HEIKIN ASHI (manual — stable on zoom/pan)
+// ════════════════════════════════════════════════════════
+haClose = (open + high + low + close) / 4.0
+
+var float haOpen = na
+haOpen := na(haOpen[1]) ? (open + close) / 2.0 : (haOpen[1] + haClose[1]) / 2.0
+
+haHigh = math.max(high, math.max(haOpen, haClose))
+haLow  = math.min(low,  math.min(haOpen, haClose))
+
+// ════════════════════════════════════════════════════════
+// SUPERTREND
+// ════════════════════════════════════════════════════════
+f_supertrend(atrPeriod, multiplier) =>
+    atrVal     = multiplier * ta.atr(atrPeriod)
+    src        = (haHigh + haLow) / 2.0
+    upperBasic = src + atrVal
+    lowerBasic = src - atrVal
+    var float upperBand = na
+    var float lowerBand = na
+    var int   dir       = 1
+    lowerBand := lowerBasic > nz(lowerBand[1]) or close[1] < nz(lowerBand[1]) ? lowerBasic : nz(lowerBand[1])
+    upperBand := upperBasic < nz(upperBand[1]) or close[1] > nz(upperBand[1]) ? upperBasic : nz(upperBand[1])
+    if dir == 1 and close < lowerBand
+        dir := -1
+    else if dir == -1 and close > upperBand
+        dir := 1
+    stLine = dir == 1 ? lowerBand : upperBand
+    [stLine, dir]
+
+[st1, dir1] = f_supertrend(atr1, factor1)
+[st2, dir2] = f_supertrend(atr2, factor2)
+[st3, dir3] = f_supertrend(atr3, factor3)
+
+// ════════════════════════════════════════════════════════
+// PLOTS — SUPERTREND
+// ════════════════════════════════════════════════════════
+plot(st1, "ST1 Slow",   linewidth = 2, style = plot.style_linebr,
+     color = dir1 == 1 ? color.new(color.green, 0)  : color.new(color.red, 0))
+plot(st2, "ST2 Medium", linewidth = 2, style = plot.style_linebr,
+     color = dir2 == 1 ? color.new(color.green, 25) : color.new(color.red, 25))
+plot(st3, "ST3 Fast",   linewidth = 2, style = plot.style_linebr,
+     color = dir3 == 1 ? color.new(color.green, 55) : color.new(color.red, 55))
+
+midPricePlot = plot(ohlc4, "Mid Helper", linewidth = 1, style = plot.style_circles,
+     display = display.none, editable = false)
+st1FillPlot  = plot(st1, "ST1 Fill Helper", linewidth = 1, color = na, display = display.none)
+
+fill(midPricePlot, st1FillPlot,
+     color = dir1 == 1 ? color.new(color.green, 88) : color.new(color.red, 88),
+     title = "Zone Fill")
+
+// ════════════════════════════════════════════════════════
+// EMA + ADX FILTERS
+// ════════════════════════════════════════════════════════
+ema200     = ta.ema(close, emaPeriod)
+emaLongOK  = not emaEnabled or close > ema200
+emaShortOK = not emaEnabled or close < ema200
+
+plot(showEMA ? ema200 : na, "EMA", color = color.new(color.orange, 0), linewidth = 1)
+
+[diPlus, diMinus, adxVal] = ta.dmi(adxPeriod, adxPeriod)
+adxOK = not adxEnabled or adxVal > adxThresh
+
+// ════════════════════════════════════════════════════════
+// ZONE + SESSION
+// ════════════════════════════════════════════════════════
+allBull      = dir1 == 1 and dir2 == 1 and dir3 == 1
+allBear      = dir1 == -1 and dir2 == -1 and dir3 == -1
+bullFiltered = allBull and emaLongOK and adxOK
+bearFiltered = allBear and emaShortOK and adxOK
+
+in_session = paraSystemMode == "Positional" or not na(time(timeframe.period, sessionStart))
+force_exit = paraSystemMode == "Intraday" and not na(time(timeframe.period, sessionExit))
+
+// ════════════════════════════════════════════════════════
+// TRADE STATE
+// ════════════════════════════════════════════════════════
+var int tradeState = 0
+
+longEntry    = paraTradeMode != "ShortOnly" and in_session and bullFiltered and not bullFiltered[1]
+longReEntry  = paraTradeMode != "ShortOnly" and in_session and bullFiltered and tradeState == 0 and not longEntry
+shortEntry   = paraTradeMode != "LongOnly"  and in_session and bearFiltered and not bearFiltered[1]
+shortReEntry = paraTradeMode != "LongOnly"  and in_session and bearFiltered and tradeState == 0 and not shortEntry
+longExit     = tradeState == 1 and not allBull
+shortExit    = tradeState == -1 and not allBear
+
+if longEntry or longReEntry
+    tradeState := 1
+else if shortEntry or shortReEntry
+    tradeState := -1
+else if longExit or shortExit
+    tradeState := 0
+
+// ════════════════════════════════════════════════════════
+// SIGNAL SHAPES
+// ════════════════════════════════════════════════════════
+plotshape(longEntry,    "BUY Entry",    shape.triangleup,   location.belowbar, color.lime,                 size = size.normal, text = "Long")
+plotshape(longReEntry,  "BUY Re-Entry", shape.triangleup,   location.belowbar, color.new(color.lime, 40),  size = size.small,  text = "Long")
+plotshape(shortEntry,   "SELL Entry",   shape.triangledown, location.abovebar, color.red,                  size = size.normal, text = "Short")
+plotshape(shortReEntry, "SELL Re-Entry",shape.triangledown, location.abovebar, color.new(color.red, 40),   size = size.small,  text = "Short")
+plotshape(longExit,     "EXIT Long",    shape.xcross,       location.abovebar, color.new(color.orange, 0), size = size.small,  text = "Exit")
+plotshape(shortExit,    "EXIT Short",   shape.xcross,       location.belowbar, color.new(color.orange, 0), size = size.small,  text = "Exit")
+
+filteredLong  = allBull and not bullFiltered and in_session
+filteredShort = allBear and not bearFiltered and in_session
+
+plotshape(filteredLong,  "Filtered Long",  shape.circle, location.belowbar, color.new(color.gray, 40), size = size.tiny)
+plotshape(filteredShort, "Filtered Short", shape.circle, location.abovebar, color.new(color.gray, 40), size = size.tiny)
+
+bgCol =
+     bullFiltered ? color.new(color.green, 90) :
+     bearFiltered ? color.new(color.red, 90) :
+     allBull or allBear ? color.new(color.gray, 95) : na
+bgcolor(bgCol, title = "Zone Background")
+
+// ════════════════════════════════════════════════════════
+// OPTIONS TICKER HELPERS (display / future use)
+// ════════════════════════════════════════════════════════
+entryPx = strategy.position_avg_price
+
+BATM     = math.round(nz(entryPx, close) / paraOptSteps) * paraOptSteps
+LEStrike = BATM + paraOptMulti * paraOptSteps
+SEStrike = BATM - paraOptMulti * paraOptSteps
+
+var string LESym = syminfo.ticker
+var string LXSym = syminfo.ticker
+var string SESym = syminfo.ticker
+var string SXSym = syminfo.ticker
+
+isFut = autoInstr == "FUTIDX" or autoInstr == "FUTCOM" or autoInstr == "FUTCUR"
+isOpt = autoInstr == "OPTIDX" or autoInstr == "OPTSTK"
+
+if isFut
+    LESym := autoSymbol + "|" + paraOptExpiry
+    LXSym := autoSymbol + "|" + paraOptExpiry
+    SESym := autoSymbol + "|" + paraOptExpiry
+    SXSym := autoSymbol + "|" + paraOptExpiry
+
+if isOpt
+    LESym := autoSymbol + "|" + paraOptExpiry + "|" + str.tostring(LEStrike) + "|CE"
+    LXSym := autoSymbol + "|" + paraOptExpiry + "|" + str.tostring(LEStrike[1]) + "|CE"
+    SESym := autoSymbol + "|" + paraOptExpiry + "|" + str.tostring(SEStrike) + "|PE"
+    SXSym := autoSymbol + "|" + paraOptExpiry + "|" + str.tostring(SEStrike[1]) + "|PE"
+
+// ════════════════════════════════════════════════════════
+// WEBHOOK JSON
+// ════════════════════════════════════════════════════════
+buildMsg(sig) =>
+    '{"secret":"' + paraCode +
+     '","symbol":"' + autoSymbol +
+     '","signal":"' + sig +
+     '","exchange":"' + autoExchange +
+     '","product_type":"' + paraProductType +
+     '","instrument_type":"' + autoInstr +
+     '","quantity":' + str.tostring(paraQty) + "}"
+
+// ════════════════════════════════════════════════════════
+// QUANTITY
+// ════════════════════════════════════════════════════════
+BuyTradeQty =
+     paraQtyType == "Exposure" ?
+     math.max(1, math.round(paraQty / math.max(nz(entryPx, close), 1) / syminfo.pointvalue)) :
+     paraQty
+
+ShortTradeQty = BuyTradeQty
+
+// ════════════════════════════════════════════════════════
+// STRATEGY ENTRIES
+// ════════════════════════════════════════════════════════
+goLong  = longEntry or longReEntry
+goShort = shortEntry or shortReEntry
+
+if goLong and strategy.position_size <= 0
+    strategy.entry("BUY", strategy.long, qty = BuyTradeQty,
+         comment = "Long", alert_message = buildMsg("LONG"))
+
+if goShort and strategy.position_size >= 0
+    strategy.entry("SHORT", strategy.short, qty = ShortTradeQty,
+         comment = "Short", alert_message = buildMsg("SHORT"))
+
+BuyPrice   = strategy.position_size > 0 ? strategy.position_avg_price : na
+ShortPrice = strategy.position_size < 0 ? strategy.position_avg_price : na
+
+// ════════════════════════════════════════════════════════
+// SL / TARGET / TRAILING SL
+// ════════════════════════════════════════════════════════
+var float BuyTGT   = na
+var float ShortTGT = na
+var float BuySL    = na
+var float ShortSL  = na
+
+ut = paraTGTMode != "Off"
+us = paraSLMode  != "Off"
+
+newLong  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+newShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+if newLong
+    BuySL  := paraSLMode  == "%" ? BuyPrice * (1 - paraSL / 100)  : paraSLMode  == "Pts" ? BuyPrice - paraSL  : na
+    BuyTGT := paraTGTMode == "%" ? BuyPrice * (1 + paraTGT / 100) : paraTGTMode == "Pts" ? BuyPrice + paraTGT : na
+
+if newShort
+    ShortSL  := paraSLMode  == "%" ? ShortPrice * (1 + paraSL / 100)  : paraSLMode  == "Pts" ? ShortPrice + paraSL  : na
+    ShortTGT := paraTGTMode == "%" ? ShortPrice * (1 - paraTGT / 100) : paraTGTMode == "Pts" ? ShortPrice - paraTGT : na
+
+if paraTSLMode != "Off" and strategy.position_size > 0
+    BuyTSL = paraTSLMode == "%" ? high[1] * (1 - paraTSL / 100) : high[1] - paraTSL
+    if not na(BuyTSL) and (na(BuySL) or BuySL < BuyTSL)
+        BuySL := BuyTSL
+
+if paraTSLMode != "Off" and strategy.position_size < 0
+    ShortTSL = paraTSLMode == "%" ? low[1] * (1 + paraTSL / 100) : low[1] + paraTSL
+    if not na(ShortTSL) and (na(ShortSL) or ShortSL > ShortTSL)
+        ShortSL := ShortTSL
+
+// ════════════════════════════════════════════════════════
+// STRATEGY EXITS
+// ════════════════════════════════════════════════════════
+if ut and not us
+    if strategy.position_size > 0
+        strategy.exit("LongExit", from_entry = "BUY", limit = BuyTGT, comment = "Exit", alert_message = buildMsg("EXIT"))
+    if strategy.position_size < 0
+        strategy.exit("ShortExit", from_entry = "SHORT", limit = ShortTGT, comment = "Exit", alert_message = buildMsg("EXIT"))
+
+if us and not ut
+    if strategy.position_size > 0
+        strategy.exit("LongExit", from_entry = "BUY", stop = BuySL, comment = "Exit", alert_message = buildMsg("EXIT"))
+    if strategy.position_size < 0
+        strategy.exit("ShortExit", from_entry = "SHORT", stop = ShortSL, comment = "Exit", alert_message = buildMsg("EXIT"))
+
+if ut and us
+    if strategy.position_size > 0
+        strategy.exit("LongExit", from_entry = "BUY", limit = BuyTGT, stop = BuySL, comment = "Exit", alert_message = buildMsg("EXIT"))
+    if strategy.position_size < 0
+        strategy.exit("ShortExit", from_entry = "SHORT", limit = ShortTGT, stop = ShortSL, comment = "Exit", alert_message = buildMsg("EXIT"))
+
+if longExit and strategy.position_size > 0
+    strategy.cancel("LongExit")
+    strategy.close("BUY", comment = "Exit", alert_message = buildMsg("EXIT"))
+
+if shortExit and strategy.position_size < 0
+    strategy.cancel("ShortExit")
+    strategy.close("SHORT", comment = "Exit", alert_message = buildMsg("EXIT"))
+
+if force_exit
+    if strategy.position_size > 0
+        strategy.cancel("LongExit")
+        strategy.close("BUY", comment = "Exit", alert_message = buildMsg("EXIT"))
+    if strategy.position_size < 0
+        strategy.cancel("ShortExit")
+        strategy.close("SHORT", comment = "Exit", alert_message = buildMsg("EXIT"))
+
+if strategy.position_size <= 0
+    strategy.cancel("LongExit")
+if strategy.position_size >= 0
+    strategy.cancel("ShortExit")
+
+// ════════════════════════════════════════════════════════
+// ENTRY / SL / TGT LINES
+// ════════════════════════════════════════════════════════
+plot(strategy.position_size > 0 ? BuyPrice   : na, "Entry L", color = color.fuchsia, linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? BuyTGT     : na, "TGT L",   color = color.blue,    linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? BuySL      : na, "SL L",    color = color.orange,  linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size < 0 ? ShortPrice : na, "Entry S", color = color.fuchsia, linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size < 0 ? ShortTGT   : na, "TGT S",   color = color.blue,    linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size < 0 ? ShortSL    : na, "SL S",    color = color.orange,  linewidth = 1, style = plot.style_linebr)
+
+// ════════════════════════════════════════════════════════
+// UNIVERSAL ALERTS (one webhook covers LONG / SHORT / EXIT)
+// ════════════════════════════════════════════════════════
+if goLong
+    alert(buildMsg("LONG"), alert.freq_once_per_bar_close)
+if goShort
+    alert(buildMsg("SHORT"), alert.freq_once_per_bar_close)
+if longExit or shortExit or force_exit
+    alert(buildMsg("EXIT"), alert.freq_once_per_bar_close)
+
+// ════════════════════════════════════════════════════════
+// PRS DASHBOARD
+// ════════════════════════════════════════════════════════
+Hdr_col = color.new(#a49627, 50)
+Grn_col = color.new(color.green, 40)
+Red_col = color.new(color.red, 40)
+Blu_col = color.new(color.blue, 40)
+Org_col = color.new(color.orange, 40)
+Pur_col = color.new(color.purple, 40)
+Tel_col = color.new(color.teal, 40)
+Gry_col = color.new(color.gray, 60)
+
+var table t = table.new(position.bottom_left, 4, 10,
+     frame_color = color.new(#000000, 0), frame_width = 1,
+     border_color = color.new(#000000, 0), border_width = 1)
+
+if barstate.islast and paraShowDashboard
+    table.cell(t, 0, 0, "PRS Strategy", text_color = color.black, text_size = size.small, bgcolor = Hdr_col)
+    table.cell(t, 1, 0, "Status",       text_color = color.black, text_size = size.small, bgcolor = Hdr_col)
+    table.cell(t, 2, 0, "Value",        text_color = color.black, text_size = size.small, bgcolor = Hdr_col)
+    table.cell(t, 3, 0, "Filter",       text_color = color.black, text_size = size.small, bgcolor = Hdr_col)
+
+    table.cell(t, 0, 1, "ST1  ATR" + str.tostring(atr1) + " F" + str.tostring(factor1), text_color = color.black, text_size = size.tiny)
+    table.cell(t, 1, 1, dir1 == 1 ? "BULL" : "BEAR", text_color = color.black, text_size = size.tiny, bgcolor = dir1 == 1 ? Grn_col : Red_col)
+    table.cell(t, 2, 1, str.tostring(st1, "#.##"), text_color = color.black, text_size = size.tiny, bgcolor = Blu_col)
+    table.cell(t, 3, 1, "HA Based", text_color = color.black, text_size = size.tiny)
+
+    table.cell(t, 0, 2, "ST2  ATR" + str.tostring(atr2) + " F" + str.tostring(factor2), text_color = color.black, text_size = size.tiny)
+    table.cell(t, 1, 2, dir2 == 1 ? "BULL" : "BEAR", text_color = color.black, text_size = size.tiny, bgcolor = dir2 == 1 ? Grn_col : Red_col)
+    table.cell(t, 2, 2, str.tostring(st2, "#.##"), text_color = color.black, text_size = size.tiny, bgcolor = Blu_col)
+    table.cell(t, 3, 2, "HA Based", text_color = color.black, text_size = size.tiny)
+
+    table.cell(t, 0, 3, "ST3  ATR" + str.tostring(atr3) + " F" + str.tostring(factor3), text_color = color.black, text_size = size.tiny)
+    table.cell(t, 1, 3, dir3 == 1 ? "BULL" : "BEAR", text_color = color.black, text_size = size.tiny, bgcolor = dir3 == 1 ? Grn_col : Red_col)
+    table.cell(t, 2, 3, str.tostring(st3, "#.##"), text_color = color.black, text_size = size.tiny, bgcolor = Blu_col)
+    table.cell(t, 3, 3, "HA Based", text_color = color.black, text_size = size.tiny)
+
+    emaStatus = not emaEnabled ? "OFF" : close > ema200 ? "Above" : "Below"
+    emaBg     = not emaEnabled ? Gry_col : close > ema200 ? Grn_col : Red_col
+    emaFilter = not emaEnabled ? "Disabled" : close > ema200 ? "Long OK" : "Short OK"
+
+    table.cell(t, 0, 4, "EMA " + str.tostring(emaPeriod), text_color = color.black, text_size = size.tiny)
+    table.cell(t, 1, 4, emaStatus, text_color = color.black, text_size = size.tiny, bgcolor = emaBg)
+    table.cell(t, 2, 4, str.tostring(ema200, "#.##"), text_color = color.black, text_size = size.tiny, bgcolor = Blu_col)
+    table.cell(t, 3, 4, emaFilter, text_color = color.black, text_size = size.tiny, bgcolor = emaBg)
+
+    adxStatus = not adxEnabled ? "OFF" : adxVal > adxThresh ? "TREND" : "WEAK"
+    adxBg     = not adxEnabled ? Gry_col : adxVal > adxThresh ? Grn_col : Red_col
+    adxFilter = not adxEnabled ? "Disabled" : adxVal > adxThresh ? "Entry OK" : "Blocked"
+
+    table.cell(t, 0, 5, "ADX " + str.tostring(adxPeriod) + "  >" + str.tostring(adxThresh, "#"), text_color = color.black, text_size = size.tiny)
+    table.cell(t, 1, 5, adxStatus, text_color = color.black, text_size = size.tiny, bgcolor = adxBg)
+    table.cell(t, 2, 5, str.tostring(adxVal, "#.##"), text_color = color.black, text_size = size.tiny, bgcolor = Blu_col)
+    table.cell(t, 3, 5, adxFilter, text_color = color.black, text_size = size.tiny, bgcolor = adxBg)
+
+    zoneText  = bullFiltered ? "LONG ZONE" : bearFiltered ? "SHORT ZONE" : allBull ? "BULL FILT" : allBear ? "BEAR FILT" : "NO TRADE"
+    zoneColor = bullFiltered ? Grn_col : bearFiltered ? Red_col : Gry_col
+
+    table.cell(t, 0, 6, "Zone", text_color = color.black, text_size = size.tiny)
+    table.cell(t, 1, 6, zoneText, text_color = color.black, text_size = size.tiny, bgcolor = zoneColor)
+    table.cell(t, 2, 6, autoInstr, text_color = color.black, text_size = size.tiny, bgcolor = Pur_col)
+    table.cell(t, 3, 6, paraProductType, text_color = color.black, text_size = size.tiny, bgcolor = Tel_col)
+
+    posText =
+         strategy.position_size > 0 ? "LONG  @ " + str.tostring(BuyPrice, "#.##") :
+         strategy.position_size < 0 ? "SHORT @ " + str.tostring(ShortPrice, "#.##") : "FLAT"
+    posBg  = strategy.position_size > 0 ? Grn_col : strategy.position_size < 0 ? Red_col : Gry_col
+    slVal  = strategy.position_size > 0 ? BuySL : ShortSL
+    tgtVal = strategy.position_size > 0 ? BuyTGT : ShortTGT
+
+    table.cell(t, 0, 7, "Position", text_color = color.black, text_size = size.tiny)
+    table.cell(t, 1, 7, posText, text_color = color.black, text_size = size.tiny, bgcolor = posBg)
+    table.cell(t, 2, 7, "SL  " + str.tostring(slVal, "#.##"), text_color = color.black, text_size = size.tiny, bgcolor = Org_col)
+    table.cell(t, 3, 7, "TGT " + str.tostring(tgtVal, "#.##"), text_color = color.black, text_size = size.tiny, bgcolor = Blu_col)
+
+    sesText = in_session ? "ACTIVE" : "CLOSED"
+    sesBg   = in_session ? Grn_col : Gry_col
+
+    table.cell(t, 0, 8, "Session", text_color = color.black, text_size = size.tiny, bgcolor = Hdr_col)
+    table.cell(t, 1, 8, sesText, text_color = color.black, text_size = size.tiny, bgcolor = sesBg)
+    table.cell(t, 2, 8, "Exp  " + paraOptExpiry, text_color = color.black, text_size = size.tiny, bgcolor = Hdr_col)
+    table.cell(t, 3, 8, "x" + str.tostring(paraOptMulti) + " OTM  Step " + str.tostring(paraOptSteps), text_color = color.black, text_size = size.tiny, bgcolor = Hdr_col)
+
+    alertStatus = bullFiltered ? "LONG READY" : bearFiltered ? "SHORT READY" : "WAITING"
+    alertBg     = bullFiltered ? Grn_col : bearFiltered ? Red_col : Gry_col
+
+    table.cell(t, 0, 9, "Alert", text_color = color.black, text_size = size.tiny, bgcolor = Hdr_col)
+    table.cell(t, 1, 9, alertStatus, text_color = color.black, text_size = size.tiny, bgcolor = alertBg)
+    table.cell(t, 2, 9, autoSymbol, text_color = color.black, text_size = size.tiny, bgcolor = color.new(color.navy, 20))
+    table.cell(t, 3, 9, "1 Alert Only", text_color = color.black, text_size = size.tiny, bgcolor = Grn_col)
