@@ -25,6 +25,10 @@ The update script recreates these from templates only if absent, so it will not 
 
 Kite Connect requires real broker credentials + interactive OAuth, so instrument search, OI Tracker, live desk, and `source=kite` backtests will fail without login. This is expected in a fresh cloud VM.
 
+Non-obvious gotchas:
+- `settings.py` calls `load_dotenv(".env", override=True)`, so values in root `.env` OVERRIDE process env vars. Injecting `KITE_API_KEY`/`KITE_API_SECRET` only as environment variables is not enough — they must be written into root `.env` (and the placeholder empty `KITE_API_KEY=` lines removed/replaced), otherwise the empty `.env` values win and `kite_configured` stays false.
+- The Kite login flow is `GET /auth/login` → "Login with Zerodha" → `kite.zerodha.com` → after entering Zerodha user ID + password + TOTP it redirects to `KITE_REDIRECT_URL` (`http://127.0.0.1:8001/auth/callback`). That exact redirect URL must also be registered in the Kite Connect developer app settings, or the callback fails. Completing this step needs the human's Zerodha account credentials + 2FA; it cannot be done with only the API key/secret.
+
 ### What works WITHOUT Kite login (use for smoke tests)
 
 - `GET /health` → `{"ok":true,...}`
