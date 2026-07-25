@@ -3,7 +3,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .streamlit/secrets.toml
-data/
+data/*
+!data/fpi_sectors_seed.json
 *.csv
 .venv/
 venv/
@@ -16,3 +17,18 @@ Pixel Perfect UI.zip
 *.session.json
 access_token*
 .kite_session.json
+
+# Runtime/test scratch
+log/
+.pytest_tmp/
+
+# Working notes / reference clones / unrelated scratch files, not part of the app
+_review/
+_plans/
+FACTORIALGO/
+*.pine
+3ST.txt
+Start.txt
+qn.xlsx
+~$*
+ch8 Markov Chain.pdf

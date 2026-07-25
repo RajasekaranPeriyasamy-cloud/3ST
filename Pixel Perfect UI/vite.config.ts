@@ -11,5 +11,14 @@ export default defineConfig({
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
     server: { entry: "server" },
+    spa: {
+      enabled: true,
+      prerender: {
+        failOnError: false,
+      },
+    },
   },
+  // Do NOT proxy UI page paths like /vanna-exposure to :8001 — that steals the
+  // Vite route and returns the built SPA shell (HTML). API calls use
+  // VITE_API_BASE_URL / resolveApiBaseUrl() in src/lib/api.ts instead.
 });

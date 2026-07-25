@@ -78,29 +78,21 @@ def save_baseline(underlying: str, expiry: str, baseline_date: str, oi_by_token:
 
 def fetch_session_close_oi(instrument_token: int, session_day: date) -> int | None:
     """Last minute OI on a given session date (15:15–15:30 IST)."""
-    from kite_auth import _is_proxy_error, get_kite_client
     from kite_client import _kite_direct_client
 
     start = datetime.combine(session_day, time(15, 15), tzinfo=IST)
     end = datetime.combine(session_day, time(15, 30), tzinfo=IST)
-    last_err: Exception | None = None
-    for force_direct in (False, True):
-        try:
-            kite = _kite_direct_client() if force_direct else get_kite_client()
-            raw = kite.historical_data(
-                instrument_token=int(instrument_token),
-                from_date=start,
-                to_date=end,
-                interval="minute",
-                continuous=False,
-                oi=True,
-            )
-            break
-        except Exception as e:
-            last_err = e
-            if force_direct or not _is_proxy_error(e):
-                return None
-    else:
+    try:
+        kite = _kite_direct_client()
+        raw = kite.historical_data(
+            instrument_token=int(instrument_token),
+            from_date=start,
+            to_date=end,
+            interval="minute",
+            continuous=False,
+            oi=True,
+        )
+    except Exception:
         return None
 
     if not raw:

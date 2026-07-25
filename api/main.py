@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, model_validator
@@ -24,11 +24,12 @@ from config import (
     INDEX_OPTIONS,
     INSTRUMENTS,
     KITE_MAX_DAYS,
+    OI_PROFILE_DEFAULTS,
     TIMEFRAMES,
     YAHOO_MAX_DAYS,
 )
 from execution.arming import arm, disarm, get_arm_state, set_mode
-from execution.rolling_straddle import close_all, close_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
+from execution.rolling_straddle import close_all, close_leg, adopt_leg, unlink_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
 from execution.rolling_straddle_store import get_config as rs_get_config
 from execution.rolling_straddle_store import get_log as rs_get_log
 from execution.rolling_straddle_store import save_config as rs_save_config
@@ -46,7 +47,26 @@ from execution.wave_runner import tick as wave_tick
 from execution.wave_store import get_config as wave_get_config
 from execution.wave_store import get_log as wave_get_log
 from execution.wave_store import save_config as wave_save_config
+from execution.premium_book_runner import (
+    close_all as premium_book_close_all,
+    preview_current as premium_book_preview,
+    revoke_buy_hold as premium_book_revoke_buy_hold,
+    start_runner as premium_book_start_runner,
+    status_bundle as premium_book_status_bundle,
+    stop_runner as premium_book_stop_runner,
+    tick as premium_book_tick,
+)
+from execution.premium_book_store import get_config as premium_book_get_config
+from execution.premium_book_store import get_log as premium_book_get_log
+from execution.premium_book_store import save_config as premium_book_save_config
 from execution.scheduler import scheduler_status, start_scheduler, stop_scheduler
+from execution.desk_trades import adopt_open_positions, build_active_trades_view, sync_active_trade_entry
+from execution.execution_queue import build_execution_queue, queue_action
+from execution.positions_view import build_positions_view
+from execution.live_workflow import get_workflow_status, validate_live_execution
+from execution.watchlist_activation import activate_watchlist_item, manual_enter_watchlist_item, trigger_manual_side
+from execution.watchlist_close import close_watchlist_trade
+from execution.watchlist_exit_runner import exit_status_for_item, scan_watchlist_exits
 from execution.watchlist_runner import scan_watchlist
 from instruments import (
     list_resolved,
@@ -54,7 +74,9 @@ from instruments import (
     resolve_by_token,
     resolve_instrument,
     search_instruments,
+    warm_instruments_cache,
 )
+from kite_errors import friendly_kite_message
 from kite_auth import (
     clear_session,
     exchange_request_token,
@@ -66,29 +88,76 @@ from kite_client import (
     fetch_historical_for_selection,
     kite_max_lookback_days,
     margins,
+    preview_order_margins,
     status_bundle,
 )
 from options.chain import get_chain, list_expiries
 from options.oi_tracker import build_snapshot, tracker_config
 from options.oi_tracker_store import append_log, get_log as oi_get_log
+from options.oi_movers import build_movers_snapshot, movers_config
 from options.oi_var import build_var_snapshot, var_config
+from options.gamma_density import build_gamma_snapshot, gamma_config
+from options.gamma_density_provider import get_gamma_density_provider
+from options.vanna_exposure import build_vanna_snapshot, vanna_config
+from options.greeks_desk import build_greeks_snapshot, desk_config as greeks_desk_config
+from options.trade_suggestions import build_trade_suggestions, suggestions_config
+from pricing.desk import build_pricing_desk, price_single, pricing_config
+from options.oi_profile import oi_profile_config, oi_profile_snapshot
+from options.vol_surface import build_vol_surface, vol_surface_config
+from options.iv_smile import build_iv_smile, iv_smile_config
+from options.calendar_arbitrage import (
+    build_arbitrage_snapshot,
+    build_arbitrage_universe,
+    calendar_arbitrage_config,
+)
+from execution.latency_log import get_stats as latency_get_stats, read_recent as latency_read_recent
+from analysis.fpi_sectors import fpi_status, load_fpi_sectors
+from analysis.rrg import build_rrg_snapshot, clear_rrg_daily_cache, rrg_config
+from analysis.analogue_cycles import analogue_config, build_analogue_snapshot
 from options.spreads import SPREAD_TEMPLATES, build_direction_spreads, preview_spread
 from risk.limits import get_limits, update_limits
 from selection_store import clear_selection, get_selection, save_selection
 from watchlist_store import add_item as watchlist_add
 from watchlist_store import get_item as watchlist_get
 from watchlist_store import list_items as watchlist_list
-from watchlist_store import mark_active as watchlist_activate
 from watchlist_store import mark_closed as watchlist_close
 from watchlist_store import remove_item as watchlist_remove
-from settings import kite_credentials, kite_ready
+from settings import desk_ui_url, kite_credentials, kite_ready
 from yahoo_client import default_date_range, fetch_candles as yahoo_fetch, max_lookback_days as yahoo_max_days
+
+
+_APP_STARTED_AT: float | None = None
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    import threading
+    import time
+
+    global _APP_STARTED_AT
+    _APP_STARTED_AT = time.time()
+
+    from execution.ltp_cache import start_ltp_feed, stop_ltp_feed
+    from kite_auth import kite_egress_plan
+    from settings import apply_kite_proxy_env
+
+    _proxies, _bind_ipv6, mode = kite_egress_plan()
+    if mode == "staticip_proxy":
+        apply_kite_proxy_env()
+
     sync_paper_from_rolling_straddle()
+    from execution.arming import load_persisted_state
+
+    load_persisted_state()
     start_scheduler()
+    threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
+    await start_ltp_feed()
+    try:
+        from execution.reconcile import reconcile_live_desk
+
+        reconcile_live_desk(apply_changes=True)
+    except Exception:
+        pass
     cfg = rs_get_config()
     if cfg.get("auto_start_on_boot"):
         try:
@@ -105,7 +174,13 @@ async def _lifespan(app: FastAPI):
             wave_start_runner()
         except Exception:
             pass
+    if premium_book_get_config().get("auto_start_on_boot"):
+        try:
+            premium_book_start_runner()
+        except Exception:
+            pass
     yield
+    await stop_ltp_feed()
     stop_scheduler()
 
 
@@ -118,6 +193,8 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
         "https://*.lovable.app",
         "https://*.lovable.dev",
         "*",
@@ -126,6 +203,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _no_store_api_json(request: Request, call_next):
+    """Prevent browsers caching SPA HTML under API paths (stale HTML → false JSON errors)."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/") or path in ("/", "/favicon.ico"):
+        return response
+    # API JSON and auth — never cache
+    if not path.startswith("/assets"):
+        ctype = response.headers.get("content-type", "")
+        if "application/json" in ctype or path.startswith(
+            (
+                "/vanna-exposure",
+                "/pricing",
+                "/gamma-density",
+                "/greeks",
+                "/trade-suggestions",
+                "/oi-",
+                "/vol-surface",
+                "/iv-",
+                "/auth",
+                "/live",
+                "/health",
+                "/options",
+                "/market",
+            )
+        ):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+    return response
+
 
 _paper = get_paper_broker()
 _kite_broker = KiteBroker()
@@ -136,6 +246,8 @@ SpreadTemplate = Literal[
     "bear_call",
     "bull_put",
     "iron_condor",
+    "short_straddle",
+    "short_strangle",
 ]
 
 
@@ -145,10 +257,42 @@ class SessionIn(BaseModel):
 
 class ArmIn(BaseModel):
     confirm: bool = False
+    mode: Literal["paper", "live"] | None = None
 
 
 class ModeIn(BaseModel):
     mode: Literal["paper", "live"]
+
+
+class MarginPreviewIn(BaseModel):
+    exchange: str
+    tradingsymbol: str
+    transaction_type: Literal["BUY", "SELL"]
+    quantity: int
+    product: Literal["MIS", "NRML", "CNC"] = "NRML"
+    order_type: Literal["MARKET", "LIMIT"] = "MARKET"
+    price: float | None = None
+
+
+class PanicIn(BaseModel):
+    confirm: bool = False
+    cancel_orders: bool = True
+    close_positions: bool = True
+
+
+class ReconcileIn(BaseModel):
+    adopt_orphans: bool = False
+
+
+class ManualEnterIn(BaseModel):
+    side: Literal["buy", "sell"] | None = None
+    signal: Literal["long", "short"] | None = None
+
+    @model_validator(mode="after")
+    def _require_side(self) -> ManualEnterIn:
+        if self.side is None and self.signal is None:
+            raise ValueError("Provide side ('buy' or 'sell')")
+        return self
 
 
 class RiskIn(BaseModel):
@@ -170,6 +314,7 @@ class SpreadPreviewIn(BaseModel):
     expiry: str
     template: SpreadTemplate
     width_steps: int = 1
+    otm_offset: int = 0
     spot: float | None = None
     legs: list[SpreadLegOverride] | None = None
 
@@ -180,8 +325,69 @@ class SpreadConfigIn(BaseModel):
     long_template: SpreadTemplate = "bull_call"
     short_template: SpreadTemplate = "bear_call"
     width_steps: int = 1
+    otm_offset: int = 0
     legs_long: list[dict[str, Any]] | None = None
     legs_short: list[dict[str, Any]] | None = None
+
+
+class PremiumBookConfigIn(BaseModel):
+    underlying: Literal["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "CRUDEOILM"] = "NIFTY"
+    expiry: str = ""
+    trade_bias: Literal["sell_premium", "buy_hold"] = "sell_premium"
+    book_side: Literal["sell", "buy"] | None = None  # legacy alias
+    structure: Literal[
+        "bull_put",
+        "bear_call",
+        "long_call",
+        "long_put",
+        "bull_call",
+        "bear_put",
+        "long_strangle",
+    ] = "bull_put"
+    otm_offset: int = 1
+    width_steps: int = 1
+    timeframe: str = "5min"
+    entry_start: str = "09:20"
+    session_start: str = DEFAULT_SESSION["session_start"]
+    session_end: str = DEFAULT_SESSION["session_end"]
+    force_exit: str = DEFAULT_SESSION["force_exit"]
+    system_mode: Literal["Intraday", "Positional"] = "Intraday"
+    order_type: Literal["MARKET", "LIMIT"] = "MARKET"
+    product: Literal["MIS", "NRML"] = "MIS"
+    tick_interval_sec: int = 60
+    convert_sl_to_spread: bool = True
+    auto_structure: bool = True
+    auto_start_on_boot: bool = False
+    size_mode: Literal["lots", "qty"] = "lots"
+    size_value: int = 1
+    st_method: Literal["heikin_ashi", "regular", "hybrid"] = DEFAULT_ST_METHOD
+    atr1: int = DEFAULT_ST["atr1"]
+    factor1: float = DEFAULT_ST["factor1"]
+    atr2: int = DEFAULT_ST["atr2"]
+    factor2: float = DEFAULT_ST["factor2"]
+    atr3: int = DEFAULT_ST["atr3"]
+    factor3: float = DEFAULT_ST["factor3"]
+    st1_enabled: bool = True
+    st2_enabled: bool = True
+    st3_enabled: bool = True
+    entry_require_st1_st2: bool = True
+    adx_enabled: bool = DEFAULT_ADX["enabled"]
+    adx_period: int = DEFAULT_ADX["period"]
+    adx_threshold: float = DEFAULT_ADX["threshold"]
+    sl_mode: Literal["Off", "%", "Pts"] = DEFAULT_RISK["sl_mode"]  # type: ignore
+    sl_value: float = DEFAULT_RISK["sl_value"]
+    tgt_mode: Literal["Off", "%", "Pts"] = DEFAULT_RISK["tgt_mode"]  # type: ignore
+    tgt_value: float = DEFAULT_RISK["tgt_value"]
+    tsl_mode: Literal["Off", "%", "Pts", "ATR"] = "ATR"
+    tsl_value: float = 1.2
+    entry_exit_enabled: bool = False
+    exit_on_bar_close_only: bool = True
+
+    @model_validator(mode="after")
+    def _require_enabled_st(self) -> PremiumBookConfigIn:
+        if not (self.st1_enabled or self.st2_enabled or self.st3_enabled):
+            raise ValueError("At least one SuperTrend (ST1, ST2, or ST3) must be enabled")
+        return self
 
 
 class SelectionIn(BaseModel):
@@ -217,6 +423,8 @@ class SelectionIn(BaseModel):
     tgt_value: float = DEFAULT_RISK["tgt_value"]
     tsl_mode: Literal["Off", "%", "Pts", "ATR"] = DEFAULT_RISK["tsl_mode"]  # type: ignore
     tsl_value: float = DEFAULT_RISK["tsl_value"]
+    product_type: Literal["MIS", "NRML"] = "MIS"
+    entry_mode: Literal["manual", "signal"] = "manual"
 
     @model_validator(mode="after")
     def _require_enabled_st(self) -> SelectionIn:
@@ -271,7 +479,7 @@ class BacktestIn(BaseModel):
 
 
 class RollingStraddleConfigIn(BaseModel):
-    underlying: Literal["NIFTY", "BANKNIFTY", "SENSEX"] = "NIFTY"
+    underlying: Literal["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "CRUDEOILM", "NATURALGAS"] = "NIFTY"
     expiry: str = ""
     timeframe: str = "5min"
     entry_start: str = "09:20"
@@ -282,12 +490,14 @@ class RollingStraddleConfigIn(BaseModel):
     order_type: Literal["MARKET", "LIMIT"] = "MARKET"
     product: Literal["MIS", "NRML"] = "MIS"
     tick_interval_sec: int = 60
-    trade_mode: Literal["Both", "LongOnly", "ShortOnly"] = "Both"
+    trade_mode: Literal["Both", "LongOnly", "ShortOnly", "ShortSignalsOnly"] = "Both"
     max_reentries_ce: int = 1
     max_reentries_pe: int = 1
     reentry_style: Literal["zone_active", "edge_only"] = "zone_active"
     allow_dual_open: bool = True
     auto_start_on_boot: bool = False
+    size_mode: Literal["lots", "qty"] = "lots"
+    size_value: int = 1
     st_method: Literal["heikin_ashi", "regular", "hybrid"] = DEFAULT_ST_METHOD
     atr1: int = DEFAULT_ST["atr1"]
     factor1: float = DEFAULT_ST["factor1"]
@@ -307,6 +517,9 @@ class RollingStraddleConfigIn(BaseModel):
     tgt_value: float = DEFAULT_RISK["tgt_value"]
     tsl_mode: Literal["Off", "%", "Pts", "ATR"] = DEFAULT_RISK["tsl_mode"]  # type: ignore
     tsl_value: float = DEFAULT_RISK["tsl_value"]
+    entry_exit_enabled: bool = True
+    execution_mode: Literal["auto", "confirm"] = "auto"
+    exit_on_bar_close_only: bool = True
 
     @model_validator(mode="after")
     def _require_enabled_st(self) -> RollingStraddleConfigIn:
@@ -319,6 +532,10 @@ class CloseLegIn(BaseModel):
     leg: Literal["ce", "pe"]
 
 
+class QueueActionIn(BaseModel):
+    action: Literal["adopt", "unlink", "close", "ship", "execute", "dismiss"]
+
+
 class SurvivorConfigIn(BaseModel):
     underlying: Literal["NIFTY", "BANKNIFTY", "SENSEX"] = "NIFTY"
     expiry: str = ""
@@ -326,8 +543,8 @@ class SurvivorConfigIn(BaseModel):
     index_symbol: str = "NSE:NIFTY 50"
     pe_gap: int = 20
     ce_gap: int = 20
-    pe_quantity: int = 75
-    ce_quantity: int = 75
+    pe_quantity: int = 65
+    ce_quantity: int = 65
     pe_symbol_gap: int = 200
     ce_symbol_gap: int = 200
     min_price_to_sell: float = 15
@@ -344,13 +561,13 @@ class SurvivorConfigIn(BaseModel):
 
 
 class WaveConfigIn(BaseModel):
-    symbol_name: str = "NIFTY25SEPFUT"
+    symbol_name: str = "NIFTY26JULFUT"
     exchange: str = "NFO"
     buy_gap: float = 25
     sell_gap: float = 25
-    buy_quantity: int = 75
-    sell_quantity: int = 75
-    lot_size: int = 75
+    buy_quantity: int = 65
+    sell_quantity: int = 65
+    lot_size: int = 65
     cool_off_time: int = 10
     product_type: Literal["NRML", "MIS"] = "NRML"
     order_type: Literal["LIMIT", "MARKET"] = "LIMIT"
@@ -375,8 +592,21 @@ class RollingAtmBacktestIn(BacktestIn):
     entry_start: str = "09:20"
 
 
+class PricingCalculateIn(BaseModel):
+    spot: float
+    strike: float
+    option_type: Literal["CE", "PE"] = "CE"
+    market_price: float | None = None
+    iv: float | None = None
+    tte_years: float | None = None
+    expiry: str | None = None
+    risk_free_rate: float = 0.065
+    include_heston: bool = False
+    heston_overrides: dict[str, float] | None = None
+
+
 def _err(e: Exception, status: int = 400) -> HTTPException:
-    return HTTPException(status_code=status, detail=str(e))
+    return HTTPException(status_code=status, detail=friendly_kite_message(str(e)))
 
 
 def _require_kite_session() -> None:
@@ -510,10 +740,40 @@ def _resolve_backtest_target(body: BacktestIn) -> dict[str, Any]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    import time
+
+    from instruments import cache_status
+    from kite_auth import kite_egress_status
+    from settings import env, kite_allowed_egress_ip, kite_use_staticip_proxy, proxy_ready
+
+    egress = kite_egress_status()
+    proxy_on = egress["mode"] == "staticip_proxy"
+    allowed = kite_allowed_egress_ip()
+    if egress["mode"] == "local_bind":
+        hint = (
+            f"Live orders bound to local IPv6 {egress['bind_ipv6']} "
+            f"(whitelisted on developers.kite.trade)"
+        )
+    elif proxy_on:
+        hint = (
+            f"Live orders pinned to staticip.in — Kite whitelist must include {allowed or 'your static egress IP'}"
+        )
+    else:
+        hint = "Orders use direct connection — whitelist your public IP on developers.kite.trade"
+    uptime = round(time.time() - _APP_STARTED_AT, 1) if _APP_STARTED_AT else None
     return {
         "ok": True,
+        "uptime_sec": uptime,
+        **cache_status(),
         "kite_configured": kite_ready(),
         "kite_authenticated": session_status().get("authenticated", False),
+        "kite_proxy_enabled": proxy_on,
+        "kite_proxy_host": env("STATICIP_HOST") if proxy_on else None,
+        "kite_allowed_egress_ip": allowed or None,
+        "kite_egress_mode": egress["mode"],
+        "kite_bind_ipv6": egress.get("bind_ipv6"),
+        "kite_local_bind_available": egress.get("local_bind_available"),
+        "kite_proxy_hint": hint,
         "instruments": list(INSTRUMENTS.keys()),
         "index_options": list(INDEX_OPTIONS.keys()),
         "timeframes": list(TIMEFRAMES.keys()),
@@ -528,7 +788,7 @@ def auth_login_url() -> dict[str, str]:
         return {
             "login_url": login_url(),
             "redirect_url": kite_credentials()["redirect_url"],
-            "hint": "Easiest: open http://127.0.0.1:8000/auth/login in browser",
+            "hint": f"Open {desk_ui_url()}/login in the desk UI",
         }
     except Exception as e:
         raise _err(e) from e
@@ -557,18 +817,17 @@ def auth_login_page(request: Request) -> HTMLResponse:
   <p>Redirect URL (set this in Kite developer app):</p>
   <p><code>{redirect}</code></p>
   <p><a class="btn" href="{url}">Login with Zerodha</a></p>
-  <p>After login, Zerodha redirects to the URL above. It must match your Kite app
-  <strong>Redirect URL</strong> exactly.</p>
-  <div class="warn"><strong>Use port 8001:</strong>
-  <a href="http://127.0.0.1:8001/auth/login">http://127.0.0.1:8001/auth/login</a>
-  if port 8000 gives Not Found after login.</div>
+  <p>After login you return here, then go to the desk:</p>
+  <p><a href="{desk_ui_url()}/login">{desk_ui_url()}/login</a></p>
+  <div class="warn"><strong>Kite app redirect URL</strong> must be exactly:
+  <code>{redirect}</code></div>
   <p><a href="/docs">API docs</a></p>
 </body></html>"""
     return HTMLResponse(html)
 
 
 @app.get("/auth/callback", response_class=HTMLResponse)
-def auth_callback(
+async def auth_callback(
     request_token: str | None = None,
     status: str | None = None,
 ) -> HTMLResponse:
@@ -580,9 +839,13 @@ def auth_callback(
         )
     try:
         profile = exchange_request_token(request_token)
-        sess = session_status()
+        from execution.ltp_cache import get_ltp_cache
+
+        await get_ltp_cache().restart_if_authenticated()
+        desk = desk_ui_url()
         html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Login OK</title>
+<meta http-equiv="refresh" content="2;url={desk}/">
 <style>
   body {{ font-family: system-ui, sans-serif; max-width: 520px; margin: 48px auto; padding: 0 16px; }}
   .ok {{ color: #16a34a; font-weight: 600; }}
@@ -590,40 +853,55 @@ def auth_callback(
   <h1 class="ok">Logged in successfully</h1>
   <p>User: <strong>{profile.get('user_name') or profile.get('user_id')}</strong>
      ({profile.get('user_id')})</p>
-  <p>Status: {status or 'success'}</p>
-  <ul>
-    <li><a href="/auth/me">Check session JSON</a></li>
-    <li><a href="/docs">Swagger API</a></li>
-    <li><a href="/instruments?refresh=true">Refresh instruments</a></li>
-  </ul>
+  <p>Redirecting to the desk…</p>
+  <p><a href="{desk}/">Open 3ST Algo Desk</a></p>
 </body></html>"""
         return HTMLResponse(html)
     except Exception as e:
+        from kite_errors import friendly_auth_error
+
+        detail = friendly_auth_error(str(e))
         return HTMLResponse(
-            f"<h1>Login failed</h1><p>{e}</p>"
-            "<p>Get a fresh login from <a href='/auth/login'>/auth/login</a> "
-            "(tokens are one-time).</p>",
+            f"<h1>Login failed</h1><p>{detail}</p>"
+            f"<p><a href='{desk_ui_url()}/login'>Back to desk login</a> · "
+            "<a href='/auth/login'>API login</a></p>",
             status_code=400,
         )
 
 
 @app.post("/auth/session")
-def auth_session(body: SessionIn) -> dict[str, Any]:
+async def auth_session(body: SessionIn) -> dict[str, Any]:
     try:
         profile = exchange_request_token(body.request_token)
+        from execution.ltp_cache import get_ltp_cache
+
+        await get_ltp_cache().restart_if_authenticated()
         return {"ok": True, **profile, "session": session_status()}
     except Exception as e:
         raise _err(e) from e
 
 
 @app.delete("/auth/session")
-def auth_logout() -> dict[str, Any]:
+async def auth_logout() -> dict[str, Any]:
+    from execution.ltp_cache import stop_ltp_feed
+
     clear_session()
+    await stop_ltp_feed()
     return {"ok": True, "session": session_status()}
 
 
 @app.get("/auth/me")
 def auth_me() -> dict[str, Any]:
+    """Fast session check (disk only). Does not call Kite on every poll."""
+    try:
+        return session_status()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/auth/profile")
+def auth_profile() -> dict[str, Any]:
+    """Full session + live Kite profile (may be slow if api.kite.trade is unreachable)."""
     try:
         return status_bundle()
     except Exception as e:
@@ -681,9 +959,10 @@ def instrument_by_token(instrument_token: int) -> dict[str, Any]:
 @app.get("/options/expiries")
 def options_expiries(underlying: str) -> dict[str, Any]:
     try:
-        if underlying not in INDEX_OPTIONS:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
             raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
-        return {"underlying": underlying, "expiries": list_expiries(underlying)}
+        return {"underlying": u, "expiries": list_expiries(u)}
     except Exception as e:
         raise _err(e) from e
 
@@ -714,6 +993,7 @@ def options_spread_preview(body: SpreadPreviewIn) -> dict[str, Any]:
             spot=body.spot,
             legs_override=overrides,
             ltp_fn=_kite_broker.ltp,
+            otm_offset=body.otm_offset,
         )
     except HTTPException:
         raise
@@ -732,6 +1012,7 @@ def options_spread_preview_directions(body: SpreadConfigIn) -> dict[str, Any]:
             short_template=body.short_template,
             width_steps=body.width_steps,
             ltp_fn=_kite_broker.ltp,
+            otm_offset=body.otm_offset,
         )
     except HTTPException:
         raise
@@ -803,7 +1084,7 @@ def watchlist_activate_item(item_id: str) -> dict[str, Any]:
             raise KeyError(item_id)
         if item.get("status") not in {"triggered", "waiting"}:
             raise RuntimeError(f"Cannot activate item in status '{item.get('status')}'")
-        updated = watchlist_activate(item_id)
+        updated = activate_watchlist_item(item_id)
         return {"ok": True, "item": updated}
     except KeyError as e:
         raise _err(e, 404) from e
@@ -814,8 +1095,179 @@ def watchlist_activate_item(item_id: str) -> dict[str, Any]:
 @app.post("/watchlist/{item_id}/close")
 def watchlist_close_item(item_id: str) -> dict[str, Any]:
     try:
-        updated = watchlist_close(item_id)
+        item = watchlist_get(item_id)
+        if not item:
+            raise KeyError(item_id)
+        if item.get("status") == "active":
+            updated = close_watchlist_trade(item_id, "manual_close")
+        else:
+            updated = watchlist_close(item_id)
         return {"ok": True, "item": updated}
+    except KeyError as e:
+        raise _err(e, 404) from e
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/execution/queue")
+def execution_queue_status() -> dict[str, Any]:
+    try:
+        return build_execution_queue()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/execution/queue/{leg_id}/action")
+def execution_queue_item_action(leg_id: str, body: QueueActionIn) -> dict[str, Any]:
+    try:
+        return queue_action(leg_id, body.action)
+    except KeyError as e:
+        raise _err(e, 404) from e
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/live/workflow")
+def live_workflow_status() -> dict[str, Any]:
+    try:
+        return get_workflow_status()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/live/ltp-cache")
+def live_ltp_cache_status() -> dict[str, Any]:
+    """WebSocket LTP cache health (Aio-Trader KiteFeed + REST fallback)."""
+    try:
+        from execution.ltp_cache import get_ltp_cache
+
+        return {"ok": True, **get_ltp_cache().status()}
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/ltp-cache/restart")
+async def live_ltp_cache_restart() -> dict[str, Any]:
+    try:
+        from execution.ltp_cache import get_ltp_cache
+
+        await get_ltp_cache().restart_if_authenticated()
+        return {"ok": True, **get_ltp_cache().status()}
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/market/health")
+def market_health_status() -> dict[str, Any]:
+    """Market-data feed health + trade-management safety gate for the Live Desk badge."""
+    try:
+        from execution.ltp_cache import is_trade_management_safe, market_health
+
+        health = market_health()
+        safe, reason = is_trade_management_safe()
+        return {"ok": True, **health, "trade_management_safe": safe, "trade_management_reason": reason}
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.websocket("/ws/ltp")
+async def ws_ltp(ws: WebSocket) -> None:
+    """Push cached LTPs + feed health to the Live Desk every second (real-time, no polling)."""
+    import asyncio
+    import time as _time
+
+    from execution.ltp_cache import get_ltp_cache, is_trade_management_safe, market_health
+
+    await ws.accept()
+    cache = get_ltp_cache()
+    try:
+        while True:
+            safe, reason = is_trade_management_safe()
+            await ws.send_json(
+                {
+                    "type": "ltp",
+                    "ts": _time.time(),
+                    "prices": cache.snapshot(),
+                    "health": {
+                        **market_health(),
+                        "trade_management_safe": safe,
+                        "trade_management_reason": reason,
+                    },
+                }
+            )
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        return
+
+
+@app.post("/watchlist/{item_id}/execute-live")
+def watchlist_execute_live(item_id: str, body: ManualEnterIn) -> dict[str, Any]:
+    """Manual BUY/SELL on Kite — requires LIVE + ARMED."""
+    try:
+        validate_live_execution()
+        updated = trigger_manual_side(
+            item_id,
+            side=body.side,
+            signal=body.signal,
+            require_exchange=True,
+        )
+        return {"ok": True, "item": updated, "note": "Exchange order placed — 3ST exit monitor active"}
+    except KeyError as e:
+        raise _err(e, 404) from e
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/watchlist/{item_id}/trigger")
+def watchlist_trigger_side(item_id: str, body: ManualEnterIn) -> dict[str, Any]:
+    """Manual BUY or SELL — works on waiting, triggered, or active (no open leg) rows."""
+    try:
+        _require_kite_session()
+        updated = trigger_manual_side(item_id, side=body.side, signal=body.signal)
+        return {"ok": True, "item": updated}
+    except KeyError as e:
+        raise _err(e, 404) from e
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/watchlist/{item_id}/enter")
+def watchlist_manual_enter(item_id: str, body: ManualEnterIn) -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        updated = manual_enter_watchlist_item(item_id, side=body.side, signal=body.signal)
+        return {"ok": True, "item": updated}
+    except KeyError as e:
+        raise _err(e, 404) from e
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/watchlist/scan-exits")
+def watchlist_scan_exits(auto_close: bool = Query(True)) -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        return scan_watchlist_exits(auto_close=auto_close)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/watchlist/{item_id}/exit-status")
+def watchlist_exit_status(item_id: str) -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        item = watchlist_get(item_id)
+        if not item:
+            raise KeyError(item_id)
+        return {"ok": True, "status": exit_status_for_item(item)}
     except KeyError as e:
         raise _err(e, 404) from e
     except Exception as e:
@@ -856,20 +1308,115 @@ def live_mode(body: ModeIn) -> dict[str, Any]:
 
 @app.post("/live/arm")
 def live_arm(body: ArmIn) -> dict[str, Any]:
+    import time
+
+    from execution.rolling_straddle_store import append_log
+
+    t0 = time.perf_counter()
     try:
-        return arm(confirm=body.confirm)
+        if body.mode:
+            set_mode(body.mode)
+        result = arm(confirm=body.confirm)
+        ms = round((time.perf_counter() - t0) * 1000, 1)
+        append_log("arm", f"{'ARMED' if result.get('armed') else 'arm call'} in {ms}ms", {"ms": ms, "mode": result.get("mode")})
+        return {**result, "server_ms": ms}
     except Exception as e:
         raise _err(e) from e
 
 
 @app.post("/live/disarm")
 def live_disarm() -> dict[str, Any]:
-    return disarm()
+    import time
+
+    from execution.rolling_straddle_store import append_log
+
+    t0 = time.perf_counter()
+    result = disarm()
+    ms = round((time.perf_counter() - t0) * 1000, 1)
+    append_log("disarm", f"DISARMED in {ms}ms", {"ms": ms})
+    return {**result, "server_ms": ms}
+
+
+@app.post("/live/margin-preview")
+def live_margin_preview(body: MarginPreviewIn) -> dict[str, Any]:
+    """Estimate Kite margin before manual entry."""
+    try:
+        _require_kite_session()
+        data = preview_order_margins(
+            exchange=body.exchange,
+            tradingsymbol=body.tradingsymbol,
+            transaction_type=body.transaction_type,
+            quantity=body.quantity,
+            product=body.product,
+            order_type=body.order_type,
+            price=body.price,
+        )
+        return {"ok": True, "margin": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/panic")
+def live_panic(body: PanicIn) -> dict[str, Any]:
+    """
+    Emergency stop: close active watchlist trades, cancel open 3ST orders, DISARM.
+    Requires confirm=true.
+    """
+    try:
+        if not body.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Panic requires confirm=true — closes positions and cancels 3ST orders",
+            )
+        from execution.panic import run_panic
+
+        return run_panic(
+            cancel_orders=body.cancel_orders,
+            close_positions=body.close_positions,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/live/reconcile")
+def live_reconcile_report() -> dict[str, Any]:
+    """Dry-run reconciliation report (broker vs local state) — no local mutations."""
+    try:
+        from execution.reconcile import reconcile_live_desk
+
+        return reconcile_live_desk(apply_changes=False)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/reconcile")
+def live_reconcile_apply(body: ReconcileIn) -> dict[str, Any]:
+    """Apply reconciliation: close stale local trades, refresh from broker, optionally adopt orphans."""
+    try:
+        from execution.reconcile import reconcile_live_desk
+
+        return reconcile_live_desk(apply_changes=True, adopt_orphans=body.adopt_orphans)
+    except Exception as e:
+        raise _err(e) from e
 
 
 @app.get("/risk/limits")
 def risk_get() -> dict[str, Any]:
-    return get_limits()
+    out = get_limits()
+    try:
+        from execution.order_executor import _open_position_count
+        from execution.positions_view import get_desk_broker
+
+        broker, mode = get_desk_broker()
+        out["open_positions"] = _open_position_count(broker)
+        out["mode"] = mode
+    except Exception:
+        out["open_positions"] = 0
+    return out
 
 
 @app.post("/risk/limits")
@@ -879,14 +1426,37 @@ def risk_set(body: RiskIn) -> dict[str, Any]:
 
 @app.get("/live/positions")
 def live_positions() -> dict[str, Any]:
-    state = get_arm_state()
-    if state["mode"] != "live":
-        sync_paper_from_rolling_straddle()
-        broker = get_paper_broker()
-    else:
-        broker = _kite_broker
     try:
-        return {"mode": state["mode"], "positions": broker.positions()}
+        return build_positions_view()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/live/active-trades")
+def live_active_trades() -> dict[str, Any]:
+    try:
+        return build_active_trades_view()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/adopt-positions")
+def live_adopt_positions() -> dict[str, Any]:
+    """Link open Kite positions to watchlist for 3ST exit monitoring."""
+    try:
+        _require_kite_session()
+        return adopt_open_positions()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/watchlist/{item_id}/sync-entry")
+def watchlist_sync_entry(item_id: str) -> dict[str, Any]:
+    try:
+        updated = sync_active_trade_entry(item_id)
+        return {"ok": True, "item": updated}
+    except KeyError as e:
+        raise _err(e, 404) from e
     except Exception as e:
         raise _err(e) from e
 
@@ -920,9 +1490,9 @@ def rolling_straddle_set_config(body: RollingStraddleConfigIn) -> dict[str, Any]
 
 
 @app.get("/live/rolling-straddle/status")
-def rolling_straddle_status() -> dict[str, Any]:
+def rolling_straddle_status(light: bool = Query(False)) -> dict[str, Any]:
     try:
-        bundle = rs_status_bundle()
+        bundle = rs_status_bundle(sync_broker=not light)
         bundle["scheduler"] = scheduler_status()
         return bundle
     except Exception as e:
@@ -971,6 +1541,22 @@ def rolling_straddle_close_all() -> dict[str, Any]:
 def rolling_straddle_close_leg(body: CloseLegIn) -> dict[str, Any]:
     try:
         return close_leg(body.leg)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/rolling-straddle/unlink-leg")
+def rolling_straddle_unlink_leg(body: CloseLegIn) -> dict[str, Any]:
+    try:
+        return unlink_leg(body.leg)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/rolling-straddle/adopt-leg")
+def rolling_straddle_adopt_leg(body: CloseLegIn) -> dict[str, Any]:
+    try:
+        return adopt_leg(body.leg)
     except Exception as e:
         raise _err(e) from e
 
@@ -1083,6 +1669,90 @@ def wave_tick_manual() -> dict[str, Any]:
     try:
         _require_kite_session()
         return wave_tick()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/live/premium-book/config")
+def premium_book_get_config_route() -> dict[str, Any]:
+    return premium_book_get_config()
+
+
+@app.post("/live/premium-book/config")
+def premium_book_set_config(body: PremiumBookConfigIn) -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        saved = premium_book_save_config(body.model_dump())
+        return {"ok": True, "config": saved}
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/live/premium-book/status")
+def premium_book_status() -> dict[str, Any]:
+    try:
+        bundle = premium_book_status_bundle()
+        bundle["scheduler"] = scheduler_status()
+        return bundle
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/live/premium-book/log")
+def premium_book_log(limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+    return {"items": premium_book_get_log(limit)}
+
+
+@app.post("/live/premium-book/start")
+def premium_book_start() -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        return premium_book_start_runner()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/premium-book/stop")
+def premium_book_stop() -> dict[str, Any]:
+    try:
+        return premium_book_stop_runner()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/premium-book/tick")
+def premium_book_tick_manual() -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        return premium_book_tick()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/premium-book/close")
+def premium_book_close() -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        return premium_book_close_all()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/premium-book/revoke-buy-hold")
+def premium_book_revoke_buy_hold_route() -> dict[str, Any]:
+    """Disable Buy & Hold (trade_bias → sell_premium) and flatten any open buy package."""
+    try:
+        _require_kite_session()
+        return premium_book_revoke_buy_hold()
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/live/premium-book/preview")
+def premium_book_preview_route() -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        return premium_book_preview()
     except Exception as e:
         raise _err(e) from e
 
@@ -1284,6 +1954,29 @@ def oi_tracker_snapshot(
         raise _err(e) from e
 
 
+@app.get("/oi-movers/config")
+def oi_movers_config() -> dict[str, Any]:
+    return movers_config()
+
+
+@app.get("/oi-movers/snapshot")
+def oi_movers_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD; default nearest weekly"),
+    options_count: int | None = Query(None, ge=1, le=15),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        _require_kite_session()
+        return build_movers_snapshot(u, expiry=expiry, options_count=options_count)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
 @app.get("/oi-var/config")
 def oi_var_config() -> dict[str, Any]:
     return var_config()
@@ -1294,13 +1987,433 @@ def oi_var_snapshot(
     underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
     expiry: str | None = Query(None, description="YYYY-MM-DD; default nearest weekly"),
     top_n: int | None = Query(None, ge=1, le=25),
+    dvar_mode: str | None = Query(None, description="oi_mark | true"),
+    multi_expiry: bool = Query(False, description="Include next-expiry VAR summary"),
+    gamma_context: bool = Query(False, description="Attach Gamma walls/flip badges (slower)"),
 ) -> dict[str, Any]:
     try:
         u = underlying.upper()
         if u not in INDEX_OPTIONS:
             raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
         _require_kite_session()
-        return build_var_snapshot(u, expiry=expiry, top_n=top_n)
+        return build_var_snapshot(
+            u,
+            expiry=expiry,
+            top_n=top_n,
+            dvar_mode=dvar_mode,
+            include_multi_expiry=multi_expiry,
+            include_gamma_context=gamma_context,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/gamma-density/config")
+def gamma_density_config() -> dict[str, Any]:
+    return gamma_config()
+
+
+@app.get("/gamma-density/snapshot")
+def gamma_density_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD; default nearest weekly"),
+    strike_window: int | None = Query(None, ge=1, le=60),
+    sign_mode: str | None = Query(
+        None,
+        description="naive | customer | oi_delta — dealer gamma sign convention",
+    ),
+    multi_expiry: bool = Query(True, description="Include next-expiry GEX stack"),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        prov = get_gamma_density_provider()
+        if prov.requires_session():
+            _require_kite_session()
+        return build_gamma_snapshot(
+            u,
+            expiry=expiry,
+            strike_window=strike_window,
+            sign_mode=sign_mode,
+            include_multi_expiry=multi_expiry,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/vanna-exposure/config")
+def vanna_exposure_config() -> dict[str, Any]:
+    return vanna_config()
+
+
+@app.get("/vanna-exposure/snapshot")
+def vanna_exposure_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD; default nearest weekly"),
+    strike_window: int | None = Query(None, ge=1, le=60),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        prov = get_gamma_density_provider()
+        if prov.requires_session():
+            _require_kite_session()
+        return build_vanna_snapshot(u, expiry=expiry, strike_window=strike_window)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/greeks/config")
+def greeks_engine_api_config() -> dict[str, Any]:
+    return greeks_desk_config()
+
+
+@app.get("/greeks/snapshot")
+def greeks_engine_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD; default nearest weekly"),
+    strike_window: int | None = Query(None, ge=1, le=60),
+    theta_mode: str | None = Query(
+        None, description="calendar | trading_hours — NSE theta decay mode"
+    ),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        prov = get_gamma_density_provider()
+        if prov.requires_session():
+            _require_kite_session()
+        return build_greeks_snapshot(
+            u,
+            expiry=expiry,
+            strike_window=strike_window,
+            theta_mode=theta_mode,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/trade-suggestions/config")
+def trade_suggestions_config() -> dict[str, Any]:
+    return suggestions_config()
+
+
+@app.get("/trade-suggestions/snapshot")
+def trade_suggestions_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD; default nearest weekly"),
+    strike_window: int | None = Query(None, ge=1, le=60),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        prov = get_gamma_density_provider()
+        if prov.requires_session():
+            _require_kite_session()
+        return build_trade_suggestions(u, expiry=expiry, strike_window=strike_window)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/pricing/config")
+def pricing_engine_config() -> dict[str, Any]:
+    return pricing_config()
+
+
+@app.get("/pricing/desk")
+def pricing_engine_desk(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiry: str = Query(..., description="YYYY-MM-DD"),
+    strike_count: int | None = Query(None, ge=3, le=41),
+    include_heston: bool = Query(False),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        _require_kite_session()
+        return build_pricing_desk(
+            u,
+            expiry,
+            strike_count=strike_count,
+            include_heston=include_heston,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/pricing/calculate")
+def pricing_engine_calculate(body: PricingCalculateIn) -> dict[str, Any]:
+    try:
+        return price_single(
+            spot=body.spot,
+            strike=body.strike,
+            option_type=body.option_type,
+            market_price=body.market_price,
+            iv=body.iv,
+            tte_years=body.tte_years,
+            expiry=body.expiry,
+            risk_free_rate=body.risk_free_rate,
+            include_heston=body.include_heston,
+            heston_overrides=body.heston_overrides,
+        )
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/oi-profile/config")
+def oi_profile_get_config() -> dict[str, Any]:
+    return oi_profile_config()
+
+
+@app.get("/oi-profile/snapshot")
+def oi_profile_get_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | FINNIFTY | SENSEX"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD future expiry; default front-month"),
+    interval: str | None = Query(None, description="1min | 5min | 15min"),
+    days: int | None = Query(None, ge=1, le=30),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        allowed = {s.upper() for s in OI_PROFILE_DEFAULTS["underlyings"]}
+        if u not in allowed:
+            raise RuntimeError(f"Unknown underlying. Use {sorted(allowed)}")
+        _require_kite_session()
+        return oi_profile_snapshot(u, expiry=expiry, interval=interval, days=days)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/latency/stats")
+def latency_stats() -> dict[str, Any]:
+    return latency_get_stats()
+
+
+@app.get("/latency/recent")
+def latency_recent(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
+    return {"items": latency_read_recent(limit)}
+
+
+@app.get("/vol-surface/config")
+def vol_surface_get_config() -> dict[str, Any]:
+    return vol_surface_config()
+
+
+@app.get("/vol-surface/snapshot")
+def vol_surface_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiries: str | None = Query(None, description="Comma-separated YYYY-MM-DD; default nearest N"),
+    strike_count: int | None = Query(None, ge=5, le=40),
+    max_expiries: int | None = Query(None, ge=1, le=8),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        _require_kite_session()
+        exp_list = [e.strip() for e in expiries.split(",") if e.strip()] if expiries else None
+        return build_vol_surface(
+            u,
+            exp_list,
+            strike_count=strike_count,
+            max_expiries=max_expiries,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/iv-smile/config")
+def iv_smile_get_config() -> dict[str, Any]:
+    return iv_smile_config()
+
+
+@app.get("/iv-smile/snapshot")
+def iv_smile_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    expiry: str = Query(..., description="YYYY-MM-DD"),
+    strike_count: int | None = Query(None, ge=5, le=41),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        _require_kite_session()
+        return build_iv_smile(u, expiry, strike_count=strike_count)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/arbitrage/config")
+def arbitrage_get_config() -> dict[str, Any]:
+    return calendar_arbitrage_config()
+
+
+@app.get("/arbitrage/universe")
+def arbitrage_universe(
+    exchanges: str | None = Query(None, description="Comma-separated e.g. NFO,MCX"),
+) -> dict[str, Any]:
+    try:
+        ex_list = [e.strip() for e in exchanges.split(",") if e.strip()] if exchanges else None
+        return build_arbitrage_universe(ex_list)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/arbitrage/snapshot")
+def arbitrage_snapshot(
+    exchanges: str | None = Query(None, description="Comma-separated e.g. NFO,MCX"),
+) -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        ex_list = [e.strip() for e in exchanges.split(",") if e.strip()] if exchanges else None
+        return build_arbitrage_snapshot(ex_list)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/rrg/config")
+def rrg_get_config() -> dict[str, Any]:
+    return rrg_config()
+
+
+@app.get("/rrg/fpi")
+def rrg_fpi_status() -> dict[str, Any]:
+    return fpi_status()
+
+
+@app.get("/rrg/fpi/latest")
+def rrg_fpi_latest(
+    period: str = Query("period2", description="period1 | period2 | month_total"),
+) -> dict[str, Any]:
+    try:
+        data = load_fpi_sectors()
+        return {
+            "ok": True,
+            "period": period,
+            "as_of": data.get("as_of"),
+            "period1_label": data.get("period1_label"),
+            "period2_label": data.get("period2_label"),
+            "fetched_at": data.get("fetched_at"),
+            "source_url": data.get("source_url"),
+            "stale": bool(data.get("stale")),
+            "sectors": data.get("sectors") or {},
+        }
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/rrg/fpi/refresh")
+def rrg_fpi_refresh() -> dict[str, Any]:
+    try:
+        data = load_fpi_sectors(force_refresh=True)
+        return {
+            "ok": True,
+            "sector_count": len(data.get("sectors") or {}),
+            "fetched_at": data.get("fetched_at"),
+            "stale": bool(data.get("stale")),
+        }
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/rrg/snapshot")
+def rrg_snapshot(
+    benchmark: str = Query("NIFTY50", description="NIFTY50 | BANKNIFTY50 | SENSEX"),
+    symbols: str = Query(
+        ...,
+        min_length=1,
+        description="Comma-separated equity symbols or sector ids (e.g. NIFTY_IT)",
+    ),
+    window: int = Query(14, ge=5, le=52),
+    period: int = Query(52, ge=10, le=104),
+    tail: int = Query(4, ge=2, le=12),
+    base_date: str | None = Query(None, description="Optional ISO base date for RS momentum"),
+    include_fpi: bool = Query(True, description="Attach NSDL FPI sector equity overlay"),
+    fpi_period: str = Query("period2", description="period1 | period2 | month_total"),
+) -> dict[str, Any]:
+    try:
+        _require_kite_session()
+        sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+        if not sym_list:
+            raise HTTPException(status_code=400, detail="At least one symbol is required")
+        if len(sym_list) > 50:
+            raise HTTPException(status_code=400, detail="Maximum 50 symbols per request")
+        return build_rrg_snapshot(
+            benchmark=benchmark,
+            symbols=sym_list,
+            window=window,
+            period=period,
+            tail=tail,
+            base_date=base_date,
+            include_fpi=include_fpi,
+            fpi_period=fpi_period,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/rrg/cache/clear")
+def rrg_clear_cache() -> dict[str, bool]:
+    clear_rrg_daily_cache()
+    return {"ok": True}
+
+
+@app.get("/analogue/config")
+def analogue_get_config() -> dict[str, Any]:
+    return analogue_config()
+
+
+@app.get("/analogue/snapshot")
+def analogue_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    cycle_kind: str = Query("monthly", description="monthly | weekly"),
+    similarity_band_pct: float | None = Query(None, ge=0.5, le=15.0),
+    override_move_pct: float | None = Query(
+        None,
+        ge=-30.0,
+        le=30.0,
+        description="Optional what-if move %% at current day-in-cycle",
+    ),
+    lookback_days: int | None = Query(None, ge=120, le=2500),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        _require_kite_session()
+        return build_analogue_snapshot(
+            u,
+            cycle_kind=cycle_kind,
+            similarity_band_pct=similarity_band_pct,
+            override_move_pct=override_move_pct,
+            lookback_days=lookback_days,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1404,10 +2517,26 @@ def backtest_rolling_atm(body: RollingAtmBacktestIn) -> dict[str, Any]:
         raise _err(e) from e
 
 
-@app.get("/")
-def root() -> dict[str, str]:
+@app.get("/api/meta")
+def api_meta() -> dict[str, str | bool]:
+    from api.ui_static import ui_build_available
+
     return {
         "service": "3ST Kite Algo API",
         "docs": "/docs",
-        "lovable": "Point VITE_API_BASE_URL to this server",
+        "ui_bundled": ui_build_available(),
     }
+
+
+from api.ui_static import mount_ui, ui_build_available
+
+if not ui_build_available():
+    @app.get("/", include_in_schema=False)
+    def root_no_ui() -> dict[str, str]:
+        return {
+            "service": "3ST Kite Algo API",
+            "docs": "/docs",
+            "ui_hint": "Run: cd 'Pixel Perfect UI' && npm run build",
+        }
+
+mount_ui(app)

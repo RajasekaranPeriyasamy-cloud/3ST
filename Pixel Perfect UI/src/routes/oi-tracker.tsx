@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ArrowDown, ArrowUp, Layers, Minus, Pause, Play, RefreshCw } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { pickNearestExpiry, useOptionExpiries } from "@/hooks/useOptionExpiries";
 import { cn } from "@/lib/utils";
 import type {
   OiBiasSide,
@@ -40,14 +41,21 @@ export const Route = createFileRoute("/oi-tracker")({
   component: OiTrackerPage,
 });
 
-const UNDERLYINGS: OiUnderlying[] = ["NIFTY", "BANKNIFTY", "SENSEX"];
+const UNDERLYINGS: OiUnderlying[] = [
+  "NIFTY",
+  "BANKNIFTY",
+  "SENSEX",
+  "CRUDEOIL",
+  "CRUDEOILM",
+  "NATURALGAS",
+];
 const ALERT_DEBOUNCE_MS = 5 * 60 * 1000;
 
 function OiTrackerPage() {
   const [config, setConfig] = useState<OiTrackerConfig | null>(null);
   const [underlying, setUnderlying] = useState<OiUnderlying>("NIFTY");
   const [expiry, setExpiry] = useState<string>("");
-  const [expiries, setExpiries] = useState<string[]>([]);
+  const { expiries, loading: expiriesLoading } = useOptionExpiries(underlying);
   const [optionsCount, setOptionsCount] = useState(5);
   const [refreshSec, setRefreshSec] = useState(60);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -69,19 +77,12 @@ function OiTrackerPage() {
   }, []);
 
   useEffect(() => {
-    api
-      .get<{ expiries: string[] }>(`/options/expiries?underlying=${underlying}`, { silent: true })
-      .then((r) => {
-        const list = r.expiries ?? [];
-        setExpiries(list);
-        if (list.length && !expiry) {
-          const today = new Date().toISOString().slice(0, 10);
-          const nearest = list.find((e) => e >= today) ?? list[list.length - 1];
-          setExpiry(nearest);
-        }
-      })
-      .catch(() => setExpiries([]));
-  }, [underlying]);
+    if (!expiries.length) return;
+    setExpiry((current) => {
+      if (current && expiries.includes(current)) return current;
+      return pickNearestExpiry(expiries, underlying) ?? "";
+    });
+  }, [expiries, underlying]);
 
   const playBeep = useCallback(() => {
     if (!soundEnabled) return;
@@ -209,16 +210,37 @@ function OiTrackerPage() {
             <Select value={underlying} onValueChange={(v) => { setUnderlying(v as OiUnderlying); setExpiry(""); }}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {UNDERLYINGS.map((u) => (
-                  <SelectItem key={u} value={u}>{u}</SelectItem>
+                {(config?.underlyings ?? UNDERLYINGS).map((u) => (
+                  <SelectItem key={u} value={u}>
+                    {u === "CRUDEOIL"
+                      ? "CRUDEOIL (MCX)"
+                      : u === "CRUDEOILM"
+                        ? "CRUDEOILM (MCX)"
+                        : u === "NATURALGAS"
+                          ? "NATURALGAS (MCX)"
+                          : u}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Expiry</Label>
-            <Select value={expiry || undefined} onValueChange={setExpiry}>
-              <SelectTrigger><SelectValue placeholder="Select expiry" /></SelectTrigger>
+            <Select
+              value={expiries.length && expiry && expiries.includes(expiry) ? expiry : undefined}
+              onValueChange={setExpiry}
+            >
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={
+                    expiriesLoading
+                      ? "Loading expiries…"
+                      : expiries.length
+                        ? "Select expiry"
+                        : "No expiries"
+                  }
+                />
+              </SelectTrigger>
               <SelectContent>
                 {expiries.map((e) => (
                   <SelectItem key={e} value={e}>{e}</SelectItem>
@@ -295,6 +317,13 @@ function OiTrackerPage() {
               {snapshot.pcr.put_oi_total.toLocaleString()}
             </p>
           ) : null}
+
+          <p className="text-sm">
+            <Link to="/oi-movers" className="text-primary underline-offset-2 hover:underline">
+              Highest OI Increase / Decrease
+            </Link>
+            <span className="text-muted-foreground"> — moved to its own desk page</span>
+          </p>
 
           <OiTable title="CALL Options OI" rows={snapshot.calls} intervals={intervals} side="call" />
           <OiTable title="PUT Options OI" rows={snapshot.puts} intervals={intervals} side="put" />

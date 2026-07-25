@@ -9,15 +9,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
 });
 
 interface RiskLimits {
-  max_loss_day?: number;
-  max_trades_day?: number;
   max_qty?: number;
+  max_open_positions?: number;
+  max_daily_loss?: number;
+  max_orders_per_minute?: number;
+  open_positions?: number;
+  mode?: string;
 }
 
 function SettingsPage() {
@@ -27,16 +31,28 @@ function SettingsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [instrumentInfo, setInstrumentInfo] = useState<unknown>(null);
 
-  useEffect(() => {
+  async function loadRisk() {
     api.get<RiskLimits>("/risk/limits", { silent: true }).then((r) => setRisk(r ?? {})).catch(() => {});
+  }
+
+  useEffect(() => {
+    void loadRisk();
   }, []);
 
   async function saveRisk() {
     setSaving(true);
     try {
-      await api.post("/risk/limits", risk);
+      await api.post("/risk/limits", {
+        max_qty: risk.max_qty,
+        max_open_positions: risk.max_open_positions,
+        max_daily_loss: risk.max_daily_loss,
+        max_orders_per_minute: risk.max_orders_per_minute,
+      });
       toast.success("Risk limits updated");
-    } catch { /* */ } finally {
+      await loadRisk();
+    } catch {
+      /* api toast */
+    } finally {
       setSaving(false);
     }
   }
@@ -47,7 +63,9 @@ function SettingsPage() {
       const r = await api.get("/instruments?refresh=true");
       setInstrumentInfo(r);
       toast.success("Instruments refreshed");
-    } catch { /* */ } finally {
+    } catch {
+      /* api toast */
+    } finally {
       setRefreshing(false);
     }
   }
@@ -56,8 +74,15 @@ function SettingsPage() {
     try {
       await clear();
       toast.success("Selection cleared");
-    } catch { /* */ }
+    } catch {
+      /* api toast */
+    }
   }
+
+  const atPositionCap =
+    risk.open_positions != null &&
+    risk.max_open_positions != null &&
+    risk.open_positions >= risk.max_open_positions;
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
@@ -81,29 +106,57 @@ function SettingsPage() {
       </Card>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-base">Risk Limits</CardTitle>
+          {atPositionCap && (
+            <Badge variant="outline" className="border-bear/50 text-bear">
+              Position cap reached
+            </Badge>
+          )}
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
+        <CardContent className="grid gap-3 md:grid-cols-2">
+          <div className="md:col-span-2 rounded-md border border-border bg-muted/20 p-3 text-sm">
+            Open positions now:{" "}
+            <span className="font-mono font-semibold">{risk.open_positions ?? "—"}</span>
+            {" / "}
+            <span className="font-mono">{risk.max_open_positions ?? "—"}</span>
+            {risk.mode && (
+              <span className="ml-2 text-muted-foreground">({risk.mode} broker)</span>
+            )}
+            {atPositionCap && (
+              <p className="mt-2 text-xs text-bear">
+                Close old trades on Live Desk or raise Max open positions below, then restart is not
+                required — click Save.
+              </p>
+            )}
+          </div>
           <NumField
-            label="Max loss / day"
-            value={risk.max_loss_day}
-            onChange={(v) => setRisk({ ...risk, max_loss_day: v })}
+            label="Max open positions"
+            value={risk.max_open_positions}
+            onChange={(v) => setRisk({ ...risk, max_open_positions: v })}
           />
           <NumField
-            label="Max trades / day"
-            value={risk.max_trades_day}
-            onChange={(v) => setRisk({ ...risk, max_trades_day: v })}
-          />
-          <NumField
-            label="Max quantity"
+            label="Max quantity (per order)"
             value={risk.max_qty}
             onChange={(v) => setRisk({ ...risk, max_qty: v })}
           />
-          <div className="md:col-span-3">
+          <NumField
+            label="Max daily loss"
+            value={risk.max_daily_loss}
+            onChange={(v) => setRisk({ ...risk, max_daily_loss: v })}
+          />
+          <NumField
+            label="Max orders / minute"
+            value={risk.max_orders_per_minute}
+            onChange={(v) => setRisk({ ...risk, max_orders_per_minute: v })}
+          />
+          <div className="md:col-span-2">
             <Button onClick={saveRisk} disabled={saving}>
               {saving ? "Saving…" : "Save Risk Limits"}
             </Button>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Saved to disk — survives API restart and uvicorn reload.
+            </p>
           </div>
         </CardContent>
       </Card>

@@ -47,7 +47,7 @@ export const Route = createFileRoute("/")({
   component: StockSelectionPage,
 });
 
-const TIMEFRAMES: Timeframe[] = ["5min", "15min", "30min", "60min"];
+const TIMEFRAMES: Timeframe[] = ["1min", "3min", "5min", "15min", "30min", "60min"];
 const TEMPLATES: { value: SpreadTemplate; label: string }[] = [
   { value: "bull_call", label: "Bull Call Spread" },
   { value: "bear_put", label: "Bear Put Spread" },
@@ -65,6 +65,7 @@ function StockSelectionPage() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<InstrumentHit[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
 
   useEffect(() => {
@@ -77,9 +78,11 @@ function StockSelectionPage() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!query.trim()) {
       setResults([]);
+      setSearchError(null);
       return;
     }
     setSearching(true);
+    setSearchError(null);
     debounceRef.current = setTimeout(async () => {
       try {
         const r = await api.get<{ items?: InstrumentHit[] } | InstrumentHit[]>(
@@ -89,6 +92,9 @@ function StockSelectionPage() {
         setResults(Array.isArray(r) ? r : (r.items ?? []));
       } catch (e) {
         setResults([]);
+        setSearchError(
+          e instanceof Error ? e.message : "Instrument search failed — is the API running?",
+        );
       } finally {
         setSearching(false);
       }
@@ -112,20 +118,24 @@ function StockSelectionPage() {
   }, [selection]);
 
   function pickInstrument(hit: InstrumentHit) {
-    update({
+    const patch: Partial<Selection> = {
       instrument_token: hit.instrument_token,
       exchange: hit.exchange,
       tradingsymbol: hit.tradingsymbol,
       name: hit.name,
       lot_size: hit.lot_size || 0,
       segment,
-    });
+    };
+    if (hit.exchange === "MCX" && segment === "option") {
+      patch.product_type = "NRML";
+    }
+    update(patch);
     setQuery("");
     setResults([]);
   }
 
   async function onAddToWatchlist(next?: Partial<Selection>) {
-    const merged: Selection = { ...selection, ...next };
+    const merged: Selection = { ...selection, entry_mode: "manual", ...next };
     if (!merged.instrument_token) {
       toast.error("Pick an instrument first");
       return;
@@ -133,6 +143,22 @@ function StockSelectionPage() {
     try {
       await addToWatchlist(merged);
       toast.success("Added to signal queue — see Dashboard");
+    } catch {
+      /* handled */
+    }
+  }
+
+  async function onSendToLiveDesk() {
+    const merged: Selection = { ...selection, entry_mode: "manual" };
+    if (!merged.instrument_token) {
+      toast.error("Pick an instrument first");
+      return;
+    }
+    try {
+      await save(merged);
+      await addToWatchlist(merged);
+      toast.success("Ready on Live Desk — set LIVE, ARM, then BUY or SELL");
+      navigate({ to: "/live" });
     } catch {
       /* handled */
     }
@@ -187,6 +213,12 @@ function StockSelectionPage() {
               {searching && (
                 <p className="mt-2 text-xs text-muted-foreground">Searching…</p>
               )}
+              {searchError && !searching ? (
+                <p className="mt-2 text-xs text-destructive">{searchError}</p>
+              ) : null}
+              {!searching && query.trim() && results.length === 0 && !searchError ? (
+                <p className="mt-2 text-xs text-muted-foreground">No matches for “{query}”</p>
+              ) : null}
               {results.length > 0 && (
                 <div className="mt-3 max-h-72 overflow-auto rounded-md border border-border">
                   <Table>
@@ -303,6 +335,32 @@ function StockSelectionPage() {
         </Card>
       </div>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Live entry mode</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Manual = you choose BUY or SELL on Live Desk. Exit is always managed by 3ST zone logic
+            (ST1/ST2/ST3 from Strategy Settings).
+          </p>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            variant={selection.entry_mode === "manual" ? "default" : "outline"}
+            onClick={() => update({ entry_mode: "manual" })}
+          >
+            Manual entry
+          </Button>
+          <Button
+            size="sm"
+            variant={selection.entry_mode === "signal" ? "default" : "outline"}
+            onClick={() => update({ entry_mode: "signal" })}
+          >
+            3ST signal entry
+          </Button>
+        </CardContent>
+      </Card>
+
       {selection.product === "options_spread" && (
         <SpreadBuilder indices={health?.index_options ?? ["NIFTY", "BANKNIFTY", "SENSEX"]} />
       )}
@@ -313,10 +371,13 @@ function StockSelectionPage() {
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm text-muted-foreground">
-          <strong>Save Selection</strong> keeps a draft for Backtest.{" "}
-          <strong>Add to Queue</strong> sends it to the Dashboard to wait for a 3ST signal.
+          <strong>Send to Live Desk</strong> — manual BUY/SELL, exit by 3ST algo.{" "}
+          <strong>Add to Queue</strong> also adds to Dashboard watchlist.
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button onClick={() => onSendToLiveDesk()}>
+            Send to Live Desk <ArrowRight className="ml-2 h-4 w-4" />
+          </Button>
           <Button variant="outline" onClick={() => onSave()}>
             Save Selection
           </Button>
@@ -324,21 +385,13 @@ function StockSelectionPage() {
             Add to Queue
           </Button>
           <Button
+            variant="secondary"
             onClick={async () => {
               await onSave();
               navigate({ to: "/backtest" });
             }}
           >
-            Continue to Backtest <ArrowRight className="ml-2 h-4 w-4" />
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={async () => {
-              await onSave();
-              navigate({ to: "/live" });
-            }}
-          >
-            Continue to Live Desk <ArrowRight className="ml-2 h-4 w-4" />
+            Backtest <ArrowRight className="ml-2 h-4 w-4" />
           </Button>
         </div>
       </div>
@@ -394,7 +447,13 @@ function StrategySettingsPanel() {
           <Label>Session mode</Label>
           <Select
             value={selection.system_mode}
-            onValueChange={(v) => update({ system_mode: v as SystemMode })}
+            onValueChange={(v) => {
+              const mode = v as SystemMode;
+              update({
+                system_mode: mode,
+                product_type: mode === "Intraday" ? "MIS" : "NRML",
+              });
+            }}
           >
             <SelectTrigger>
               <SelectValue />
@@ -404,6 +463,26 @@ function StrategySettingsPanel() {
               <SelectItem value="Positional">Positional — hold overnight</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label>Order product (Kite)</Label>
+          <Select
+            value={selection.product_type ?? "MIS"}
+            onValueChange={(v) => update({ product_type: v as "MIS" | "NRML" })}
+            disabled={selection.system_mode === "Positional"}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="MIS">MIS — intraday (auto square-off by broker)</SelectItem>
+              <SelectItem value="NRML">NRML — carry overnight</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[10px] text-muted-foreground">
+            MCX commodity options use NRML only on Kite — force exit at 22:45 closes intraday.
+          </p>
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -417,6 +496,31 @@ function StrategySettingsPanel() {
           />
         </div>
 
+        <div className="flex flex-col gap-1.5">
+          <Label>Session start</Label>
+          <Input
+            type="time"
+            value={selection.session_start}
+            disabled={selection.system_mode === "Positional"}
+            onChange={(e) => update({ session_start: e.target.value })}
+            className="font-mono"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label>Session end</Label>
+          <Input
+            type="time"
+            value={selection.session_end}
+            disabled={selection.system_mode === "Positional"}
+            onChange={(e) => update({ session_end: e.target.value })}
+            className="font-mono"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            MCX: use 23:30. Force exit must be before session end (e.g. 22:45 → 23:30).
+          </p>
+        </div>
+
         <div className="flex items-center gap-2 md:col-span-3">
           <Checkbox
             checked={selection.adx_enabled}
@@ -427,7 +531,8 @@ function StrategySettingsPanel() {
 
         <p className="text-xs text-muted-foreground md:col-span-3">
           Check ST1/ST2/ST3 to include each line in entry rules (close must be above/below every enabled ST).
-          Zone exit uses the slowest enabled ST (ST1 → ST2 → ST3).
+          Zone exit uses the slowest enabled ST (ST1 → ST2 → ST3) — direction must stay aligned (matches PRS Pine).
+          PRS TradingView script always uses Heikin Ashi ST; pick &quot;Heikin Ashi ST&quot; here to match TV values.
         </p>
 
         <NumField label="ATR 1 / Factor 1 (ST1)" enabled={selection.st1_enabled} onEnabled={(st1_enabled) => setStEnabled("st1_enabled", st1_enabled, selection, update)} a={selection.atr1} b={selection.factor1} onA={(atr1) => update({ atr1 })} onB={(factor1) => update({ factor1 })} stepB={0.1} />

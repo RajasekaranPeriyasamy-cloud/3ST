@@ -7,7 +7,16 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
-from config import DEFAULT_ADX, DEFAULT_RISK, DEFAULT_SESSION, DEFAULT_ST, DEFAULT_ST_METHOD
+from config import (
+    DEFAULT_ADX,
+    DEFAULT_RISK,
+    DEFAULT_SESSION,
+    DEFAULT_ST,
+    DEFAULT_ST_METHOD,
+    INDEX_OPTIONS,
+    MCX_SESSION,
+    lock_mcx_market_session,
+)
 from settings import data_dir
 
 CONFIG_FILE = data_dir() / "rolling_straddle_config.json"
@@ -32,6 +41,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "reentry_style": "zone_active",
     "allow_dual_open": True,
     "auto_start_on_boot": False,
+    "size_mode": "lots",
+    "size_value": 1,
     "st_method": DEFAULT_ST_METHOD,
     "atr1": DEFAULT_ST["atr1"],
     "factor1": DEFAULT_ST["factor1"],
@@ -51,6 +62,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tgt_value": DEFAULT_RISK["tgt_value"],
     "tsl_mode": DEFAULT_RISK["tsl_mode"],
     "tsl_value": DEFAULT_RISK["tsl_value"],
+    "entry_exit_enabled": True,
+    "execution_mode": "auto",
+    "exit_on_bar_close_only": True,
 }
 
 DEFAULT_LEG: dict[str, Any] = {
@@ -65,6 +79,10 @@ DEFAULT_LEG: dict[str, Any] = {
     "entry_order_id": None,
     "last_action": None,
     "blocked": False,
+    "managed_by": None,
+    "signal_bar_ts": None,
+    "last_action_bar_ts": None,
+    "last_exit_bar_ts": None,
 }
 
 DEFAULT_STATE: dict[str, Any] = {
@@ -80,6 +98,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "last_signal_at": None,
     "last_tick_at": None,
     "session_date": None,
+    "state_underlying": None,
     "ce": deepcopy(DEFAULT_LEG),
     "pe": deepcopy(DEFAULT_LEG),
 }
@@ -103,20 +122,156 @@ def _write_json(path, data: dict | list) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def lot_size_for(underlying: str) -> int:
+    return int(INDEX_OPTIONS.get(underlying, {}).get("lot_size") or 1)
+
+
+def order_quantity_from_config(cfg: dict[str, Any]) -> int:
+    """Resolve configured order size to exchange quantity (lots × lot_size or raw qty)."""
+    underlying = str(cfg.get("underlying") or "NIFTY")
+    lot = lot_size_for(underlying)
+    mode = str(cfg.get("size_mode") or "lots").lower()
+    value = int(cfg.get("size_value") or 0)
+    if value <= 0:
+        raise ValueError(
+            f"Set order size in Rolling Straddle config (size_mode={mode}, size_value>0). "
+            f"{underlying} lot size is {lot}."
+        )
+    if mode == "qty":
+        if value % lot != 0:
+            raise ValueError(
+                f"Quantity {value} must be a multiple of {underlying} lot size ({lot}); "
+                f"e.g. {lot}, {lot * 2}, {lot * 3}"
+            )
+        return value
+    return value * lot
+
+
+def validate_order_size(cfg: dict[str, Any]) -> None:
+    order_quantity_from_config(cfg)
+
+
+def apply_underlying_defaults(cfg: dict[str, Any], *, previous_underlying: str | None = None) -> dict[str, Any]:
+    """MCX: NRML + locked market hours 09:00–23:30. Entry/force exit user-editable."""
+    u = str(cfg.get("underlying") or "NIFTY").upper()
+    cfg["underlying"] = u
+    meta = INDEX_OPTIONS.get(u, {})
+    exch = str(meta.get("exchange") or "").upper()
+    prev = (previous_underlying or "").upper() or None
+    switched = prev is not None and prev != u
+
+    if exch == "MCX":
+        cfg["product"] = "NRML"
+        lock_mcx_market_session(cfg)
+        if switched:
+            session = meta.get("session") or MCX_SESSION
+            cfg["force_exit"] = session.get("force_exit", MCX_SESSION["force_exit"])
+            cfg["entry_start"] = session.get(
+                "entry_start", MCX_SESSION.get("entry_start", "09:20")
+            )
+    elif switched and str(INDEX_OPTIONS.get(prev or "", {}).get("exchange") or "").upper() == "MCX":
+        cfg["product"] = "MIS"
+        cfg["session_start"] = DEFAULT_SESSION["session_start"]
+        cfg["session_end"] = DEFAULT_SESSION["session_end"]
+        cfg["force_exit"] = DEFAULT_SESSION["force_exit"]
+        cfg["entry_start"] = "09:20"
+    return cfg
+
+
 def get_config() -> dict[str, Any]:
     raw = _read_json(CONFIG_FILE, DEFAULT_CONFIG)
     if not isinstance(raw, dict):
         raw = {}
     merged = {**DEFAULT_CONFIG, **raw}
-    return merged
+    return lock_mcx_market_session(merged)
+
+
+def clear_spot_state_for_underlying(underlying: str, *, reason: str, old_underlying: str | None = None) -> None:
+    """Drop cached spot/ATM when the configured underlying changes."""
+    from execution.rolling_straddle import _time_reached
+
+    cfg = get_config()
+    entry_start = str(cfg.get("entry_start") or "09:20")
+    state = get_state()
+    ce = dict(state.get("ce") or {})
+    pe = dict(state.get("pe") or {})
+    for leg in (ce, pe):
+        leg["signal_strike"] = None
+    patch: dict[str, Any] = {
+        "state_underlying": underlying,
+        "last_spot": None,
+        "current_atm": None,
+        "prev_atm": None,
+        "last_roll_direction": None,
+        "last_signal": None,
+        "last_signal_at": None,
+        "ce": ce,
+        "pe": pe,
+    }
+    if _time_reached(entry_start):
+        # Entry window already open — do not re-gate ticks after mid-day underlying switch.
+        patch["morning_bar_seen"] = True
+        patch["morning_bar_at"] = state.get("morning_bar_at") or datetime.now().isoformat(timespec="seconds")
+    else:
+        patch["morning_bar_seen"] = False
+        patch["morning_bar_at"] = None
+    save_state(patch)
+    append_log(
+        "underlying_reset",
+        reason,
+        {"underlying": underlying, "old_underlying": old_underlying},
+    )
 
 
 def save_config(patch: dict[str, Any]) -> dict[str, Any]:
+    from options.chain import resolve_expiry
+
     current = get_config()
+    old_underlying = str(current.get("underlying") or "NIFTY")
+    prev_expiry = str(current.get("expiry") or "")
     for k, v in patch.items():
         if v is not None:
             current[k] = v
+    current = apply_underlying_defaults(current, previous_underlying=old_underlying)
+    current = lock_mcx_market_session(current)
+    underlying = str(current.get("underlying") or "NIFTY")
+    if underlying != old_underlying:
+        clear_spot_state_for_underlying(
+            underlying,
+            reason=f"{old_underlying} -> {underlying}",
+            old_underlying=old_underlying,
+        )
+    expiry_after = str(current.get("expiry") or "")
+    need_resolve = (
+        underlying != old_underlying
+        or "underlying" in patch
+        or "expiry" in patch
+        or not expiry_after
+    )
+    if need_resolve:
+        resolved = resolve_expiry(underlying, expiry_after or None)
+        if resolved:
+            if resolved != expiry_after:
+                append_log(
+                    "expiry_corrected",
+                    f"{expiry_after or '(empty)'} -> {resolved}",
+                    {"underlying": underlying},
+                )
+            current["expiry"] = resolved
+    elif prev_expiry:
+        current["expiry"] = prev_expiry
+    validate_order_size(current)
     _write_json(CONFIG_FILE, current)
+    # Underlying string may already match while cached spot is from another instrument.
+    from execution.rolling_straddle import _spot_state_stale
+
+    state = get_state()
+    if _spot_state_stale(current, state):
+        clear_spot_state_for_underlying(
+            underlying,
+            reason=f"Spot scale mismatch for {underlying} (cached {state.get('last_spot')})",
+            old_underlying=str(state.get("state_underlying") or old_underlying),
+        )
     return current
 
 
@@ -131,25 +286,58 @@ def get_state() -> dict[str, Any]:
     return state
 
 
+# Keys that may be explicitly cleared with null in save_state().
+_NULLABLE_STATE_KEYS = frozenset({
+    "last_signal",
+    "last_signal_at",
+    "last_tick_at",
+    "last_spot",
+    "current_atm",
+    "prev_atm",
+    "last_roll_direction",
+    "morning_bar_at",
+    "state_underlying",
+})
+
+
 def save_state(patch: dict[str, Any]) -> dict[str, Any]:
     current = get_state()
     for k, v in patch.items():
         if k in {"ce", "pe"} and isinstance(v, dict):
             current[k] = {**current[k], **v}
-        elif v is not None or k in {"last_signal", "current_atm", "prev_atm"}:
+        elif v is not None or k in _NULLABLE_STATE_KEYS:
             current[k] = v
     _write_json(STATE_FILE, current)
     return current
 
 
 def reset_daily_state_if_needed(today: str) -> dict[str, Any]:
+    """Roll daily counters on a new session date without dropping open algo legs."""
     state = get_state()
-    if state.get("session_date") == today:
+    session = state.get("session_date")
+    if session == today:
+        return state
+    # Mid-day restart before session_date was stamped — do not wipe legs.
+    if session is None:
+        state["session_date"] = today
+        _write_json(STATE_FILE, state)
         return state
     fresh = deepcopy(DEFAULT_STATE)
     fresh["session_date"] = today
     fresh["runner"] = state.get("runner", "stopped")
     fresh["scheduler_running"] = state.get("scheduler_running", False)
+    if state.get("morning_bar_seen"):
+        fresh["morning_bar_seen"] = True
+        fresh["morning_bar_at"] = state.get("morning_bar_at")
+    for leg_key in ("ce", "pe"):
+        old_leg = state.get(leg_key) or {}
+        if old_leg.get("status") == "open" and str(old_leg.get("managed_by") or "") == "algo":
+            fresh[leg_key] = {
+                **deepcopy(DEFAULT_LEG),
+                **old_leg,
+                "entries_today": 0,
+                "reentries_used": 0,
+            }
     _write_json(STATE_FILE, fresh)
     return fresh
 

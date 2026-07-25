@@ -18,6 +18,8 @@ from config import INSTRUMENTS, TIMEFRAMES, YAHOO_MAX_DAYS
 
 # Yahoo interval codes
 _YF_INTERVAL = {
+    "1min": "1m",
+    "3min": "5m",
     "5min": "5m",
     "15min": "15m",
     "30min": "30m",

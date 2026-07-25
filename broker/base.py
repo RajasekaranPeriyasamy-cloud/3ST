@@ -19,6 +19,7 @@ class OrderRequest:
     product: Product = "MIS"
     order_type: str = "MARKET"
     price: float | None = None
+    market_protection: float | None = None
     tag: str = "3ST"
 
 

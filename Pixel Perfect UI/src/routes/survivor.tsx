@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Play, RefreshCw, Save, Square } from "lucide-react";
+import { ArrowLeft, Play, Power, RefreshCw, Save, ShieldOff, Square } from "lucide-react";
 
 import { api } from "@/lib/api";
 import type { SurvivorConfig, SurvivorLogEntry, SurvivorStatus } from "@/lib/types";
@@ -17,10 +17,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 export const Route = createFileRoute("/survivor")({
   component: SurvivorPage,
 });
+
+const LOT_SIZES: Record<SurvivorConfig["underlying"], number> = {
+  NIFTY: 65,
+  BANKNIFTY: 30,
+  SENSEX: 20,
+};
 
 const DEFAULT: SurvivorConfig = {
   underlying: "NIFTY",
@@ -28,8 +45,8 @@ const DEFAULT: SurvivorConfig = {
   symbol_initials: "",
   pe_gap: 20,
   ce_gap: 20,
-  pe_quantity: 75,
-  ce_quantity: 75,
+  pe_quantity: 65,
+  ce_quantity: 65,
   pe_symbol_gap: 200,
   ce_symbol_gap: 200,
   min_price_to_sell: 15,
@@ -45,6 +62,8 @@ function SurvivorPage() {
   const [status, setStatus] = useState<SurvivorStatus | null>(null);
   const [logs, setLogs] = useState<SurvivorLogEntry[]>([]);
   const [expiries, setExpiries] = useState<string[]>([]);
+  const [armDialogOpen, setArmDialogOpen] = useState(false);
+  const [arming, setArming] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -80,7 +99,44 @@ function SurvivorPage() {
     refresh();
   }
 
+  async function switchMode(mode: "paper" | "live") {
+    await api.post("/live/mode", { mode });
+    toast.success(`Mode: ${mode.toUpperCase()}`);
+    refresh();
+  }
+
+  async function armNow() {
+    setArming(true);
+    try {
+      await api.post("/live/arm", { confirm: true });
+      toast.success("ARMED — live orders enabled");
+      setArmDialogOpen(false);
+      refresh();
+    } catch {
+      /* api toast */
+    } finally {
+      setArming(false);
+    }
+  }
+
+  async function disarmNow() {
+    await api.post("/live/disarm");
+    toast.success("DISARMED");
+    refresh();
+  }
+
   const running = status?.state?.runner === "running";
+  const lot = LOT_SIZES[config.underlying] ?? 1;
+  const qtyInvalid =
+    config.pe_quantity <= 0 ||
+    config.ce_quantity <= 0 ||
+    config.pe_quantity % lot !== 0 ||
+    config.ce_quantity % lot !== 0;
+  const liveReady =
+    Boolean(status?.kite_authenticated) &&
+    status?.arm?.mode === "live" &&
+    Boolean(status?.arm?.armed) &&
+    !qtyInvalid;
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-6 pb-10">
@@ -106,6 +162,93 @@ function SurvivorPage() {
           {status?.state?.last_error ? (
             <Badge variant="destructive">{status.state.last_error}</Badge>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Live readiness</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-2 text-sm">
+            <Badge variant={status?.kite_authenticated ? "default" : "destructive"}>
+              Kite {status?.kite_authenticated ? "logged in" : "login required"}
+            </Badge>
+            <Badge variant={status?.arm?.mode === "live" ? "default" : "secondary"}>
+              Mode {status?.arm?.mode ?? "—"}
+            </Badge>
+            <Badge variant={status?.arm?.armed ? "default" : "destructive"}>
+              {status?.arm?.armed ? "ARMED" : "DISARMED"}
+            </Badge>
+            <Badge variant={qtyInvalid ? "destructive" : "outline"}>
+              Qty {qtyInvalid ? `invalid (lot ${lot})` : `OK (lot ${lot})`}
+            </Badge>
+            <Badge variant={liveReady ? "default" : "secondary"}>
+              {liveReady ? "Ready for live orders" : "Not ready for live orders"}
+            </Badge>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant={status?.arm?.mode === "paper" ? "default" : "outline"}
+              onClick={() => switchMode("paper").catch(() => {})}
+            >
+              Paper
+            </Button>
+            <Button
+              size="sm"
+              variant={status?.arm?.mode === "live" ? "default" : "outline"}
+              onClick={() => switchMode("live").catch(() => {})}
+            >
+              Live
+            </Button>
+            <AlertDialog open={armDialogOpen} onOpenChange={setArmDialogOpen}>
+              <AlertDialogTrigger asChild>
+                <Button
+                  size="sm"
+                  disabled={status?.arm?.mode !== "live" || status?.arm?.armed}
+                  title={
+                    status?.arm?.armed
+                      ? "Already ARMED"
+                      : status?.arm?.mode !== "live"
+                        ? "Switch to Live first"
+                        : undefined
+                  }
+                >
+                  <Power className="mr-2 h-4 w-4" /> ARM
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Arm live trading?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Survivor will place real MARKET SELL orders on Kite when gap triggers fire.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={arming}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={arming}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      void armNow();
+                    }}
+                  >
+                    {arming ? "Arming…" : "Arm now"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => disarmNow().catch(() => {})}
+              disabled={!status?.arm?.armed}
+            >
+              <ShieldOff className="mr-2 h-4 w-4" /> DISARM
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The red DISARMED badge is status only — use the <strong>ARM</strong> button above (or Live Desk) to enable orders.
+          </p>
         </CardContent>
       </Card>
 
@@ -138,8 +281,16 @@ function SurvivorPage() {
           </div>
           <div><Label>PE gap</Label><Input type="number" value={config.pe_gap} onChange={(e) => setConfig((c) => ({ ...c, pe_gap: Number(e.target.value) }))} /></div>
           <div><Label>CE gap</Label><Input type="number" value={config.ce_gap} onChange={(e) => setConfig((c) => ({ ...c, ce_gap: Number(e.target.value) }))} /></div>
-          <div><Label>PE qty</Label><Input type="number" value={config.pe_quantity} onChange={(e) => setConfig((c) => ({ ...c, pe_quantity: Number(e.target.value) }))} /></div>
-          <div><Label>CE qty</Label><Input type="number" value={config.ce_quantity} onChange={(e) => setConfig((c) => ({ ...c, ce_quantity: Number(e.target.value) }))} /></div>
+          <div>
+            <Label>PE qty</Label>
+            <Input type="number" value={config.pe_quantity} onChange={(e) => setConfig((c) => ({ ...c, pe_quantity: Number(e.target.value) }))} />
+            <p className="mt-1 text-xs text-muted-foreground">Lot {lot} — use {lot}, {lot * 2}, …</p>
+          </div>
+          <div>
+            <Label>CE qty</Label>
+            <Input type="number" value={config.ce_quantity} onChange={(e) => setConfig((c) => ({ ...c, ce_quantity: Number(e.target.value) }))} />
+            <p className="mt-1 text-xs text-muted-foreground">Lot {lot} — use {lot}, {lot * 2}, …</p>
+          </div>
           <div><Label>Min premium</Label><Input type="number" value={config.min_price_to_sell} onChange={(e) => setConfig((c) => ({ ...c, min_price_to_sell: Number(e.target.value) }))} /></div>
           <div><Label>Tick interval (s)</Label><Input type="number" value={config.tick_interval_sec} onChange={(e) => setConfig((c) => ({ ...c, tick_interval_sec: Number(e.target.value) }))} /></div>
         </CardContent>

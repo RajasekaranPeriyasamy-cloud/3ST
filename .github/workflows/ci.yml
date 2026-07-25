@@ -1,0 +1,52 @@
+name: CI
+
+# 3ST places real orders with real money — this workflow exists so a broken
+# import or a regression like the watchlist_activation UnboundLocalError
+# (execution/watchlist_activation.py, fixed 2026-07-25 — see
+# tests/test_watchlist_activation.py) gets caught on every push instead of
+# only when someone happens to click the button live.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  lint:
+    runs-on: ubuntu-latest
+    # Non-blocking for now: the codebase predates this workflow and has a
+    # backlog of style-only findings (`ruff check .` — see pyproject.toml
+    # for the enabled rule set). Flip this to a hard gate once that backlog
+    # is cleared so new violations don't creep back in silently.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff
+        run: ruff check .

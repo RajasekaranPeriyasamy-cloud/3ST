@@ -43,6 +43,7 @@ _DEFAULT: dict[str, Any] = {
     "tgt_value": DEFAULT_RISK["tgt_value"],
     "tsl_mode": DEFAULT_RISK["tsl_mode"],
     "tsl_value": DEFAULT_RISK["tsl_value"],
+    "product_type": "MIS",
 }
 
 

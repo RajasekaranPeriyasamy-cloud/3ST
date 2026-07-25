@@ -19,6 +19,10 @@ interface Ctx {
   activate: (id: string) => Promise<WatchlistItem>;
   close: (id: string) => Promise<void>;
   scan: (requireArmed?: boolean) => Promise<{ triggered: WatchlistItem[] }>;
+  manualEnter: (id: string, side: "buy" | "sell") => Promise<WatchlistItem>;
+  triggerSide: (id: string, side: "buy" | "sell") => Promise<WatchlistItem>;
+  executeLive: (id: string, side: "buy" | "sell") => Promise<WatchlistItem>;
+  scanExits: () => Promise<void>;
 }
 
 const WatchlistCtx = createContext<Ctx | null>(null);
@@ -89,9 +93,54 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const manualEnter = useCallback(
+    async (id: string, side: "buy" | "sell") => {
+      const r = await api.post<{ item: WatchlistItem }>(`/watchlist/${id}/enter`, { side });
+      await refresh();
+      return r.item;
+    },
+    [refresh],
+  );
+
+  const scanExits = useCallback(async () => {
+    await api.post("/watchlist/scan-exits?auto_close=true", undefined, { silent: true });
+    await refresh();
+  }, [refresh]);
+
+  const triggerSide = useCallback(
+    async (id: string, side: "buy" | "sell") => {
+      const r = await api.post<{ item: WatchlistItem }>(`/watchlist/${id}/trigger`, { side });
+      await refresh();
+      return r.item;
+    },
+    [refresh],
+  );
+
+  const executeLive = useCallback(
+    async (id: string, side: "buy" | "sell") => {
+      const r = await api.post<{ item: WatchlistItem }>(`/watchlist/${id}/execute-live`, { side });
+      await refresh();
+      return r.item;
+    },
+    [refresh],
+  );
+
   const value = useMemo<Ctx>(
-    () => ({ items, loading, refresh, add, remove, activate, close, scan }),
-    [items, loading, refresh, add, remove, activate, close, scan],
+    () => ({
+      items,
+      loading,
+      refresh,
+      add,
+      remove,
+      activate,
+      close,
+      scan,
+      manualEnter,
+      triggerSide,
+      executeLive,
+      scanExits,
+    }),
+    [items, loading, refresh, add, remove, activate, close, scan, manualEnter, triggerSide, executeLive, scanExits],
   );
 
   return <WatchlistCtx.Provider value={value}>{children}</WatchlistCtx.Provider>;
@@ -104,7 +153,8 @@ export function useWatchlist() {
 }
 
 export function useWatchlistByStatus(status: WatchlistStatus | string) {
-  const { items, loading, refresh, remove, activate, close, scan } = useWatchlist();
+  const { items, loading, refresh, remove, activate, close, scan, manualEnter, triggerSide, executeLive, scanExits } =
+    useWatchlist();
   const filtered = useMemo(
     () =>
       items.filter((i) =>
@@ -114,5 +164,18 @@ export function useWatchlistByStatus(status: WatchlistStatus | string) {
       ),
     [items, status],
   );
-  return { items: filtered, allItems: items, loading, refresh, remove, activate, close, scan };
+  return {
+    items: filtered,
+    allItems: items,
+    loading,
+    refresh,
+    remove,
+    activate,
+    close,
+    scan,
+    manualEnter,
+    triggerSide,
+    executeLive,
+    scanExits,
+  };
 }

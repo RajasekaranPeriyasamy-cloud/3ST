@@ -1,0 +1,27 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = [
+    ".venv",
+    "Pixel Perfect UI",
+    "_review",
+    "data",
+    "docs",
+]
+
+[tool.ruff.lint]
+# Matches the style already in use across the codebase: pycodestyle/pyflakes,
+# isort (imports are stdlib -> third-party -> local by convention already),
+# bugbear, comprehensions, pyupgrade.
+select = ["E", "F", "W", "I", "B", "C4", "UP"]
+ignore = [
+    "E501",  # line-length is a soft target here; don't fail builds on long log/format strings
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "api", "broker", "risk", "execution", "options", "analysis",
+    "utils", "settings", "config", "kite_auth", "kite_client",
+    "instruments", "strategy_3st", "backtest_engine", "yahoo_client",
+    "domain", "watchlist_store",
+]

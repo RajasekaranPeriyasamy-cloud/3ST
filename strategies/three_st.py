@@ -51,17 +51,19 @@ class ThreeSTStrategy:
         row = sig.iloc[-1]
         px = float(row["close"])
 
-        if bool(row["long_entry"]):
+        if bool(row.get("go_long", row["long_entry"])):
             self._pos = 1
-            return Signal("enter_long", "3ST long entry (close above all ST + ADX)", px)
-        if bool(row["short_entry"]):
+            label = "re-entry" if bool(row.get("long_reentry")) else "entry"
+            return Signal("enter_long", f"3ST long {label} (ST zone + ADX)", px)
+        if bool(row.get("go_short", row["short_entry"])):
             self._pos = -1
-            return Signal("enter_short", "3ST short entry (close below all ST + ADX)", px)
+            label = "re-entry" if bool(row.get("short_reentry")) else "entry"
+            return Signal("enter_short", f"3ST short {label} (ST zone + ADX)", px)
 
         if self._pos == 1 and bool(row["long_zone_exit"]):
             self._pos = 0
-            return Signal("exit", "3ST long zone exit (close below ST1)", px)
+            return Signal("exit", "3ST long exit — close below ST1", px)
         if self._pos == -1 and bool(row["short_zone_exit"]):
             self._pos = 0
-            return Signal("exit", "3ST short zone exit (close above ST1)", px)
+            return Signal("exit", "3ST short exit — close above ST1", px)
         return None

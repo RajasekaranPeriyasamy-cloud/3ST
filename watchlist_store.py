@@ -70,6 +70,9 @@ def add_item(payload: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+_NULLABLE_KEYS = frozenset({"spread", "signal", "exit_at", "exit_reason", "exit_price"})
+
+
 def update_item(item_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     items = _load()
     for idx, item in enumerate(items):
@@ -78,7 +81,10 @@ def update_item(item_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         status = patch.get("status")
         if status is not None and status not in _STATUSES:
             raise ValueError(f"Invalid status '{status}'")
-        merged = {**item, **{k: v for k, v in patch.items() if v is not None or k in {"spread", "signal"}}}
+        merged = {
+            **item,
+            **{k: v for k, v in patch.items() if v is not None or k in _NULLABLE_KEYS},
+        }
         merged["updated_at"] = _now()
         items[idx] = merged
         _save(items)

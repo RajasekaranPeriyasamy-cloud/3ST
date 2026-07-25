@@ -62,7 +62,14 @@ function DashboardPage() {
       try {
         const r = await scan(true);
         if (r.triggered.length) {
-          toast.success(`${r.triggered.length} signal(s) — check Live Desk`);
+          toast.success(`${r.triggered.length} signal(s) — check Live Desk`, {
+            action: {
+              label: "Open",
+              onClick: () => {
+                window.location.href = "/live";
+              },
+            },
+          });
         }
       } catch {
         /* silent background scan */
@@ -76,7 +83,14 @@ function DashboardPage() {
     try {
       const r = await scan(false);
       if (r.triggered.length) {
-        toast.success(`${r.triggered.length} signal(s) moved to Live Desk queue`);
+        toast.success(`${r.triggered.length} signal(s) — open Live Desk`, {
+          action: {
+            label: "Live Desk",
+            onClick: () => {
+              window.location.href = "/live";
+            },
+          },
+        });
       } else {
         toast.message("No new 3ST entry signals on waiting items");
       }
@@ -196,6 +210,7 @@ function WatchlistTable({
           <TableRow>
             <TableHead>Instrument</TableHead>
             <TableHead>Timeframe</TableHead>
+            <TableHead>Entry</TableHead>
             <TableHead>Product</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="text-right">Actions</TableHead>
@@ -209,6 +224,11 @@ function WatchlistTable({
                 <div className="text-xs text-muted-foreground">{item.exchange}</div>
               </TableCell>
               <TableCell className="font-mono">{item.timeframe}</TableCell>
+              <TableCell>
+                <Badge variant="outline" className="text-xs uppercase">
+                  {(item.entry_mode ?? "manual") === "manual" ? "Manual" : "3ST signal"}
+                </Badge>
+              </TableCell>
               <TableCell>
                 <div className="font-mono text-xs">{item.product}</div>
                 {item.spread && (

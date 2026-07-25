@@ -8,7 +8,7 @@ from typing import Any
 from execution.arming import get_arm_state
 from execution.kite_strategy_adapter import KiteStrategyAdapter
 from execution.trading_algo_path import ensure_trading_algo_path
-from execution.wave_store import append_log, get_config, get_state, save_state
+from execution.wave_store import append_log, get_config, get_state, save_state, validate_quantities
 from kite_auth import session_status
 
 _engine = None
@@ -54,6 +54,7 @@ def _poll_order_updates(engine) -> None:
 def start_runner() -> dict[str, Any]:
     if not session_status().get("authenticated"):
         raise RuntimeError("Kite session required")
+    validate_quantities(get_config())
     global _engine
     _engine = None
     engine, _ = _get_engine(force_new=True)

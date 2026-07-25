@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
+from config import INDEX_OPTIONS
 from settings import data_dir
 
 CONFIG_FILE = data_dir() / "wave_config.json"
@@ -14,13 +15,13 @@ STATE_FILE = data_dir() / "wave_state.json"
 LOG_FILE = data_dir() / "wave_log.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "symbol_name": "NIFTY25SEPFUT",
+    "symbol_name": "NIFTY26JULFUT",
     "exchange": "NFO",
     "buy_gap": 25,
     "sell_gap": 25,
-    "buy_quantity": 75,
-    "sell_quantity": 75,
-    "lot_size": 75,
+    "buy_quantity": 65,
+    "sell_quantity": 65,
+    "lot_size": 65,
     "cool_off_time": 10,
     "product_type": "NRML",
     "order_type": "LIMIT",
@@ -76,11 +77,40 @@ def get_config() -> dict[str, Any]:
     return {**DEFAULT_CONFIG, **raw}
 
 
+def lot_size_for_symbol(symbol_name: str) -> int:
+    sym = str(symbol_name or "").upper()
+    if sym.startswith("BANKNIFTY"):
+        return int(INDEX_OPTIONS.get("BANKNIFTY", {}).get("lot_size") or 30)
+    if sym.startswith("SENSEX"):
+        return int(INDEX_OPTIONS.get("SENSEX", {}).get("lot_size") or 20)
+    if sym.startswith("NIFTY"):
+        return int(INDEX_OPTIONS.get("NIFTY", {}).get("lot_size") or 65)
+    return 1
+
+
+def validate_quantities(cfg: dict[str, Any]) -> None:
+    lot = int(cfg.get("lot_size") or lot_size_for_symbol(cfg.get("symbol_name", "")))
+    if lot <= 0:
+        lot = lot_size_for_symbol(cfg.get("symbol_name", ""))
+    for field in ("buy_quantity", "sell_quantity"):
+        qty = int(cfg[field])
+        if qty <= 0:
+            raise ValueError(f"{field} must be > 0")
+        if qty % lot != 0:
+            raise ValueError(
+                f"{field}={qty} must be a multiple of lot size ({lot}); "
+                f"e.g. {lot}, {lot * 2}, {lot * 3}"
+            )
+
+
 def save_config(patch: dict[str, Any]) -> dict[str, Any]:
     current = get_config()
     for k, v in patch.items():
         if v is not None:
             current[k] = v
+    if not current.get("lot_size"):
+        current["lot_size"] = lot_size_for_symbol(current.get("symbol_name", ""))
+    validate_quantities(current)
     _write_json(CONFIG_FILE, current)
     return current
 

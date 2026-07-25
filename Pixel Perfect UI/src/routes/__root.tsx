@@ -4,6 +4,7 @@ import {
   Link,
   createRootRouteWithContext,
   useRouter,
+  useRouterState,
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
@@ -13,6 +14,10 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
+import { ApiHealthBanner } from "@/components/ApiHealthBanner";
+import { KiteConnectionIndicator } from "@/components/KiteConnectionIndicator";
+import { ExecutionTaskbar } from "@/components/execution/ExecutionTaskbar";
+import { useApiHealth } from "@/hooks/useApiHealth";
 import { SelectionProvider } from "@/context/SelectionContext";
 import { WatchlistProvider } from "@/context/WatchlistContext";
 import { Toaster } from "@/components/ui/sonner";
@@ -96,6 +101,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:card", content: "summary_large_image" },
     ],
     links: [
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap",
+      },
       { rel: "stylesheet", href: appCss },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
     ],
@@ -108,7 +117,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <head>
         <HeadContent />
       </head>
@@ -122,27 +131,81 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const pathname = useRouterState({ select: (r) => r.location.pathname });
+  const isLogin = pathname === "/login";
+  const isWidgetDesk = pathname.startsWith("/widget-desk");
+  const apiHealth = useApiHealth();
+
+  if (isLogin) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <div className="min-h-screen bg-background text-foreground">
+          <div className="flex items-center justify-end border-b border-border px-4 py-2">
+            <KiteConnectionIndicator
+              reachable={apiHealth.reachable}
+              checking={apiHealth.checking}
+              kiteAuthenticated={apiHealth.kiteAuthenticated}
+              kiteConfigured={apiHealth.kiteConfigured}
+              userId={apiHealth.userId}
+              userName={apiHealth.userName}
+              loginTime={apiHealth.loginTime}
+            />
+          </div>
+          <ApiHealthBanner
+            reachable={apiHealth.reachable}
+            checking={apiHealth.checking}
+            onRetry={apiHealth.retry}
+          />
+          <Outlet />
+          <Toaster richColors position="top-right" theme="light" />
+        </div>
+      </QueryClientProvider>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
       <SelectionProvider>
         <WatchlistProvider>
         <SidebarProvider>
-          <div className="flex min-h-screen w-full bg-background text-foreground">
+          <div className="flex min-h-screen w-full bg-transparent text-foreground">
             <AppSidebar />
             <div className="flex flex-1 flex-col min-w-0">
-              <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-border bg-background/80 backdrop-blur px-3">
+              <ApiHealthBanner
+                reachable={apiHealth.reachable}
+                checking={apiHealth.checking}
+                onRetry={apiHealth.retry}
+              />
+              <header className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-border/80 bg-card/70 backdrop-blur-md px-3 shadow-sm shadow-primary/5">
                 <SidebarTrigger />
-                <div className="text-sm font-medium text-muted-foreground">
+                <div className="text-sm font-semibold tracking-tight text-primary">
                   3ST Algo Desk
                 </div>
+                <div className="ml-auto">
+                  <KiteConnectionIndicator
+                    reachable={apiHealth.reachable}
+                    checking={apiHealth.checking}
+                    kiteAuthenticated={apiHealth.kiteAuthenticated}
+                    kiteConfigured={apiHealth.kiteConfigured}
+                    userId={apiHealth.userId}
+                    userName={apiHealth.userName}
+                    loginTime={apiHealth.loginTime}
+                  />
+                </div>
               </header>
-              <main className="flex-1 p-4 md:p-6">
+              <main
+                className={
+                  isWidgetDesk
+                    ? "flex min-h-0 flex-1 flex-col p-0"
+                    : "flex-1 p-4 md:p-6 pb-4"
+                }
+              >
                 <Outlet />
               </main>
+              <ExecutionTaskbar />
             </div>
           </div>
-          <Toaster richColors position="top-right" theme="dark" />
+          <Toaster richColors position="top-right" theme="light" />
         </SidebarProvider>
         </WatchlistProvider>
       </SelectionProvider>

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   Activity,
   ArrowRight,
+  BookMarked,
   Cpu,
   LayoutDashboard,
   Layers,
@@ -14,7 +15,7 @@ import {
 } from "lucide-react";
 
 import { api } from "@/lib/api";
-import type { HealthResponse, RollingStraddleStatus } from "@/lib/types";
+import type { HealthResponse, PremiumBookStatus, RollingStraddleStatus } from "@/lib/types";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,15 @@ const STRATEGIES = [
     badge: "Automated",
   },
   {
+    id: "premium-book",
+    title: "Premium Book",
+    description:
+      "Table 2.1 short premium — bull put / bear call / strangle / straddle. ST1+ADX entry; Force → ATR → ST1; SL converts to credit vertical.",
+    href: "/premium-book",
+    icon: BookMarked,
+    badge: "Paper first",
+  },
+  {
     id: "survivor",
     title: "Survivor Algo",
     description:
@@ -61,7 +71,7 @@ const STRATEGIES = [
     id: "oi-var-desk",
     title: "OI VAR Live Desk",
     description:
-      "Full-chain Top/Bottom 10 by VAR (Cr) and EOD OI change — CE/PE panels with session VWAP.",
+      "Full-chain Top/Bottom 10 by VAR (Cr) and EOD OI change — CE/PE panels with LTP.",
     href: "/oi-var",
     icon: Layers,
     badge: "Analytics",
@@ -89,19 +99,22 @@ function ExecutionHubPage() {
   const [arm, setArm] = useState<ArmStatus | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [rsStatus, setRsStatus] = useState<RollingStraddleStatus | null>(null);
+  const [pbStatus, setPbStatus] = useState<PremiumBookStatus | null>(null);
   const [positionCount, setPositionCount] = useState(0);
 
   async function refresh() {
     try {
-      const [a, h, rs, pos] = await Promise.all([
+      const [a, h, rs, pb, pos] = await Promise.all([
         api.get<ArmStatus>("/live/arm", { silent: true }),
         api.get<HealthResponse>("/health", { silent: true }),
-        api.get<RollingStraddleStatus>("/live/rolling-straddle/status", { silent: true }),
-        api.get<{ positions?: unknown[] }>("/live/positions", { silent: true }),
+        api.get<RollingStraddleStatus>("/live/rolling-straddle/status", { silent: true }).catch(() => null),
+        api.get<PremiumBookStatus>("/live/premium-book/status", { silent: true }).catch(() => null),
+        api.get<{ positions?: unknown[] }>("/live/positions", { silent: true }).catch(() => ({ positions: [] })),
       ]);
       setArm(a);
       setHealth(h);
-      setRsStatus(rs);
+      if (rs) setRsStatus(rs);
+      if (pb) setPbStatus(pb);
       setPositionCount(pos.positions?.length ?? 0);
     } catch {
       /* silent */
@@ -115,6 +128,7 @@ function ExecutionHubPage() {
   }, []);
 
   const rsRunning = rsStatus?.state?.runner === "running";
+  const pbRunning = pbStatus?.state?.runner === "running";
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6 pb-10">
@@ -149,6 +163,9 @@ function ExecutionHubPage() {
           <Badge variant="outline">{positionCount} open position(s)</Badge>
           {rsRunning ? (
             <Badge className="bg-primary">Rolling Straddle running</Badge>
+          ) : null}
+          {pbRunning ? (
+            <Badge className="bg-primary">Premium Book running</Badge>
           ) : null}
           <div className="ml-auto flex gap-2">
             <Button asChild size="sm" variant="outline">
@@ -188,6 +205,18 @@ function ExecutionHubPage() {
                     <div>CE: {rsStatus.state.ce?.status ?? "flat"} · PE: {rsStatus.state.pe?.status ?? "flat"}</div>
                   </div>
                 ) : null}
+                {s.id === "premium-book" && pbStatus?.state ? (
+                  <div className="mb-3 space-y-1 text-xs font-mono text-muted-foreground">
+                    <div>
+                      {pbStatus.config?.structure ?? "—"} · ATM: {pbStatus.state.current_atm ?? "—"}
+                    </div>
+                    <div>
+                      Pkg: {pbStatus.state.package?.status ?? "flat"} · CE:{" "}
+                      {(pbStatus.state.ce as { status?: string } | undefined)?.status ?? "flat"} · PE:{" "}
+                      {(pbStatus.state.pe as { status?: string } | undefined)?.status ?? "flat"}
+                    </div>
+                  </div>
+                ) : null}
                 <Button asChild className="w-full" size="sm">
                   <Link to={s.href}>
                     Open <ArrowRight className="ml-1 h-4 w-4" />
@@ -214,6 +243,13 @@ function ExecutionHubPage() {
               /rolling-straddle
             </Link>
             {" "}→ paper test → live + ARM when ready.
+          </p>
+          <p>
+            <strong className="text-foreground">Premium Book:</strong> Credit verticals & short premium on{" "}
+            <Link to="/premium-book" className="text-primary underline-offset-4 hover:underline">
+              /premium-book
+            </Link>
+            {" "}— paper first; SL on straddle/strangle converts to a defined-risk wing.
           </p>
           <p>
             <strong className="text-foreground">Watchlist desk:</strong> Stock Selection → Dashboard queue → scan → Live Desk activate.

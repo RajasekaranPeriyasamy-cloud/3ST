@@ -17,6 +17,7 @@ def build_atm_leg(
     *,
     spot: float | None = None,
     strike: float | None = None,
+    quantity: int | None = None,
 ) -> dict[str, Any]:
     """
     Resolve a single ATM CE or PE leg for order placement.
@@ -51,7 +52,7 @@ def build_atm_leg(
         "exchange": found["exchange"],
         "instrument_token": found["instrument_token"],
         "side": "BUY",
-        "quantity": int(found.get("lot_size") or lot),
+        "quantity": int(quantity if quantity is not None else (found.get("lot_size") or lot)),
         "strike": found["strike"],
         "option_type": opt,
         "spot": float(spot),

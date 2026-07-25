@@ -12,6 +12,15 @@ from instruments import resolve_instrument
 from kite_auth import get_kite_client, session_status
 
 
+def _kite_fetch_attempts() -> tuple[bool, ...]:
+    """Market data (quotes/LTP/historical) — direct egress only; IP whitelist is for orders."""
+    return (True,)
+
+
+def _kite_for_market_data():
+    return _kite_direct_client()
+
+
 def _to_dt(d: date | datetime) -> datetime:
     if isinstance(d, datetime):
         return d
@@ -61,15 +70,20 @@ def fetch_historical_by_token(
     start: date | datetime,
     end: date | datetime,
     chunk_days: int = 60,
+    *,
+    oi: bool = False,
 ) -> pd.DataFrame:
-    """Fetch OHLC from Kite for any instrument token."""
+    """Fetch OHLC (and optionally open interest) from Kite for any instrument token."""
     if timeframe not in KITE_INTERVALS:
         raise ValueError(f"Unsupported timeframe '{timeframe}'. Use {list(KITE_INTERVALS)}")
 
     interval = KITE_INTERVALS[timeframe]
     start_dt = _to_dt(start)
     end_dt = _to_dt(end)
-    if end_dt.hour == 9 and end_dt.minute == 15 and isinstance(end, date) and not isinstance(end, datetime):
+    if isinstance(end, date) and not isinstance(end, datetime) and end == date.today():
+        # Include live session bars (MCX trades until ~23:30; date-only end used to cap at 15:30).
+        end_dt = datetime.now()
+    elif end_dt.hour == 9 and end_dt.minute == 15 and isinstance(end, date) and not isinstance(end, datetime):
         end_dt = end_dt.replace(hour=15, minute=30)
 
     if start_dt >= end_dt:
@@ -78,11 +92,11 @@ def fetch_historical_by_token(
     from kite_auth import _is_proxy_error
 
     last_err: Exception | None = None
-    for force_direct in (False, True):
+    for force_direct in _kite_fetch_attempts():
         try:
-            kite = get_kite_client() if not force_direct else _kite_direct_client()
+            kite = _kite_direct_client()
             return _fetch_historical_chunks(
-                kite, instrument_token, interval, start_dt, end_dt, chunk_days
+                kite, instrument_token, interval, start_dt, end_dt, chunk_days, oi=oi
             )
         except Exception as e:
             last_err = e
@@ -104,6 +118,11 @@ def _kite_direct_client():
     return kite
 
 
+def kite_read_client():
+    """Read-only Kite session (positions/orders/LTP) — direct egress, no order IP bind."""
+    return _kite_direct_client()
+
+
 def _fetch_historical_chunks(
     kite,
     instrument_token: int,
@@ -111,6 +130,8 @@ def _fetch_historical_chunks(
     start_dt: datetime,
     end_dt: datetime,
     chunk_days: int,
+    *,
+    oi: bool = False,
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     cursor = start_dt
@@ -122,7 +143,7 @@ def _fetch_historical_chunks(
             to_date=chunk_end,
             interval=interval,
             continuous=False,
-            oi=False,
+            oi=oi,
         )
         if raw and isinstance(raw[0], dict):
             rows = [
@@ -183,13 +204,44 @@ def fetch_historical_for_selection(
 
 
 def profile() -> dict[str, Any]:
-    kite = get_kite_client()
+    kite = kite_read_client()
     return kite.profile()
 
 
 def margins() -> dict[str, Any]:
-    kite = get_kite_client()
+    kite = kite_read_client()
     return kite.margins()
+
+
+def preview_order_margins(
+    *,
+    exchange: str,
+    tradingsymbol: str,
+    transaction_type: str,
+    quantity: int,
+    product: str = "NRML",
+    order_type: str = "MARKET",
+    price: float | None = None,
+) -> dict[str, Any]:
+    """Estimate margin required for a single order (Kite order_margins API)."""
+    kite = get_kite_client()
+    order = {
+        "exchange": exchange.upper(),
+        "tradingsymbol": tradingsymbol,
+        "transaction_type": transaction_type.upper(),
+        "quantity": int(quantity),
+        "product": product.upper(),
+        "order_type": order_type.upper(),
+        "variety": kite.VARIETY_REGULAR,
+    }
+    if price is not None and order_type.upper() == "LIMIT":
+        order["price"] = float(price)
+    raw = kite.order_margins([order])
+    if isinstance(raw, list) and raw:
+        return dict(raw[0])
+    if isinstance(raw, dict):
+        return raw
+    return {"raw": raw}
 
 
 def status_bundle() -> dict[str, Any]:
@@ -215,7 +267,7 @@ def fetch_minute_oi(instrument_token: int, minutes: int = 40) -> list[dict[str, 
     to_date = datetime.now()
     from_date = to_date - timedelta(minutes=minutes)
     last_err: Exception | None = None
-    for force_direct in (False, True):
+    for force_direct in _kite_fetch_attempts():
         try:
             kite = _kite_direct_client() if force_direct else get_kite_client()
             raw = kite.historical_data(
@@ -257,16 +309,28 @@ def fetch_minute_oi(instrument_token: int, minutes: int = 40) -> list[dict[str, 
 
 
 def fetch_index_minute_spot(underlying: str, minutes: int = 40) -> list[dict[str, Any]]:
-    """Fetch index minute candles for spot history used in IV back-calculation."""
+    """Fetch minute candles for spot history used in IV back-calculation.
+
+    NSE/BSE indices use the cash index token; MCX commodities use the front-month future.
+    """
     from config import INDEX_OPTIONS
 
     if underlying not in INDEX_OPTIONS:
         raise ValueError(f"Unknown underlying '{underlying}'")
-    key = INDEX_OPTIONS[underlying].get("index_token_key")
-    if not key:
-        return []
-    meta = resolve_instrument(key)
-    return fetch_minute_candles(int(meta["instrument_token"]), minutes=minutes)
+    meta = INDEX_OPTIONS[underlying]
+    key = meta.get("index_token_key")
+    if key:
+        resolved = resolve_instrument(key)
+        return fetch_minute_candles(int(resolved["instrument_token"]), minutes=minutes)
+
+    # MCX / future-spot underlyings
+    if (meta.get("spot_source") or "").lower() == "future" or str(meta.get("exchange") or "").upper() == "MCX":
+        from instruments import resolve_future
+
+        fut = resolve_future(underlying)
+        return fetch_minute_candles(int(fut["instrument_token"]), minutes=minutes)
+    return []
+
 
 
 def fetch_quote_batch(instruments: list[str]) -> dict[str, dict[str, Any]]:
@@ -276,10 +340,30 @@ def fetch_quote_batch(instruments: list[str]) -> dict[str, dict[str, Any]]:
     from kite_auth import _is_proxy_error
 
     last_err: Exception | None = None
-    for force_direct in (False, True):
+    for force_direct in _kite_fetch_attempts():
         try:
             kite = _kite_direct_client() if force_direct else get_kite_client()
             return dict(kite.quote(*instruments))
+        except Exception as e:
+            last_err = e
+            if force_direct or not _is_proxy_error(e):
+                raise
+    if last_err:
+        raise last_err
+    return {}
+
+
+def fetch_ltp_batch(instruments: list[str]) -> dict[str, dict[str, Any]]:
+    """Retrieve LTP for instruments — direct connection first (no IPv6 order bind)."""
+    if not instruments:
+        return {}
+    from kite_auth import _is_proxy_error
+
+    last_err: Exception | None = None
+    for force_direct in _kite_fetch_attempts():
+        try:
+            kite = _kite_direct_client() if force_direct else get_kite_client()
+            return dict(kite.ltp(*instruments))
         except Exception as e:
             last_err = e
             if force_direct or not _is_proxy_error(e):

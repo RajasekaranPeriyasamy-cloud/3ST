@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -10,10 +11,20 @@ from typing import Any, Literal
 import pandas as pd
 
 from config import INDEX_OPTIONS, INSTRUMENTS, KITE_INDEX_LOOKUP
-from kite_auth import get_kite_client, session_status
+from kite_auth import session_status
 from settings import data_dir
 
 CACHE_FILE = data_dir() / "kite_instruments.json"
+
+_DF_CACHE: pd.DataFrame | None = None
+_DF_CACHE_MTIME: float | None = None
+_DF_LOAD_LOCK = threading.Lock()
+
+
+def _invalidate_df_cache() -> None:
+    global _DF_CACHE, _DF_CACHE_MTIME
+    _DF_CACHE = None
+    _DF_CACHE_MTIME = None
 
 
 def _json_safe(obj: Any) -> Any:
@@ -40,33 +51,87 @@ def _cache_fresh(path: Path) -> bool:
     return mtime == date.today()
 
 
+def cache_status() -> dict[str, Any]:
+    """Disk cache metadata for /health and ops dashboards."""
+    if not CACHE_FILE.exists():
+        return {"instruments_cache": False, "instruments_cache_fresh": False, "instruments_cache_bytes": 0}
+    mtime = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)
+    age_days = (date.today() - mtime.date()).days
+    return {
+        "instruments_cache": True,
+        "instruments_cache_fresh": _cache_fresh(CACHE_FILE),
+        "instruments_cache_age_days": age_days,
+        "instruments_cache_bytes": CACHE_FILE.stat().st_size,
+        "instruments_cache_updated": mtime.isoformat(timespec="seconds"),
+    }
+
+
 def refresh_instruments(force: bool = False) -> list[dict[str, Any]]:
     if not force and _cache_fresh(CACHE_FILE):
         return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
 
-    kite = get_kite_client()
-    rows = kite.instruments()
+    try:
+        from kite_client import _kite_direct_client
+
+        kite = _kite_direct_client()
+        rows = kite.instruments()
+    except Exception as exc:
+        if CACHE_FILE.exists():
+            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        raise RuntimeError(f"Instrument download failed and no cache on disk: {exc}") from exc
+
     safe_rows = _json_safe(rows)
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     CACHE_FILE.write_text(json.dumps(safe_rows), encoding="utf-8")
+    _invalidate_df_cache()
     return rows
 
 
-def load_instruments(force_refresh: bool = False) -> pd.DataFrame:
-    if force_refresh:
-        rows = refresh_instruments(force=True)
-    elif _cache_fresh(CACHE_FILE):
-        rows = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-    elif CACHE_FILE.exists():
-        rows = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-    else:
+def _load_rows_from_disk() -> list[dict[str, Any]]:
+    if not CACHE_FILE.exists():
         if not session_status().get("authenticated"):
             raise RuntimeError(
                 "Instrument cache empty. Log in to Kite and refresh instruments."
             )
-        rows = refresh_instruments(force=True)
-    df = pd.DataFrame(rows)
-    return df
+        return refresh_instruments(force=True)
+    return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+
+
+def load_instruments(force_refresh: bool = False) -> pd.DataFrame:
+    """Load Kite instruments as a DataFrame (cached in memory by file mtime)."""
+    global _DF_CACHE, _DF_CACHE_MTIME
+
+    if force_refresh:
+        refresh_instruments(force=True)
+
+    with _DF_LOAD_LOCK:
+        if (
+            not force_refresh
+            and _DF_CACHE is not None
+            and CACHE_FILE.exists()
+            and _DF_CACHE_MTIME == CACHE_FILE.stat().st_mtime
+        ):
+            return _DF_CACHE
+
+        rows = _load_rows_from_disk()
+        df = pd.DataFrame(rows)
+        if CACHE_FILE.exists():
+            _DF_CACHE_MTIME = CACHE_FILE.stat().st_mtime
+        else:
+            _DF_CACHE_MTIME = None
+        _DF_CACHE = df
+        return df
+
+
+def warm_instruments_cache() -> None:
+    """Pre-load instrument cache and expiry lists (call once at API startup)."""
+    try:
+        load_instruments()
+        from options.chain import warm_expiries_cache
+
+        warm_expiries_cache()
+    except Exception:
+        pass
 
 
 def _compact_row(row: pd.Series) -> dict[str, Any]:
@@ -167,6 +232,124 @@ def resolve_by_symbol(
         else None
     )
     return meta
+
+
+def _future_candidates(underlying: str, force_refresh: bool = False) -> pd.DataFrame:
+    df = load_instruments(force_refresh=force_refresh)
+    fut = _filter_segment(df, "future")
+    if fut.empty:
+        return fut
+    u = underlying.strip().upper()
+    name = fut["name"].astype(str).str.upper()
+    tsym = fut["tradingsymbol"].astype(str).str.upper()
+
+    # Prefer an exact underlying-name match so "NIFTY" does not also pull in
+    # "NIFTYNXT50"/sector futures (which share the same monthly expiry dates and
+    # would otherwise duplicate the expiry list and risk wrong-contract resolution).
+    cand = fut[name == u].copy()
+    if cand.empty:
+        # Fallback for dumps with blank names: symbols look like NIFTY26JULFUT,
+        # so require the underlying immediately followed by a digit (the year).
+        cand = fut[tsym.str.match(rf"^{u}\d")].copy()
+    if cand.empty:
+        return cand
+
+    cand["_exp"] = pd.to_datetime(cand["expiry"], errors="coerce")
+    cand = cand.dropna(subset=["_exp"]).sort_values("_exp")
+    # One contract per expiry (monthly) — guards against any duplicate rows.
+    cand = cand.drop_duplicates(subset=["_exp"], keep="first")
+    return cand
+
+
+def list_future_expiries(underlying: str, force_refresh: bool = False) -> list[str]:
+    """Upcoming (and current) monthly future expiries for an index underlying."""
+    cand = _future_candidates(underlying, force_refresh=force_refresh)
+    if cand.empty:
+        return []
+    today = pd.Timestamp(date.today())
+    upcoming = cand[cand["_exp"] >= today.normalize()]
+    rows = upcoming if not upcoming.empty else cand
+    return [d.date().isoformat() for d in rows["_exp"].tolist()]
+
+
+def resolve_future(
+    underlying: str,
+    expiry: str | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """
+    Resolve a monthly futures contract token for an index underlying.
+
+    Defaults to the front-month (first expiry >= today); pass ``expiry`` (ISO
+    YYYY-MM-DD) to pin a specific contract.
+    """
+    cand = _future_candidates(underlying, force_refresh=force_refresh)
+    if cand.empty:
+        raise RuntimeError(f"No futures contract found for '{underlying}' — refresh instruments after Kite login.")
+
+    if expiry:
+        target = pd.to_datetime(expiry, errors="coerce")
+        if pd.isna(target):
+            raise ValueError(f"Invalid expiry '{expiry}' (use YYYY-MM-DD)")
+        match = cand[cand["_exp"].dt.date == target.date()]
+        if match.empty:
+            raise RuntimeError(f"No {underlying} future expiring {expiry}")
+        row = match.iloc[0]
+    else:
+        today = pd.Timestamp(date.today()).normalize()
+        upcoming = cand[cand["_exp"] >= today]
+        row = upcoming.iloc[0] if not upcoming.empty else cand.iloc[-1]
+
+    meta = _compact_row(row)
+    meta["expiry"] = row["_exp"].date().isoformat()
+    return meta
+
+
+def resolve_nse_index(
+    tradingsymbol: str,
+    *,
+    name: str | None = None,
+    fallbacks: list[str] | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """Resolve an NSE sector / broad index from the Kite instrument cache."""
+    df = load_instruments(force_refresh=force_refresh)
+    nse = df[df["exchange"].astype(str).str.upper() == "NSE"].copy()
+    if nse.empty:
+        raise RuntimeError("Instrument cache has no NSE rows — refresh after Kite login.")
+
+    if "segment" in nse.columns:
+        seg = nse["segment"].astype(str).str.upper()
+        indices = nse[seg.str.contains("INDICES", na=False)]
+        if not indices.empty:
+            nse = indices
+
+    needles: list[str] = []
+    for item in [tradingsymbol, *(fallbacks or []), *( [name] if name else [])]:
+        token = str(item).strip().upper()
+        if token and token not in needles:
+            needles.append(token)
+
+    tsym = nse["tradingsymbol"].astype(str).str.upper()
+    nm = nse["name"].astype(str).str.upper()
+    for needle in needles:
+        hits = nse[(tsym == needle) | (nm == needle)]
+        if hits.empty:
+            hits = nse[tsym.str.replace(" ", "", regex=False) == needle.replace(" ", "")]
+        if not hits.empty:
+            row = hits.iloc[0]
+            meta = _compact_row(row)
+            meta["exchange_token"] = (
+                int(row["exchange_token"])
+                if "exchange_token" in row and pd.notna(row.get("exchange_token"))
+                else None
+            )
+            return meta
+
+    raise RuntimeError(
+        f"Could not resolve NSE index '{tradingsymbol}'. "
+        "Refresh instruments after login."
+    )
 
 
 def resolve_underlying_index_token(underlying: str, force_refresh: bool = False) -> int:

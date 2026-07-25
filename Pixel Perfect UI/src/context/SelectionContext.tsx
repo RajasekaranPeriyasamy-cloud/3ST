@@ -43,6 +43,8 @@ export const defaultSelection: Selection = {
   tgt_value: 1.0,
   tsl_mode: "Off",
   tsl_value: 1.5,
+  product_type: "MIS",
+  entry_mode: "manual",
 };
 
 interface Ctx {

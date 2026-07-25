@@ -7,7 +7,14 @@ from typing import Any, Literal
 
 import pandas as pd
 
-from backtest_engine import BacktestParams, _in_window, _level, _parse_hm, run_backtest
+from backtest_engine import (
+    BacktestParams,
+    _in_window,
+    _level,
+    _parse_hm,
+    force_exit_due,
+    run_backtest,
+)
 from config import INDEX_OPTIONS
 from options.chain import atm_strike
 
@@ -120,7 +127,12 @@ def run_rolling_atm_backtest(df: pd.DataFrame, params: RollingAtmParams) -> Roll
         in_session = params.system_mode == "Positional" or _in_window(
             ts, params.session_start, params.session_end
         )
-        force = params.system_mode == "Intraday" and _in_window(ts, params.force_exit, params.session_end)
+        force = params.system_mode == "Intraday" and force_exit_due(
+            ts,
+            force_exit=params.force_exit,
+            session_end=params.session_end,
+            system_mode=params.system_mode,
+        )
         eh, em = _parse_hm(params.entry_start)
         bar_ok = isinstance(ts, pd.Timestamp) and (ts.hour * 60 + ts.minute) >= eh * 60 + em
         if bar_ok:
@@ -177,6 +189,8 @@ def run_rolling_atm_backtest(df: pd.DataFrame, params: RollingAtmParams) -> Roll
                     pe_entry_ts = ts
                     pe_strike = atm
 
+    # TODO: index close proxy is inaccurate for options — replace with actual
+    # option pricing or at minimum a delta-adjusted proxy.
     total_pnl = sum(t.pnl for t in trades)
     ce_trades = [t for t in trades if t.leg == "CE"]
     pe_trades = [t for t in trades if t.leg == "PE"]

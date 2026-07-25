@@ -8,6 +8,8 @@ import time
 from typing import Any
 
 from broker.base import Broker, OrderRequest, OrderResult
+from broker.execution_support import invalidate_position_cache, net_position_qty
+from options.chain import tradingsymbol_matches_underlying
 from settings import data_dir
 
 _id = itertools.count(1)
@@ -73,6 +75,15 @@ class PaperBroker(Broker):
             raise RuntimeError(f"No LTP for {key}")
         return self._ltp[key]
 
+    def net_qty(self, exchange: str, tradingsymbol: str, product: str) -> int:
+        self.reload()
+        return net_position_qty(
+            self.positions(),
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            product=product,
+        )
+
     def place_order(self, req: OrderRequest) -> OrderResult:
         oid = f"PAPER-{next(_id)}"
         px = req.price
@@ -96,9 +107,9 @@ class PaperBroker(Broker):
         }
         self._orders.append(row)
         key = f"{req.exchange}:{req.tradingsymbol}:{req.product}"
-        pos = self._positions.get(key, {"quantity": 0, "average_price": 0.0, **row})
+        pos = dict(self._positions.get(key) or {"quantity": 0, "average_price": 0.0})
         signed = req.quantity if req.transaction_type == "BUY" else -req.quantity
-        new_qty = int(pos["quantity"]) + signed
+        new_qty = int(pos.get("quantity") or 0) + signed
         pos["quantity"] = new_qty
         pos["average_price"] = px
         pos["tradingsymbol"] = req.tradingsymbol
@@ -106,6 +117,7 @@ class PaperBroker(Broker):
         pos["product"] = req.product
         self._positions[key] = pos
         self._save()
+        invalidate_position_cache(self)
         return OrderResult(ok=True, order_id=oid, message="Paper fill", raw=row)
 
     def cancel_order(self, order_id: str) -> OrderResult:
@@ -124,14 +136,38 @@ class PaperBroker(Broker):
         return list(self._orders)
 
 
+def _rolling_underlying_prefix(cfg: dict[str, Any]) -> str:
+    return str(cfg.get("underlying") or "NIFTY").strip().upper()
+
+
+def _position_matches_rolling_straddle(cfg: dict[str, Any], pos: dict[str, Any], opt_suffix: str) -> bool:
+    """Paper positions must match the configured index underlying — never watchlist/MCX crude."""
+    sym = str(pos.get("tradingsymbol") or "").upper()
+    if not sym.endswith(opt_suffix):
+        return False
+    if not tradingsymbol_matches_underlying(sym, _rolling_underlying_prefix(cfg)):
+        return False
+    tag = str(pos.get("tag") or "")
+    if "3ST-WL-" in tag:
+        return False
+    return True
+
+
+def _leg_matches_rolling_config(cfg: dict[str, Any], leg: dict[str, Any]) -> bool:
+    sym = str(leg.get("tradingsymbol") or "").upper()
+    if not sym:
+        return False
+    return tradingsymbol_matches_underlying(sym, _rolling_underlying_prefix(cfg))
+
+
 def sync_paper_from_rolling_straddle() -> None:
     """Ensure open CE/PE legs from algo state appear in shared paper positions."""
     broker = get_paper_broker()
     broker.reload()
 
     try:
-        from execution.rolling_straddle_store import get_config, get_state, save_state
-        from options.legs import build_atm_leg
+        from execution.algo_ownership import leg_is_algo_managed
+        from execution.rolling_straddle_store import get_config, get_state, order_quantity_from_config, save_state
     except ImportError:
         return
 
@@ -139,9 +175,28 @@ def sync_paper_from_rolling_straddle() -> None:
     state = get_state()
     product = str(cfg.get("product") or "MIS")
 
+    # Drop algo legs that do not belong to this runner (e.g. stale CRUDEOIL from watchlist paper).
+    state_patch: dict[str, Any] = {}
+    for leg_key in ("ce", "pe"):
+        leg = state.get(leg_key) or {}
+        if leg.get("status") == "open" and not _leg_matches_rolling_config(cfg, leg):
+            state_patch[leg_key] = {
+                "status": "flat",
+                "tradingsymbol": None,
+                "exchange": None,
+                "strike": None,
+                "entry_price": None,
+                "entry_at": None,
+                "entry_order_id": None,
+                "last_action": "purged_foreign_symbol",
+            }
+    if state_patch:
+        save_state(state_patch)
+        state = get_state()
+
     for leg_key, opt in (("ce", "CE"), ("pe", "PE")):
         leg = state.get(leg_key) or {}
-        if leg.get("status") != "open":
+        if leg.get("status") != "open" or not leg_is_algo_managed(leg):
             continue
         sym = leg.get("tradingsymbol")
         exch = leg.get("exchange")
@@ -150,18 +205,10 @@ def sync_paper_from_rolling_straddle() -> None:
         key = f"{exch}:{sym}:{product}"
         if int(broker._positions.get(key, {}).get("quantity") or 0) != 0:
             continue
-        qty = 75
         try:
-            if cfg.get("expiry") and leg.get("strike"):
-                built = build_atm_leg(
-                    cfg["underlying"],
-                    cfg["expiry"],
-                    opt,  # type: ignore[arg-type]
-                    strike=float(leg["strike"]),
-                )
-                qty = int(built["quantity"])
-        except Exception:
-            pass
+            qty = order_quantity_from_config(cfg)
+        except ValueError:
+            continue
         entry_px = float(leg.get("entry_price") or 0)
         order_id = leg.get("entry_order_id") or f"PAPER-{leg_key.upper()}-sync"
         broker._positions[key] = {
@@ -195,44 +242,12 @@ def sync_paper_from_rolling_straddle() -> None:
                     "ts": time.time(),
                 }
             )
-    # If paper still holds a leg but algo state was reset, restore the leg snapshot.
+    # Never adopt orphan paper/Kite positions into rolling-straddle state — manual trades stay separate.
     state = get_state()
-    state_patch: dict[str, Any] = {}
-    for leg_key, opt in (("ce", "CE"), ("pe", "PE")):
-        leg = state.get(leg_key) or {}
-        if leg.get("status") == "open":
-            continue
-        for pos in broker._positions.values():
-            if int(pos.get("quantity") or 0) == 0:
-                continue
-            sym = str(pos.get("tradingsymbol") or "")
-            if not sym.endswith(opt):
-                continue
-            strike = leg.get("strike")
-            digits = "".join(ch for ch in sym if ch.isdigit())
-            if len(digits) >= 5:
-                try:
-                    strike = float(digits[-5:])
-                except ValueError:
-                    pass
-            state_patch[leg_key] = {
-                "status": "open",
-                "tradingsymbol": sym,
-                "exchange": pos.get("exchange"),
-                "strike": strike,
-                "entry_price": float(pos.get("average_price") or pos.get("price") or 0),
-                "entry_order_id": pos.get("order_id"),
-                "entries_today": max(1, int(leg.get("entries_today") or 0)),
-                "last_action": "paper_sync",
-            }
-            break
-    if state_patch:
-        save_state(state_patch)
-        state = get_state()
 
-    for leg_key, opt in (("ce", "CE"), ("pe", "PE")):
+    for leg_key, _opt in (("ce", "CE"), ("pe", "PE")):
         leg = state.get(leg_key) or {}
-        if leg.get("status") != "open":
+        if leg.get("status") != "open" or not leg_is_algo_managed(leg):
             continue
         order_id = leg.get("entry_order_id")
         sym = leg.get("tradingsymbol")

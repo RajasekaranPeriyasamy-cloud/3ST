@@ -41,7 +41,7 @@ export const Route = createFileRoute("/backtest")({
   component: BacktestPage,
 });
 
-const TIMEFRAMES: Timeframe[] = ["5min", "15min", "30min", "60min"];
+const TIMEFRAMES: Timeframe[] = ["1min", "3min", "5min", "15min", "30min", "60min"];
 
 function BacktestPage() {
   const { selection } = useSelection();

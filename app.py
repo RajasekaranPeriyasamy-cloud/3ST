@@ -7,6 +7,7 @@ EMA200 removed. ADX + Triple HA SuperTrend only.
 from __future__ import annotations
 
 from datetime import date
+import logging
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -16,6 +17,16 @@ import streamlit as st
 from backtest_engine import BacktestParams, run_backtest, trades_to_df
 from config import DEFAULT_ADX, DEFAULT_CAPITAL, DEFAULT_QTY, DEFAULT_RISK, DEFAULT_ST, INSTRUMENTS, TIMEFRAMES
 from yahoo_client import default_date_range, fetch_candles, max_lookback_days
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler("3st.log"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("3st")
 
 st.set_page_config(
     page_title="3ST · Yahoo Backtester",

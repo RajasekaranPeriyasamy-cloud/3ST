@@ -1,0 +1,66 @@
+{
+  "ok": true,
+  "note": "Bundled illustrative fallback data. Used only when the live NSDL report cannot be fetched and no fresh cache exists. Values are placeholders (net equity, INR crore) — refresh from the RRG page to load real figures.",
+  "source_url": "https://www.fpi.nsdl.co.in/web/StaticReports/Fortnightly_Sector_wise_FII_Investment_Data/",
+  "as_of": "June 30, 2026",
+  "period1_label": "01 - 15 June 2026 (Net Investment Equity)",
+  "period2_label": "16 - 30 June 2026 (Net Investment Equity)",
+  "fetched_at": "2026-06-30T18:30:00",
+  "sectors": {
+    "Automobile and Auto Components": {
+      "fpi_sector": "Automobile and Auto Components",
+      "net_equity_inr": {"period1": 1240.5, "period2": 2180.3, "month_total": 3420.8},
+      "rrg_sector_id": "NIFTY_AUTO"
+    },
+    "Fast Moving Consumer Goods": {
+      "fpi_sector": "Fast Moving Consumer Goods",
+      "net_equity_inr": {"period1": -640.2, "period2": 910.7, "month_total": 270.5},
+      "rrg_sector_id": "NIFTY_FMCG"
+    },
+    "Information Technology": {
+      "fpi_sector": "Information Technology",
+      "net_equity_inr": {"period1": 3105.9, "period2": -1420.4, "month_total": 1685.5},
+      "rrg_sector_id": "NIFTY_IT"
+    },
+    "Healthcare": {
+      "fpi_sector": "Healthcare",
+      "net_equity_inr": {"period1": 820.1, "period2": 1560.6, "month_total": 2380.7},
+      "rrg_sector_id": "NIFTY_HEALTHCARE"
+    },
+    "Media, Entertainment & Publication": {
+      "fpi_sector": "Media, Entertainment & Publication",
+      "net_equity_inr": {"period1": -210.4, "period2": -95.8, "month_total": -306.2},
+      "rrg_sector_id": "NIFTY_MEDIA"
+    },
+    "Metals & Mining": {
+      "fpi_sector": "Metals & Mining",
+      "net_equity_inr": {"period1": 1875.3, "period2": 640.9, "month_total": 2516.2},
+      "rrg_sector_id": "NIFTY_METAL"
+    },
+    "Realty": {
+      "fpi_sector": "Realty",
+      "net_equity_inr": {"period1": 430.6, "period2": 785.2, "month_total": 1215.8},
+      "rrg_sector_id": "NIFTY_REALTY"
+    },
+    "Consumer Durables": {
+      "fpi_sector": "Consumer Durables",
+      "net_equity_inr": {"period1": -320.7, "period2": 210.4, "month_total": -110.3},
+      "rrg_sector_id": "NIFTY_CONSUMER_DURABLES"
+    },
+    "Oil, Gas & Consumable Fuels": {
+      "fpi_sector": "Oil, Gas & Consumable Fuels",
+      "net_equity_inr": {"period1": -1560.8, "period2": -2240.1, "month_total": -3800.9},
+      "rrg_sector_id": "NIFTY_OIL_GAS"
+    },
+    "Chemicals": {
+      "fpi_sector": "Chemicals",
+      "net_equity_inr": {"period1": 155.2, "period2": 340.6, "month_total": 495.8},
+      "rrg_sector_id": "NIFTY_CHEMICALS"
+    },
+    "Financial Services": {
+      "fpi_sector": "Financial Services",
+      "net_equity_inr": {"period1": 5820.4, "period2": 7410.9, "month_total": 13231.3},
+      "rrg_sector_id": "NIFTY_FIN_SERVICE"
+    }
+  }
+}

@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
+from config import INDEX_OPTIONS
 from settings import data_dir
 
 CONFIG_FILE = data_dir() / "survivor_config.json"
@@ -20,8 +21,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "index_symbol": "NSE:NIFTY 50",
     "pe_gap": 20,
     "ce_gap": 20,
-    "pe_quantity": 75,
-    "ce_quantity": 75,
+    "pe_quantity": 65,
+    "ce_quantity": 65,
     "pe_symbol_gap": 200,
     "ce_symbol_gap": 200,
     "min_price_to_sell": 15,
@@ -78,11 +79,30 @@ def get_config() -> dict[str, Any]:
     return {**DEFAULT_CONFIG, **raw}
 
 
+def lot_size_for(underlying: str) -> int:
+    return int(INDEX_OPTIONS.get(underlying, {}).get("lot_size") or 1)
+
+
+def validate_quantities(cfg: dict[str, Any]) -> None:
+    underlying = str(cfg.get("underlying") or "NIFTY")
+    lot = lot_size_for(underlying)
+    for field in ("pe_quantity", "ce_quantity"):
+        qty = int(cfg[field])
+        if qty <= 0:
+            raise ValueError(f"{field} must be > 0")
+        if qty % lot != 0:
+            raise ValueError(
+                f"{field}={qty} must be a multiple of {underlying} lot size ({lot}); "
+                f"e.g. {lot}, {lot * 2}, {lot * 3}"
+            )
+
+
 def save_config(patch: dict[str, Any]) -> dict[str, Any]:
     current = get_config()
     for k, v in patch.items():
         if v is not None:
             current[k] = v
+    validate_quantities(current)
     _write_json(CONFIG_FILE, current)
     return current
 

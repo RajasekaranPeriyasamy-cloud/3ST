@@ -9,22 +9,56 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WidgetDeskRouteImport } from './routes/widget-desk'
 import { Route as WaveRouteImport } from './routes/wave'
+import { Route as VolSurfaceRouteImport } from './routes/vol-surface'
+import { Route as VannaExposureRouteImport } from './routes/vanna-exposure'
+import { Route as TradeSuggestionsRouteImport } from './routes/trade-suggestions'
 import { Route as SurvivorRouteImport } from './routes/survivor'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as RrgRouteImport } from './routes/rrg'
 import { Route as RollingStraddleRouteImport } from './routes/rolling-straddle'
+import { Route as PricingEngineRouteImport } from './routes/pricing-engine'
+import { Route as PremiumBookRouteImport } from './routes/premium-book'
 import { Route as OiVarRouteImport } from './routes/oi-var'
 import { Route as OiTrackerRouteImport } from './routes/oi-tracker'
+import { Route as OiProfileRouteImport } from './routes/oi-profile'
+import { Route as OiMoversRouteImport } from './routes/oi-movers'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LiveRouteImport } from './routes/live'
+import { Route as LatencyRouteImport } from './routes/latency'
+import { Route as IvSmileRouteImport } from './routes/iv-smile'
+import { Route as GammaDensityRouteImport } from './routes/gamma-density'
 import { Route as ExecutionRouteImport } from './routes/execution'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as BacktestRouteImport } from './routes/backtest'
+import { Route as ArbitrageRouteImport } from './routes/arbitrage'
+import { Route as AnalogueRouteImport } from './routes/analogue'
 import { Route as IndexRouteImport } from './routes/index'
 
+const WidgetDeskRoute = WidgetDeskRouteImport.update({
+  id: '/widget-desk',
+  path: '/widget-desk',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WaveRoute = WaveRouteImport.update({
   id: '/wave',
   path: '/wave',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VolSurfaceRoute = VolSurfaceRouteImport.update({
+  id: '/vol-surface',
+  path: '/vol-surface',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VannaExposureRoute = VannaExposureRouteImport.update({
+  id: '/vanna-exposure',
+  path: '/vanna-exposure',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TradeSuggestionsRoute = TradeSuggestionsRouteImport.update({
+  id: '/trade-suggestions',
+  path: '/trade-suggestions',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SurvivorRoute = SurvivorRouteImport.update({
@@ -37,9 +71,24 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RrgRoute = RrgRouteImport.update({
+  id: '/rrg',
+  path: '/rrg',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RollingStraddleRoute = RollingStraddleRouteImport.update({
   id: '/rolling-straddle',
   path: '/rolling-straddle',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PricingEngineRoute = PricingEngineRouteImport.update({
+  id: '/pricing-engine',
+  path: '/pricing-engine',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PremiumBookRoute = PremiumBookRouteImport.update({
+  id: '/premium-book',
+  path: '/premium-book',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OiVarRoute = OiVarRouteImport.update({
@@ -52,6 +101,16 @@ const OiTrackerRoute = OiTrackerRouteImport.update({
   path: '/oi-tracker',
   getParentRoute: () => rootRouteImport,
 } as any)
+const OiProfileRoute = OiProfileRouteImport.update({
+  id: '/oi-profile',
+  path: '/oi-profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OiMoversRoute = OiMoversRouteImport.update({
+  id: '/oi-movers',
+  path: '/oi-movers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -60,6 +119,21 @@ const LoginRoute = LoginRouteImport.update({
 const LiveRoute = LiveRouteImport.update({
   id: '/live',
   path: '/live',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LatencyRoute = LatencyRouteImport.update({
+  id: '/latency',
+  path: '/latency',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IvSmileRoute = IvSmileRouteImport.update({
+  id: '/iv-smile',
+  path: '/iv-smile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GammaDensityRoute = GammaDensityRouteImport.update({
+  id: '/gamma-density',
+  path: '/gamma-density',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExecutionRoute = ExecutionRouteImport.update({
@@ -77,6 +151,16 @@ const BacktestRoute = BacktestRouteImport.update({
   path: '/backtest',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ArbitrageRoute = ArbitrageRouteImport.update({
+  id: '/arbitrage',
+  path: '/arbitrage',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AnalogueRoute = AnalogueRouteImport.update({
+  id: '/analogue',
+  path: '/analogue',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -85,114 +169,240 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/analogue': typeof AnalogueRoute
+  '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/dashboard': typeof DashboardRoute
   '/execution': typeof ExecutionRoute
+  '/gamma-density': typeof GammaDensityRoute
+  '/iv-smile': typeof IvSmileRoute
+  '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/oi-movers': typeof OiMoversRoute
+  '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/premium-book': typeof PremiumBookRoute
+  '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
+  '/rrg': typeof RrgRoute
   '/settings': typeof SettingsRoute
   '/survivor': typeof SurvivorRoute
+  '/trade-suggestions': typeof TradeSuggestionsRoute
+  '/vanna-exposure': typeof VannaExposureRoute
+  '/vol-surface': typeof VolSurfaceRoute
   '/wave': typeof WaveRoute
+  '/widget-desk': typeof WidgetDeskRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/analogue': typeof AnalogueRoute
+  '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/dashboard': typeof DashboardRoute
   '/execution': typeof ExecutionRoute
+  '/gamma-density': typeof GammaDensityRoute
+  '/iv-smile': typeof IvSmileRoute
+  '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/oi-movers': typeof OiMoversRoute
+  '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/premium-book': typeof PremiumBookRoute
+  '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
+  '/rrg': typeof RrgRoute
   '/settings': typeof SettingsRoute
   '/survivor': typeof SurvivorRoute
+  '/trade-suggestions': typeof TradeSuggestionsRoute
+  '/vanna-exposure': typeof VannaExposureRoute
+  '/vol-surface': typeof VolSurfaceRoute
   '/wave': typeof WaveRoute
+  '/widget-desk': typeof WidgetDeskRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/analogue': typeof AnalogueRoute
+  '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/dashboard': typeof DashboardRoute
   '/execution': typeof ExecutionRoute
+  '/gamma-density': typeof GammaDensityRoute
+  '/iv-smile': typeof IvSmileRoute
+  '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/oi-movers': typeof OiMoversRoute
+  '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/premium-book': typeof PremiumBookRoute
+  '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
+  '/rrg': typeof RrgRoute
   '/settings': typeof SettingsRoute
   '/survivor': typeof SurvivorRoute
+  '/trade-suggestions': typeof TradeSuggestionsRoute
+  '/vanna-exposure': typeof VannaExposureRoute
+  '/vol-surface': typeof VolSurfaceRoute
   '/wave': typeof WaveRoute
+  '/widget-desk': typeof WidgetDeskRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/analogue'
+    | '/arbitrage'
     | '/backtest'
     | '/dashboard'
     | '/execution'
+    | '/gamma-density'
+    | '/iv-smile'
+    | '/latency'
     | '/live'
     | '/login'
+    | '/oi-movers'
+    | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/premium-book'
+    | '/pricing-engine'
     | '/rolling-straddle'
+    | '/rrg'
     | '/settings'
     | '/survivor'
+    | '/trade-suggestions'
+    | '/vanna-exposure'
+    | '/vol-surface'
     | '/wave'
+    | '/widget-desk'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/analogue'
+    | '/arbitrage'
     | '/backtest'
     | '/dashboard'
     | '/execution'
+    | '/gamma-density'
+    | '/iv-smile'
+    | '/latency'
     | '/live'
     | '/login'
+    | '/oi-movers'
+    | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/premium-book'
+    | '/pricing-engine'
     | '/rolling-straddle'
+    | '/rrg'
     | '/settings'
     | '/survivor'
+    | '/trade-suggestions'
+    | '/vanna-exposure'
+    | '/vol-surface'
     | '/wave'
+    | '/widget-desk'
   id:
     | '__root__'
     | '/'
+    | '/analogue'
+    | '/arbitrage'
     | '/backtest'
     | '/dashboard'
     | '/execution'
+    | '/gamma-density'
+    | '/iv-smile'
+    | '/latency'
     | '/live'
     | '/login'
+    | '/oi-movers'
+    | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/premium-book'
+    | '/pricing-engine'
     | '/rolling-straddle'
+    | '/rrg'
     | '/settings'
     | '/survivor'
+    | '/trade-suggestions'
+    | '/vanna-exposure'
+    | '/vol-surface'
     | '/wave'
+    | '/widget-desk'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AnalogueRoute: typeof AnalogueRoute
+  ArbitrageRoute: typeof ArbitrageRoute
   BacktestRoute: typeof BacktestRoute
   DashboardRoute: typeof DashboardRoute
   ExecutionRoute: typeof ExecutionRoute
+  GammaDensityRoute: typeof GammaDensityRoute
+  IvSmileRoute: typeof IvSmileRoute
+  LatencyRoute: typeof LatencyRoute
   LiveRoute: typeof LiveRoute
   LoginRoute: typeof LoginRoute
+  OiMoversRoute: typeof OiMoversRoute
+  OiProfileRoute: typeof OiProfileRoute
   OiTrackerRoute: typeof OiTrackerRoute
   OiVarRoute: typeof OiVarRoute
+  PremiumBookRoute: typeof PremiumBookRoute
+  PricingEngineRoute: typeof PricingEngineRoute
   RollingStraddleRoute: typeof RollingStraddleRoute
+  RrgRoute: typeof RrgRoute
   SettingsRoute: typeof SettingsRoute
   SurvivorRoute: typeof SurvivorRoute
+  TradeSuggestionsRoute: typeof TradeSuggestionsRoute
+  VannaExposureRoute: typeof VannaExposureRoute
+  VolSurfaceRoute: typeof VolSurfaceRoute
   WaveRoute: typeof WaveRoute
+  WidgetDeskRoute: typeof WidgetDeskRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/widget-desk': {
+      id: '/widget-desk'
+      path: '/widget-desk'
+      fullPath: '/widget-desk'
+      preLoaderRoute: typeof WidgetDeskRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/wave': {
       id: '/wave'
       path: '/wave'
       fullPath: '/wave'
       preLoaderRoute: typeof WaveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/vol-surface': {
+      id: '/vol-surface'
+      path: '/vol-surface'
+      fullPath: '/vol-surface'
+      preLoaderRoute: typeof VolSurfaceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/vanna-exposure': {
+      id: '/vanna-exposure'
+      path: '/vanna-exposure'
+      fullPath: '/vanna-exposure'
+      preLoaderRoute: typeof VannaExposureRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/trade-suggestions': {
+      id: '/trade-suggestions'
+      path: '/trade-suggestions'
+      fullPath: '/trade-suggestions'
+      preLoaderRoute: typeof TradeSuggestionsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/survivor': {
@@ -209,11 +419,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/rrg': {
+      id: '/rrg'
+      path: '/rrg'
+      fullPath: '/rrg'
+      preLoaderRoute: typeof RrgRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/rolling-straddle': {
       id: '/rolling-straddle'
       path: '/rolling-straddle'
       fullPath: '/rolling-straddle'
       preLoaderRoute: typeof RollingStraddleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pricing-engine': {
+      id: '/pricing-engine'
+      path: '/pricing-engine'
+      fullPath: '/pricing-engine'
+      preLoaderRoute: typeof PricingEngineRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/premium-book': {
+      id: '/premium-book'
+      path: '/premium-book'
+      fullPath: '/premium-book'
+      preLoaderRoute: typeof PremiumBookRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/oi-var': {
@@ -230,6 +461,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OiTrackerRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/oi-profile': {
+      id: '/oi-profile'
+      path: '/oi-profile'
+      fullPath: '/oi-profile'
+      preLoaderRoute: typeof OiProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/oi-movers': {
+      id: '/oi-movers'
+      path: '/oi-movers'
+      fullPath: '/oi-movers'
+      preLoaderRoute: typeof OiMoversRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -242,6 +487,27 @@ declare module '@tanstack/react-router' {
       path: '/live'
       fullPath: '/live'
       preLoaderRoute: typeof LiveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/latency': {
+      id: '/latency'
+      path: '/latency'
+      fullPath: '/latency'
+      preLoaderRoute: typeof LatencyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/iv-smile': {
+      id: '/iv-smile'
+      path: '/iv-smile'
+      fullPath: '/iv-smile'
+      preLoaderRoute: typeof IvSmileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/gamma-density': {
+      id: '/gamma-density'
+      path: '/gamma-density'
+      fullPath: '/gamma-density'
+      preLoaderRoute: typeof GammaDensityRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/execution': {
@@ -265,6 +531,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BacktestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/arbitrage': {
+      id: '/arbitrage'
+      path: '/arbitrage'
+      fullPath: '/arbitrage'
+      preLoaderRoute: typeof ArbitrageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/analogue': {
+      id: '/analogue'
+      path: '/analogue'
+      fullPath: '/analogue'
+      preLoaderRoute: typeof AnalogueRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -277,17 +557,31 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AnalogueRoute: AnalogueRoute,
+  ArbitrageRoute: ArbitrageRoute,
   BacktestRoute: BacktestRoute,
   DashboardRoute: DashboardRoute,
   ExecutionRoute: ExecutionRoute,
+  GammaDensityRoute: GammaDensityRoute,
+  IvSmileRoute: IvSmileRoute,
+  LatencyRoute: LatencyRoute,
   LiveRoute: LiveRoute,
   LoginRoute: LoginRoute,
+  OiMoversRoute: OiMoversRoute,
+  OiProfileRoute: OiProfileRoute,
   OiTrackerRoute: OiTrackerRoute,
   OiVarRoute: OiVarRoute,
+  PremiumBookRoute: PremiumBookRoute,
+  PricingEngineRoute: PricingEngineRoute,
   RollingStraddleRoute: RollingStraddleRoute,
+  RrgRoute: RrgRoute,
   SettingsRoute: SettingsRoute,
   SurvivorRoute: SurvivorRoute,
+  TradeSuggestionsRoute: TradeSuggestionsRoute,
+  VannaExposureRoute: VannaExposureRoute,
+  VolSurfaceRoute: VolSurfaceRoute,
   WaveRoute: WaveRoute,
+  WidgetDeskRoute: WidgetDeskRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

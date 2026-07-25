@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from config import INDEX_OPTIONS, OI_TRACKER_DEFAULTS
@@ -11,6 +11,143 @@ from options.chain import atm_strike, get_chain, get_index_spot, nearest_expiry
 from options.iv import implied_volatility, time_to_expiry_years
 from options.oi_signal import compute_interval_signals, compute_overall_bias
 from options.oi_tracker_store import append_log
+
+
+def _format_expiry_short(expiry: str) -> str:
+    """Format ISO expiry (YYYY-MM-DD…) as ``21-Jul-26``."""
+    try:
+        d = date.fromisoformat(str(expiry)[:10])
+    except ValueError:
+        return str(expiry)
+    return d.strftime("%d-%b-%y")
+
+
+def _contract_label(strike: Any, option_type: str, expiry: str) -> str:
+    try:
+        strike_s = f"{float(strike):,.0f}"
+    except (TypeError, ValueError):
+        strike_s = str(strike)
+    return f"{strike_s} {option_type} {_format_expiry_short(expiry)}"
+
+
+def _prev_oi(latest_oi: Any, abs_chg: Any) -> int | None:
+    if latest_oi is None or abs_chg is None:
+        return None
+    try:
+        return int(latest_oi) - int(abs_chg)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_oi_change_boards(
+    calls: list[dict[str, Any]],
+    puts: list[dict[str, Any]],
+    *,
+    expiry: str,
+    intervals_min: tuple[int, ...] | list[int],
+    top_n: int = 5,
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Rank CE and PE separately into Increase/Decrease × Absolute/Percent boards.
+
+    Each board list is ``CE top_n`` followed by ``PE top_n`` so the UI can split
+    calls and puts inside the same Increase/Decrease card.
+    """
+    boards: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
+    for interval in intervals_min:
+        key = str(interval)
+        entries: list[dict[str, Any]] = []
+        for side, option_type in ((calls, "CE"), (puts, "PE")):
+            for row in side:
+                abs_chg = (row.get("abs") or {}).get(key)
+                pct_chg = (row.get("pct") or {}).get(key)
+                curr_oi = row.get("latest_oi")
+                if abs_chg is None and pct_chg is None:
+                    continue
+                if curr_oi is None:
+                    continue
+                prev = (row.get("prev_oi") or {}).get(key)
+                if prev is None:
+                    prev = _prev_oi(curr_oi, abs_chg)
+                strike = row.get("strike")
+                entries.append(
+                    {
+                        "contract": _contract_label(strike, option_type, expiry),
+                        "strike": strike,
+                        "option_type": option_type,
+                        "expiry_label": _format_expiry_short(expiry),
+                        "prev_oi": prev,
+                        "curr_oi": int(curr_oi) if curr_oi is not None else None,
+                        "abs_chg": int(abs_chg) if abs_chg is not None else None,
+                        "pct_chg": float(pct_chg) if pct_chg is not None else None,
+                    }
+                )
+
+        def _with_bars(
+            ranked: list[dict[str, Any]],
+            metric: str,
+        ) -> list[dict[str, Any]]:
+            sliced = ranked[: max(0, int(top_n))]
+            magnitudes = [
+                abs(float(e[metric]))
+                for e in sliced
+                if e.get(metric) is not None
+            ]
+            peak = max(magnitudes) if magnitudes else 0.0
+            out: list[dict[str, Any]] = []
+            for e in sliced:
+                val = e.get(metric)
+                bar = 0.0
+                if peak > 0 and val is not None:
+                    bar = round(abs(float(val)) / peak * 100.0, 1)
+                out.append({**e, "bar_pct": bar})
+            return out
+
+        def _side_board(
+            option_type: str,
+            *,
+            metric: str,
+            positive: bool,
+        ) -> list[dict[str, Any]]:
+            side_rows = [e for e in entries if e.get("option_type") == option_type]
+            if metric == "abs_chg":
+                if positive:
+                    ranked = sorted(
+                        [e for e in side_rows if e.get("abs_chg") is not None and e["abs_chg"] > 0],
+                        key=lambda e: e["abs_chg"],
+                        reverse=True,
+                    )
+                else:
+                    ranked = sorted(
+                        [e for e in side_rows if e.get("abs_chg") is not None and e["abs_chg"] < 0],
+                        key=lambda e: e["abs_chg"],  # most negative first
+                    )
+            else:
+                if positive:
+                    ranked = sorted(
+                        [e for e in side_rows if e.get("pct_chg") is not None and e["pct_chg"] > 0],
+                        key=lambda e: e["pct_chg"],
+                        reverse=True,
+                    )
+                else:
+                    ranked = sorted(
+                        [e for e in side_rows if e.get("pct_chg") is not None and e["pct_chg"] < 0],
+                        key=lambda e: e["pct_chg"],
+                    )
+            return _with_bars(ranked, metric)
+
+        boards[key] = {
+            "increase_abs": _side_board("CE", metric="abs_chg", positive=True)
+            + _side_board("PE", metric="abs_chg", positive=True),
+            "increase_pct": _side_board("CE", metric="pct_chg", positive=True)
+            + _side_board("PE", metric="pct_chg", positive=True),
+            "decrease_abs": _side_board("CE", metric="abs_chg", positive=False)
+            + _side_board("PE", metric="abs_chg", positive=False),
+            "decrease_pct": _side_board("CE", metric="pct_chg", positive=False)
+            + _side_board("PE", metric="pct_chg", positive=False),
+        }
+
+    return boards
 
 
 def _key_suffix(index_from_atm: int) -> str:
@@ -275,15 +412,19 @@ def _build_side_rows(
         position = contract.get("position", 0)
         pct_map: dict[str, float | None] = {}
         abs_map: dict[str, int | None] = {}
+        prev_map: dict[str, int | None] = {}
         breach_map: dict[str, bool] = {}
         iv_pct_map: dict[str, float | None] = {}
         iv_abs_map: dict[str, float | None] = {}
         signals_map: dict[str, dict[str, str] | None] = signal_map.get(key, {})
+        latest_oi = data.get("latest_oi")
 
         for interval in intervals_min:
             pct = data.get(f"pct_diff_{interval}m")
+            abs_chg = data.get(f"abs_diff_{interval}m")
             pct_map[str(interval)] = pct
-            abs_map[str(interval)] = data.get(f"abs_diff_{interval}m")
+            abs_map[str(interval)] = abs_chg
+            prev_map[str(interval)] = _prev_oi(latest_oi, abs_chg)
             iv_pct_map[str(interval)] = iv_data.get(f"iv_pct_diff_{interval}m")
             iv_abs_map[str(interval)] = iv_data.get(f"iv_abs_diff_{interval}m")
             cell_count += 1
@@ -304,12 +445,13 @@ def _build_side_rows(
                 "symbol": contract.get("tradingsymbol", "N/A"),
                 "instrument_token": contract.get("instrument_token"),
                 "position": position,
-                "latest_oi": data.get("latest_oi"),
+                "latest_oi": latest_oi,
                 "oi_time": ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
                 "ltp": iv_data.get("ltp"),
                 "iv": iv_data.get("iv"),
                 "pct": pct_map,
                 "abs": abs_map,
+                "prev_oi": prev_map,
                 "iv_pct": iv_pct_map,
                 "iv_abs": iv_abs_map,
                 "signals": signals_map,
@@ -332,6 +474,8 @@ def tracker_config() -> dict[str, Any]:
         "risk_free_rate": defaults["risk_free_rate"],
         "bias_interval_min": defaults.get("bias_interval_min", 15),
         "bias_sideways_threshold": defaults.get("bias_sideways_threshold", 0.55),
+        "change_board_top_n": defaults.get("change_board_top_n", 5),
+        "change_board_interval_min": defaults.get("change_board_interval_min", 15),
     }
 
 
@@ -432,6 +576,16 @@ def build_snapshot(
         sideways_threshold=float(defaults.get("bias_sideways_threshold", 0.55)),
     )
 
+    board_top_n = int(defaults.get("change_board_top_n", 5))
+    board_interval = int(defaults.get("change_board_interval_min", 15))
+    change_boards = build_oi_change_boards(
+        calls,
+        puts,
+        expiry=exp,
+        intervals_min=intervals,
+        top_n=board_top_n,
+    )
+
     snapshot = {
         "underlying": underlying,
         "expiry": exp,
@@ -444,6 +598,9 @@ def build_snapshot(
         "options_count": opt_count,
         "calls": calls,
         "puts": puts,
+        "change_boards": change_boards,
+        "change_board_top_n": board_top_n,
+        "change_board_interval_min": board_interval,
         "pcr": {
             "chain_oi": chain_pcr,
             "call_oi_total": call_oi_total,

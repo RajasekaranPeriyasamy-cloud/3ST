@@ -12,6 +12,8 @@ from execution.survivor_store import get_config as survivor_get_config
 from execution.survivor_store import get_state as survivor_get_state
 from execution.wave_store import get_config as wave_get_config
 from execution.wave_store import get_state as wave_get_state
+from execution.premium_book_store import get_config as pb_get_config
+from execution.premium_book_store import get_state as pb_get_state
 
 _thread: threading.Thread | None = None
 _stop_event = threading.Event()
@@ -58,6 +60,30 @@ def _run_sync_loop() -> None:
 
             _safe_tick("wave", wave_tick, wave_log)
 
+        pb_cfg = pb_get_config()
+        pb_state = pb_get_state()
+        pb_interval = max(15, int(pb_cfg.get("tick_interval_sec") or 60))
+        intervals.append(pb_interval)
+        if pb_state.get("runner") == "running":
+            from execution.premium_book_runner import tick as pb_tick
+            from execution.premium_book_store import append_log as pb_log
+
+            _safe_tick("premium_book", pb_tick, pb_log)
+
+        from watchlist_store import list_items as wl_list
+
+        if wl_list("active"):
+            from execution.watchlist_exit_runner import scan_watchlist_exits
+
+            def _exit_tick() -> None:
+                scan_watchlist_exits(auto_close=True)
+
+            _safe_tick("watchlist_exit", _exit_tick, lambda _k, _m: None)
+
+        from execution.reconcile import maybe_reconcile_periodic
+
+        _safe_tick("reconcile", maybe_reconcile_periodic, lambda _k, _m: None)
+
         sleep_sec = min(intervals) if intervals else 30
         _stop_event.wait(sleep_sec)
 
@@ -88,4 +114,5 @@ def scheduler_status() -> dict[str, Any]:
         "rolling_straddle": rs_get_state(),
         "survivor": survivor_get_state(),
         "wave": wave_get_state(),
+        "premium_book": pb_get_state(),
     }

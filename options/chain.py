@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import re
 from datetime import date
 from typing import Any
 
 import pandas as pd
 
 from config import INDEX_OPTIONS
-from instruments import load_instruments, resolve_instrument
+from instruments import CACHE_FILE, load_instruments, resolve_instrument
+
+_EXPIRIES_CACHE: dict[str, tuple[float, list[str]]] = {}
+_LTP_TIMEOUT_SEC = 10.0
+
+
+def tradingsymbol_matches_underlying(tradingsymbol: str, underlying: str) -> bool:
+    """True when symbol belongs to this underlying (CRUDEOIL vs CRUDEOILM are distinct)."""
+    sym = str(tradingsymbol or "").upper()
+    u = str(underlying or "").upper()
+    if not sym or not u:
+        return False
+    return bool(re.match(rf"^{re.escape(u)}\d", sym))
 
 
 def atm_strike(spot: float, step: int) -> float:
@@ -20,38 +34,55 @@ def _underlying_options_df(underlying: str) -> pd.DataFrame:
         raise ValueError(f"Unknown underlying '{underlying}'. Use {list(INDEX_OPTIONS)}")
 
     meta = INDEX_OPTIONS[underlying]
-    exchange = meta["exchange"]
+    exchange = str(meta["exchange"]).upper()
     df = load_instruments()
     if df.empty:
         return df
 
-    name = df["name"].astype(str).str.upper()
-    tsym = df["tradingsymbol"].astype(str).str.upper()
-    u = underlying.upper()
-    itype = df["instrument_type"].astype(str).str.upper()
-    exch = df["exchange"].astype(str).str.upper()
+    subset = df[df["exchange"].astype(str).str.upper() == exchange]
+    if subset.empty:
+        return subset
 
-    mask = (
-        (exch == exchange.upper())
-        & (itype.isin(["CE", "PE"]))
-        & ((name == u) | tsym.str.startswith(u))
-    )
-    return df[mask].copy()
+    u = underlying.upper()
+    name = subset["name"].astype(str).str.upper()
+    tsym = subset["tradingsymbol"].astype(str).str.upper()
+    itype = subset["instrument_type"].astype(str).str.upper()
+
+    mask = itype.isin(["CE", "PE"]) & ((name == u) | tsym.str.match(rf"^{re.escape(u)}\d", na=False))
+    return subset[mask].copy()
 
 
 def list_expiries(underlying: str) -> list[str]:
+    mtime = CACHE_FILE.stat().st_mtime if CACHE_FILE.exists() else 0.0
+    cached = _EXPIRIES_CACHE.get(underlying.upper())
+    if cached and cached[0] == mtime:
+        return cached[1]
+
     opts = _underlying_options_df(underlying)
     if opts.empty:
-        return []
-    expiries = opts["expiry"].dropna().unique()
-    parsed: list[date] = []
-    for e in expiries:
-        if isinstance(e, date):
-            parsed.append(e)
-        else:
-            parsed.append(pd.to_datetime(e).date())
-    parsed.sort()
-    return [d.isoformat() for d in parsed]
+        result: list[str] = []
+    else:
+        expiries = opts["expiry"].dropna().unique()
+        parsed: list[date] = []
+        for e in expiries:
+            if isinstance(e, date):
+                parsed.append(e)
+            else:
+                parsed.append(pd.to_datetime(e).date())
+        parsed.sort()
+        result = [d.isoformat() for d in parsed]
+
+    _EXPIRIES_CACHE[underlying.upper()] = (mtime, result)
+    return result
+
+
+def warm_expiries_cache() -> None:
+    """Pre-compute expiry lists for all index options (API startup warm)."""
+    for underlying in INDEX_OPTIONS:
+        try:
+            list_expiries(underlying)
+        except Exception:
+            pass
 
 
 def get_chain(underlying: str, expiry: str) -> dict[str, Any]:
@@ -94,34 +125,112 @@ def get_chain(underlying: str, expiry: str) -> dict[str, Any]:
     }
 
 
-def get_index_spot(underlying: str) -> float | None:
-    """Resolve index LTP via mapped index token key when available."""
+def _friendly_ltp_error(exc: Exception) -> str:
+    from kite_errors import friendly_kite_message
+
+    return friendly_kite_message(str(exc))
+
+
+def _fetch_symbol_ltp(
+    exchange: str,
+    tradingsymbol: str,
+    *,
+    instrument_token: int | None = None,
+) -> tuple[float | None, str | None]:
+    """LTP cache first, then Kite REST with a short timeout."""
+    try:
+        from execution.ltp_cache import get_ltp_cache
+
+        px = get_ltp_cache().get(exchange, tradingsymbol, instrument_token=instrument_token)
+        if px is not None:
+            return float(px), None
+    except Exception:
+        pass
+
+    sym = f"{exchange}:{tradingsymbol}"
+    try:
+        from kite_client import fetch_ltp_batch
+
+        def _call() -> dict[str, Any]:
+            return fetch_ltp_batch([sym])
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            data = pool.submit(_call).result(timeout=_LTP_TIMEOUT_SEC)
+        return float(data[sym]["last_price"]), None
+    except concurrent.futures.TimeoutError:
+        return None, f"Kite LTP timed out after {_LTP_TIMEOUT_SEC:.0f}s for {sym}"
+    except Exception as exc:
+        return None, _friendly_ltp_error(exc)
+
+
+def get_index_spot_detail(underlying: str) -> tuple[float | None, str | None]:
+    """Resolve spot LTP with a human-readable failure reason."""
     meta = INDEX_OPTIONS[underlying]
+    spot_source = meta.get("spot_source") or ("index" if meta.get("index_token_key") else "future")
+
+    if spot_source == "future":
+        try:
+            from instruments import resolve_future
+
+            fut = resolve_future(underlying)
+            px, err = _fetch_symbol_ltp(
+                str(fut["exchange"]),
+                str(fut["tradingsymbol"]),
+                instrument_token=int(fut["instrument_token"]),
+            )
+            if px is not None:
+                return px, None
+            sym = f"{fut['exchange']}:{fut['tradingsymbol']}"
+            return None, err or f"No LTP for {sym}"
+        except Exception as exc:
+            return None, _friendly_ltp_error(exc)
+
     key = meta.get("index_token_key")
     if key:
         try:
-            from kite_auth import get_kite_client
-
             resolved = resolve_instrument(key)
-            kite = get_kite_client()
-            sym = f"{resolved['exchange']}:{resolved['tradingsymbol']}"
-            data = kite.ltp(sym)
-            return float(data[sym]["last_price"])
-        except Exception:
-            pass
+            px, err = _fetch_symbol_ltp(
+                str(resolved["exchange"]),
+                str(resolved["tradingsymbol"]),
+                instrument_token=int(resolved["instrument_token"]),
+            )
+            if px is not None:
+                return px, None
+            return None, err
+        except Exception as exc:
+            return None, _friendly_ltp_error(exc)
 
-    # Fallback: middle strike of nearest expiry chain (approximate spot)
+    if spot_source == "future":
+        return None, f"No spot source for {underlying}"
+
     expiries = list_expiries(underlying)
     if not expiries:
-        return None
+        return None, f"No option expiries for {underlying}"
     today = date.today()
     nearest = next((e for e in expiries if pd.to_datetime(e).date() >= today), expiries[-1])
     chain = get_chain(underlying, nearest)
     strikes = chain.get("strikes") or []
     if not strikes:
-        return None
+        return None, f"Empty chain for {underlying} {nearest}"
     mid = strikes[len(strikes) // 2]["strike"]
-    return float(mid)
+    return float(mid), None
+
+
+def get_index_spot(underlying: str) -> float | None:
+    """Resolve spot LTP — index token for NSE/BSE indices, front-month future for MCX."""
+    px, _ = get_index_spot_detail(underlying)
+    return px
+
+
+def require_index_spot(underlying: str) -> float:
+    """Spot LTP or raise with a user-facing reason (network, session, market data)."""
+    from kite_errors import friendly_kite_message
+
+    px, err = get_index_spot_detail(underlying)
+    if px is not None:
+        return float(px)
+    detail = friendly_kite_message(err or f"Index spot unavailable for {underlying}")
+    raise RuntimeError(detail)
 
 
 def nearest_expiry(underlying: str) -> str | None:
@@ -134,6 +243,20 @@ def nearest_expiry(underlying: str) -> str | None:
         if pd.to_datetime(exp).date() >= today:
             return exp
     return expiries[-1]
+
+
+def resolve_expiry(underlying: str, expiry: str | None = None) -> str | None:
+    """Return a valid option expiry for underlying; fall back to nearest when missing/invalid."""
+    available = list_expiries(underlying)
+    if not available:
+        return None
+    if expiry:
+        exp_date = pd.to_datetime(expiry, errors="coerce")
+        if pd.notna(exp_date):
+            iso = exp_date.date().isoformat()
+            if iso in available:
+                return iso
+    return nearest_expiry(underlying)
 
 
 def find_option_leg(

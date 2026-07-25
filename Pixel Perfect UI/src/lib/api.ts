@@ -1,11 +1,33 @@
 import { toast } from "sonner";
 
-const BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ||
-  "http://127.0.0.1:8000";
+function resolveApiBaseUrl(): string {
+  const fromEnv = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(
+    /\/$/,
+    "",
+  );
+  if (fromEnv) return fromEnv;
+
+  // Dev UI on :8080 must not call itself for API (SPA returns HTML).
+  if (typeof window !== "undefined") {
+    const { protocol, hostname, port } = window.location;
+    if (port === "8080" || port === "8081" || port === "8082" || port === "5173") {
+      return `${protocol}//${hostname}:8001`;
+    }
+  }
+  return "";
+}
 
 export function getApiBaseUrl() {
-  return BASE_URL;
+  return resolveApiBaseUrl();
+}
+
+/** Build a ws:// or wss:// URL for a backend WebSocket path (e.g. "/ws/ltp"). */
+export function getWsUrl(path: string) {
+  const origin =
+    resolveApiBaseUrl() ||
+    (typeof window !== "undefined" ? window.location.origin : "");
+  const wsOrigin = origin.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  return `${wsOrigin}${path}`;
 }
 
 export class ApiError extends Error {
@@ -45,9 +67,13 @@ async function request<T>(
   init: RequestInit = {},
   { silent = false }: { silent?: boolean } = {},
 ): Promise<T> {
-  const url = `${BASE_URL}${path}`;
+  const base = resolveApiBaseUrl();
+  const url = `${base}${path}`;
   const headers: Record<string, string> = {
     Accept: "application/json",
+    // Defeat browsers that cached SPA HTML for these URLs when routes were missing.
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
     ...(init.headers as Record<string, string> | undefined),
   };
   if (init.body && !headers["Content-Type"]) {
@@ -56,7 +82,7 @@ async function request<T>(
 
   let res: Response;
   try {
-    res = await fetch(url, { ...init, headers });
+    res = await fetch(url, { ...init, headers, cache: "no-store" });
   } catch (e) {
     const msg = `Network error contacting ${url}`;
     if (!silent) toast.error(msg);
@@ -64,10 +90,22 @@ async function request<T>(
   }
 
   const text = await res.text();
-  const data = text ? safeJson(text) : null;
+  let data: unknown = null;
+  let parseOk = false;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+      parseOk = true;
+    } catch {
+      data = text;
+    }
+  }
+  const looksLikeHtml = typeof data === "string" && /^\s*</.test(data);
 
   if (!res.ok) {
-    const detail = formatApiError(data, text || res.statusText);
+    const detail = looksLikeHtml
+      ? `API ${res.status} for ${url}`
+      : formatApiError(data, text || res.statusText);
     if (res.status === 401 && typeof window !== "undefined") {
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
@@ -76,15 +114,21 @@ async function request<T>(
     if (!silent) toast.error(detail);
     throw new ApiError(res.status, detail);
   }
-  return data as T;
-}
-
-function safeJson(t: string): unknown {
-  try {
-    return JSON.parse(t);
-  } catch {
-    return t;
+  // SPA fallback can return index.html with 200 — never treat that as JSON data.
+  if (!parseOk || looksLikeHtml) {
+    // One cache-bust retry (stale HTML from when API routes were missing).
+    if (!path.includes("_cb=")) {
+      const join = path.includes("?") ? "&" : "?";
+      return request<T>(`${path}${join}_cb=${Date.now()}`, init, { silent });
+    }
+    const snippet = text.replace(/\s+/g, " ").slice(0, 80);
+    const detail =
+      `Expected JSON from ${url}, got HTML/text (${snippet}…). ` +
+      `Clear site data for 127.0.0.1:8001 (DevTools → Application → Clear storage), then hard-refresh.`;
+    if (!silent) toast.error(detail);
+    throw new ApiError(res.status || 502, detail);
   }
+  return data as T;
 }
 
 export const api = {

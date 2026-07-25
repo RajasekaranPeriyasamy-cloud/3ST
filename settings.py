@@ -61,6 +61,25 @@ def kite_proxy_config() -> dict | None:
     return proxy_config()
 
 
+def kite_allowed_egress_ip() -> str:
+    """Fixed IP whitelisted on developers.kite.trade (staticip.in egress)."""
+    return env("KITE_ALLOWED_EGRESS_IP")
+
+
+def apply_kite_proxy_env() -> bool:
+    """Pin process-wide HTTP(S)_PROXY so Kite cannot bypass staticip.in."""
+    if not kite_use_staticip_proxy():
+        return False
+    proxies = proxy_config()
+    if not proxies:
+        return False
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ[key] = proxies["https"]
+    for key in ("NO_PROXY", "no_proxy"):
+        os.environ.pop(key, None)
+    return True
+
+
 def proxy_ready() -> bool:
     return proxy_config() is not None
 
@@ -75,8 +94,13 @@ def kite_credentials() -> dict:
     return {
         "api_key": env("KITE_API_KEY"),
         "api_secret": env("KITE_API_SECRET"),
-        "redirect_url": env("KITE_REDIRECT_URL", "http://127.0.0.1:5173/"),
+        "redirect_url": env("KITE_REDIRECT_URL", "http://127.0.0.1:8001/auth/callback"),
     }
+
+
+def desk_ui_url() -> str:
+    """UI base URL — OAuth callback redirects here after Kite login."""
+    return env("DESK_UI_URL", "http://127.0.0.1:8080").rstrip("/")
 
 
 def kite_ready() -> bool:

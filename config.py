@@ -35,6 +35,8 @@ INSTRUMENTS = {
 
 # UI label -> Firstock interval code (kept for optional Firstock path)
 TIMEFRAMES = {
+    "1min": "1mi",
+    "3min": "3mi",
     "5min": "5mi",
     "15min": "15mi",
     "30min": "30mi",
@@ -43,6 +45,8 @@ TIMEFRAMES = {
 
 # UI label -> Kite Connect historical interval
 KITE_INTERVALS = {
+    "1min": "minute",
+    "3min": "3minute",
     "5min": "5minute",
     "15min": "15minute",
     "30min": "30minute",
@@ -58,6 +62,8 @@ KITE_INDEX_LOOKUP = {
 
 # Yahoo Finance max lookback by timeframe (days)
 YAHOO_MAX_DAYS = {
+    "1min": 7,
+    "3min": 59,
     "5min": 59,
     "15min": 59,
     "30min": 59,
@@ -66,10 +72,20 @@ YAHOO_MAX_DAYS = {
 
 # Kite Connect historical candle lookback (days from today, per interval group)
 KITE_MAX_DAYS = {
+    "1min": 60,
+    "3min": 100,
     "5min": 100,
     "15min": 400,
     "30min": 400,
     "60min": 400,
+}
+
+# MCX market hours are fixed. Entry start / force exit remain user-editable.
+MCX_SESSION = {
+    "session_start": "09:00",
+    "session_end": "23:30",
+    "force_exit": "23:20",
+    "entry_start": "09:20",
 }
 
 # Index options metadata for spread builder (lot sizes approximate — Kite dump is source of truth)
@@ -77,7 +93,7 @@ INDEX_OPTIONS = {
     "NIFTY": {
         "exchange": "NFO",
         "strike_step": 50,
-        "lot_size": 75,
+        "lot_size": 65,
         "index_token_key": "NIFTY50",
     },
     "BANKNIFTY": {
@@ -92,7 +108,52 @@ INDEX_OPTIONS = {
         "lot_size": 20,
         "index_token_key": "SENSEX",
     },
+    "CRUDEOIL": {
+        "exchange": "MCX",
+        "strike_step": 50,
+        "lot_size": 1,
+        "spot_source": "future",
+        "label": "Crude Oil",
+        "session": MCX_SESSION,
+        "default_product": "NRML",
+    },
+    "CRUDEOILM": {
+        "exchange": "MCX",
+        "strike_step": 50,
+        "lot_size": 1,
+        "spot_source": "future",
+        "label": "Crude Oil Mini",
+        "session": MCX_SESSION,
+        "default_product": "NRML",
+    },
+    "NATURALGAS": {
+        "exchange": "MCX",
+        "strike_step": 5,
+        "lot_size": 1,
+        "spot_source": "future",
+        "label": "Natural Gas",
+        "session": MCX_SESSION,
+        "default_product": "NRML",
+    },
 }
+
+MCX_OPTION_UNDERLYINGS = ("CRUDEOIL", "CRUDEOILM", "NATURALGAS")
+
+
+def is_mcx_underlying(underlying: str | None) -> bool:
+    u = str(underlying or "").upper()
+    meta = INDEX_OPTIONS.get(u) or {}
+    return str(meta.get("exchange") or "").upper() == "MCX"
+
+
+def lock_mcx_market_session(cfg: dict) -> dict:
+    """Force MCX market session to 09:00–23:30. Does not touch entry_start / force_exit."""
+    if not is_mcx_underlying(cfg.get("underlying")):
+        return cfg
+    cfg["session_start"] = MCX_SESSION["session_start"]
+    cfg["session_end"] = MCX_SESSION["session_end"]
+    return cfg
+
 
 DEFAULT_SESSION = {
     "session_start": "09:15",
@@ -100,7 +161,7 @@ DEFAULT_SESSION = {
     "force_exit": "15:20",
 }
 
-# Default SuperTrend params (matches Pine)
+# SuperTrend params (matches Pine)
 DEFAULT_ST = {
     "atr1": 21,
     "factor1": 1.0,
@@ -141,11 +202,269 @@ OI_TRACKER_DEFAULTS = {
     "risk_free_rate": 0.065,
     "bias_interval_min": 15,
     "bias_sideways_threshold": 0.55,
+    "change_board_top_n": 5,
+    "change_board_interval_min": 15,
 }
 
 OI_VAR_DEFAULTS = {
     "top_n": 10,
     "refresh_seconds": 60,
+    # ΔVAR mode: oi_mark = ΔOI×LTP; true = VAR_now − VAR_base (base OI×LTP or stored EOD LTP)
+    "dvar_mode": "oi_mark",
+    "strike_window": 0,  # 0 = full chain; >0 = ATM ± N strikes for profile
+    "min_oi": 0,
+    "max_mid_spread_pct": 0.15,
+    "multi_expiry_count": 2,
+    "history_max_points": 120,
+    "alert_dvar_burst_cr": 25.0,  # ΔVAR burst threshold vs prior tick
+    "session_open_after": "09:20",  # IST — first snapshot after this becomes session open
+}
+
+# Gamma Density desk (Γ×OI density, dealer GEX, gamma-flip, expected-move bands)
+GAMMA_DENSITY_DEFAULTS = {
+    "risk_free_rate": 0.065,
+    "dividend_yield": 0.012,  # align with GREEKS_ENGINE_DEFAULTS
+    "refresh_seconds": 60,
+    # Strikes to show on each side of ATM in the density curve
+    "strike_window": 20,
+    # Prefer bid/ask mid when spread ≤ this fraction of mid
+    "max_mid_spread_pct": 0.12,
+    "min_oi": 50,
+    # naive = CE+ / PE− dealers; customer = inverted; oi_delta = sign from ΔOI vs EOD
+    "sign_mode": "naive",
+    "hedge_moves_pts": (50, 100),
+    "multi_expiry_count": 2,
+    "gex_profile_steps": 80,
+    "history_max_points": 120,
+    # Pin candidate when top-1 |GEX| share ≥ this (else wall midpoint / ATM)
+    "pin_share_threshold": 0.18,
+}
+
+# Higher-order Greeks desk (1st/2nd order BS + GEX/VEX integration).
+# European index options; r ≈ MIBOR/RBI proxy; q = index dividend yield.
+GREEKS_ENGINE_DEFAULTS = {
+    "risk_free_rate": 0.065,  # MIBOR / RBI reference proxy
+    "dividend_yield": 0.012,  # Nifty/BankNifty approx index yield
+    "refresh_seconds": 60,
+    "strike_window": 20,
+    # calendar = 365-day theta; trading_hours = 252 business-day theta
+    "theta_mode": "calendar",
+    "trading_days_per_year": 252,
+    "nse_session_hours": 6.25,  # 09:15–15:30 IST
+    "recommendations": {
+        "max_ideas": 6,
+        "disclaimer": (
+            "Higher-order greek model — not advice; does not arm or place orders. "
+            "Size premiums on Pricing Engine."
+        ),
+    },
+}
+
+# Unified trade-suggestions desk (GEX + VEX + higher-order greeks).
+TRADE_SUGGESTIONS_DEFAULTS = {
+    "index_underlyings": ("NIFTY", "BANKNIFTY", "SENSEX"),
+    "refresh_seconds": 60,
+    "strike_window": 20,
+    "max_ideas": 8,
+    "weekend_theta_boost_days": 2,  # Fri→Mon calendar bleed emphasis
+    "disclaimer": (
+        "Analytics suggestion — not advice; verify bid/ask and margins. "
+        "Does not arm or place orders."
+    ),
+}
+
+# Vanna Exposure desk (VEX raw + ₹, Vanna Line, IV shocks). Isolated from 3ST.
+VANNA_EXPOSURE_DEFAULTS = {
+    "risk_free_rate": 0.065,
+    "refresh_seconds": 60,
+    "strike_window": 20,
+    "iv_shock_vol_points": (1, 2),
+    # Trade ideas (dealer VEX / vol-up flow). Read-only — never arms/orders.
+    "recommendations": {
+        "max_ideas": 3,
+        "disclaimer": (
+            "Dealer-flow model — not advice; does not arm or place orders. "
+            "Size premiums on Pricing Engine."
+        ),
+    },
+}
+
+# Volatility surface desk (IV across strikes × expiries)
+VOL_SURFACE_DEFAULTS = {
+    "strike_count": 15,
+    "max_expiries": 6,
+    "refresh_seconds": 120,
+    "risk_free_rate": 0.065,
+}
+
+# IV Smile desk (single-expiry CE/PE IV curve)
+IV_SMILE_DEFAULTS = {
+    "index_underlyings": ("NIFTY", "BANKNIFTY", "SENSEX"),
+    "strike_count": 25,
+    "refresh_seconds": 60,
+    "risk_free_rate": 0.065,
+}
+
+# Complementary pricing engine (BS IV/Greeks + optional Heston-COS).
+# Isolated from Rolling Straddle / 3ST signal execution.
+PRICING_ENGINE_DEFAULTS = {
+    "index_underlyings": ("NIFTY", "BANKNIFTY", "SENSEX"),
+    "strike_count": 15,
+    "refresh_seconds": 30,
+    "risk_free_rate": 0.065,
+    "heston": {
+        "v0": 0.04,
+        "kappa": 2.0,
+        "theta": 0.04,
+        "sigma": 0.5,
+        "rho": -0.7,
+        "q": 0.0,
+    },
+    # Trade ideas on Live desk (BS edge). Read-only — never arms/orders.
+    "recommendations": {
+        "atm_window_steps": 2,
+        "min_ltp": 5.0,
+        "max_ideas": 3,
+        "disclaimer": (
+            "Model suggestion — not advice; verify bid/ask before order. "
+            "Does not arm or place orders."
+        ),
+    },
+}
+
+# Calendar futures spread arbitrage scanner
+CALENDAR_ARBITRAGE_DEFAULTS = {
+    "default_exchanges": ("NFO", "MCX"),
+    "refresh_seconds": 300,
+    "quote_refresh_seconds": 8,
+}
+
+# OI Profile desk (futures candles + OI-by-price butterfly + daily OI change)
+OI_PROFILE_DEFAULTS = {
+    # Intraday intervals offered for the candle/OI panel (UI label -> KITE_INTERVALS key)
+    "intervals": ("1min", "5min", "15min"),
+    "default_interval": "5min",
+    "default_days": 5,
+    "max_days": 30,
+    # Number of horizontal price buckets for the OI-by-price butterfly profile
+    "price_buckets": 24,
+    "refresh_seconds": 60,
+    # Index underlyings that have monthly futures with historical OI
+    "underlyings": ("NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"),
+}
+
+# Relative Rotation Graph (RRG-Lite parity — weekly RS ratio / momentum)
+RRG_BENCHMARKS = {
+    "NIFTY50": {"label": "NIFTY 50", "instrument_key": "NIFTY50"},
+    "BANKNIFTY50": {"label": "NIFTY BANK", "instrument_key": "BANKNIFTY50"},
+    "SENSEX": {"label": "SENSEX", "instrument_key": "SENSEX"},
+}
+
+RRG_DEFAULTS = {
+    "window": 14,
+    "period": 52,
+    "tail": 4,
+    "lookback_days": 900,
+}
+
+# Expiry-cycle analogue fan (historical path matching). Isolated from 3ST execution.
+ANALOGUE_DEFAULTS = {
+    "underlyings": ("NIFTY", "BANKNIFTY", "SENSEX"),
+    "max_lookback_days": 2500,
+    "default_cycle_kind": "monthly",
+    "default_similarity_band_pct": 4.0,
+    "similarity_band_min": 0.5,
+    "similarity_band_max": 15.0,
+    "max_analogue_paths": 80,
+    "refresh_seconds": 300,
+}
+
+# NSE sectoral indices for regime RRG (Kite NSE-INDICES tradingsymbols)
+RRG_SECTOR_INDICES: dict[str, dict[str, object]] = {
+    "NIFTY_AUTO": {"label": "Nifty Auto", "tradingsymbol": "NIFTY AUTO"},
+    "NIFTY_BANK": {"label": "Nifty Bank", "tradingsymbol": "NIFTY BANK"},
+    "NIFTY_FIN_SERVICE": {
+        "label": "Nifty Financial Services",
+        "tradingsymbol": "NIFTY FIN SERVICE",
+    },
+    "NIFTY_FMCG": {"label": "Nifty FMCG", "tradingsymbol": "NIFTY FMCG"},
+    "NIFTY_HEALTHCARE": {
+        "label": "Nifty Healthcare",
+        "tradingsymbol": "NIFTY HEALTHCARE",
+        "fallbacks": ["NIFTY HEALTH CARE"],
+    },
+    "NIFTY_IT": {"label": "Nifty IT", "tradingsymbol": "NIFTY IT"},
+    "NIFTY_MEDIA": {"label": "Nifty Media", "tradingsymbol": "NIFTY MEDIA"},
+    "NIFTY_METAL": {"label": "Nifty Metal", "tradingsymbol": "NIFTY METAL"},
+    "NIFTY_PHARMA": {"label": "Nifty Pharma", "tradingsymbol": "NIFTY PHARMA"},
+    "NIFTY_PVT_BANK": {
+        "label": "Nifty Private Bank",
+        "tradingsymbol": "NIFTY PVT BANK",
+        "fallbacks": ["NIFTY PRIVATE BANK"],
+    },
+    "NIFTY_PSU_BANK": {"label": "Nifty PSU Bank", "tradingsymbol": "NIFTY PSU BANK"},
+    "NIFTY_REALTY": {"label": "Nifty Realty", "tradingsymbol": "NIFTY REALTY"},
+    "NIFTY_CONSUMER_DURABLES": {
+        "label": "Nifty Consumer Durables",
+        "tradingsymbol": "NIFTY CONSR DURBL",
+        "fallbacks": ["NIFTY CONSUMER DURABLES"],
+    },
+    "NIFTY_OIL_GAS": {
+        "label": "Nifty Oil & Gas",
+        "tradingsymbol": "NIFTY OIL AND GAS",
+        "fallbacks": ["NIFTY ENERGY"],
+    },
+    "NIFTY_CHEMICALS": {"label": "Nifty Chemicals", "tradingsymbol": "NIFTY CHEMICALS"},
+}
+
+# NSDL BSE sector name → RRG sector index id (equity FPI overlay)
+FPI_SECTOR_TO_RRG: dict[str, str] = {
+    "Automobile and Auto Components": "NIFTY_AUTO",
+    "Fast Moving Consumer Goods": "NIFTY_FMCG",
+    "Information Technology": "NIFTY_IT",
+    "Healthcare": "NIFTY_HEALTHCARE",
+    "Media, Entertainment & Publication": "NIFTY_MEDIA",
+    "Metals & Mining": "NIFTY_METAL",
+    "Realty": "NIFTY_REALTY",
+    "Consumer Durables": "NIFTY_CONSUMER_DURABLES",
+    "Oil, Gas & Consumable Fuels": "NIFTY_OIL_GAS",
+    "Chemicals": "NIFTY_CHEMICALS",
+    "Financial Services": "NIFTY_FIN_SERVICE",
+}
+
+# RRG sector ids that inherit FPI from another mapped sector (NSDL uses broader buckets)
+FPI_RRG_ALIASES: dict[str, str] = {
+    "NIFTY_BANK": "NIFTY_FIN_SERVICE",
+    "NIFTY_PVT_BANK": "NIFTY_FIN_SERVICE",
+    "NIFTY_PSU_BANK": "NIFTY_FIN_SERVICE",
+    "NIFTY_PHARMA": "NIFTY_HEALTHCARE",
+}
+
+FPI_DEFAULTS = {
+    "report_url": (
+        "https://www.fpi.nsdl.co.in/web/StaticReports/"
+        "Fortnightly_Sector_wise_FII_Investment_Data/FIIInvestSector_June302026.html"
+    ),
+    "cache_hours": 24,
+    "default_period": "period2",
+}
+
+RRG_PRESETS: dict[str, dict[str, object]] = {
+    "sector_rotation": {
+        "label": "Sector rotation (vs NIFTY 50)",
+        "benchmark": "NIFTY50",
+        "symbols": list(RRG_SECTOR_INDICES.keys()),
+    },
+    "nifty_sample": {
+        "label": "Nifty 50 sample",
+        "benchmark": "NIFTY50",
+        "symbols": ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL", "ITC", "SBIN"],
+    },
+    "bank_sample": {
+        "label": "Bank Nifty sample",
+        "benchmark": "BANKNIFTY50",
+        "symbols": ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "INDUSINDBK", "FEDERALBNK", "BANDHANBNK"],
+    },
 }
 
 # Legacy Streamlit UI only

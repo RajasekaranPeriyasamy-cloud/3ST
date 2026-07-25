@@ -7,7 +7,7 @@ from typing import Any
 
 from config import INDEX_OPTIONS
 from execution.arming import get_arm_state
-from instruments import resolve_by_token, resolve_underlying_index_token
+from instruments import resolve_by_symbol, resolve_by_token, resolve_underlying_index_token
 from kite_client import fetch_historical_by_token, session_status
 from strategies.three_st import ThreeSTStrategy
 from watchlist_store import list_items, mark_triggered
@@ -19,10 +19,27 @@ def _resolve_chart_token(item: dict[str, Any]) -> int:
         underlying = spread.get("underlying")
         if underlying and underlying in INDEX_OPTIONS:
             return resolve_underlying_index_token(underlying)
+
+    exchange = str(item.get("exchange") or "")
+    symbol = str(item.get("tradingsymbol") or "")
+    if exchange and symbol:
+        return int(resolve_by_symbol(exchange, symbol)["instrument_token"])
+
     token = item.get("instrument_token")
     if token is None:
         raise RuntimeError("No instrument_token on watchlist item")
     return int(token)
+
+
+def chart_instrument_meta(item: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the series used for 3ST candles (symbol-first, then token)."""
+    token = _resolve_chart_token(item)
+    meta = resolve_by_token(token)
+    return {
+        "instrument_token": token,
+        "tradingsymbol": meta.get("tradingsymbol"),
+        "exchange": meta.get("exchange"),
+    }
 
 
 def _strategy_from_item(item: dict[str, Any]) -> ThreeSTStrategy:
@@ -76,8 +93,12 @@ def scan_watchlist(*, require_armed: bool = False) -> dict[str, Any]:
     waiting = list_items("waiting")
     triggered: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    skipped_manual = 0
 
     for item in waiting:
+        if str(item.get("entry_mode") or "signal") == "manual":
+            skipped_manual += 1
+            continue
         item_id = item.get("id")
         if not item_id:
             continue
@@ -96,5 +117,6 @@ def scan_watchlist(*, require_armed: bool = False) -> dict[str, Any]:
         "scanned": len(waiting),
         "triggered": triggered,
         "errors": errors,
+        "skipped_manual": skipped_manual,
         "armed": arm.get("armed"),
     }
