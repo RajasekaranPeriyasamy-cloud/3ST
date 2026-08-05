@@ -203,6 +203,8 @@ def test_build_snapshot_end_to_end(monkeypatch) -> None:
     assert snap["series"]["straddle_price"][0] == 190.0
     assert snap["summary"]["max_pain"] == 24600.0
     assert snap["summary"]["pcr"] is not None
+    # Timestamps must carry an explicit IST offset for the chart axis.
+    assert "+05:30" in snap["series"]["t"][0]
 
 
 def test_invalid_underlying() -> None:

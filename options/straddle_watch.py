@@ -564,8 +564,19 @@ def build_straddle_watch_snapshot(
     t_iso: list[str] = []
     if not aligned.empty:
         for ts in aligned.index:
-            if hasattr(ts, "isoformat"):
-                t_iso.append(ts.isoformat(sep=" "))
+            # Emit explicit IST offset so the UI never misreads naive wall clocks as UTC/local.
+            if isinstance(ts, pd.Timestamp):
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize(IST)
+                else:
+                    ts = ts.tz_convert(IST)
+                t_iso.append(ts.isoformat(sep=" ", timespec="seconds"))
+            elif isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=IST)
+                else:
+                    ts = ts.astimezone(IST)
+                t_iso.append(ts.isoformat(sep=" ", timespec="seconds"))
             else:
                 t_iso.append(str(ts))
 

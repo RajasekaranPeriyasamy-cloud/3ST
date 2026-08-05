@@ -18,10 +18,14 @@ type Props = {
 };
 
 function toMs(ts: string): number {
-  // Backend emits "YYYY-MM-DD HH:mm:ss" as IST wall clock (naive).
-  const iso = ts.includes("T") ? ts : ts.replace(" ", "T");
-  const d = new Date(`${iso}+05:30`);
-  return d.getTime();
+  // Backend emits IST timestamps — either with +05:30 / Z offset, or naive IST wall clock.
+  const raw = String(ts || "").trim();
+  if (!raw) return NaN;
+  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) {
+    return new Date(raw.includes("T") ? raw : raw.replace(" ", "T")).getTime();
+  }
+  const iso = raw.includes("T") ? raw : raw.replace(" ", "T");
+  return new Date(`${iso}+05:30`).getTime();
 }
 
 function pairs(t: string[], values: Array<number | null | undefined>): Array<[number, number | null]> {
@@ -53,6 +57,10 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         height: 620,
         style: { fontFamily: "Segoe UI, Helvetica, Arial, sans-serif" },
       },
+      // Kite candles are IST; without this Highcharts labels the axis in UTC (−5:30).
+      time: {
+        timezone: "Asia/Kolkata",
+      },
       title: {
         text: "Straddle Watch",
         style: { fontSize: "16px", fontWeight: "600", color: "#222" },
@@ -83,6 +91,13 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         gridLineWidth: 1,
         gridLineColor: "#eef1f4",
         labels: { style: { fontSize: "10px", color: "#666" } },
+        dateTimeLabelFormats: {
+          minute: "%H:%M",
+          hour: "%H:%M",
+          day: "%d-%m %H:%M",
+          week: "%d-%m",
+          month: "%b '%y",
+        },
       },
       yAxis: [
         {
