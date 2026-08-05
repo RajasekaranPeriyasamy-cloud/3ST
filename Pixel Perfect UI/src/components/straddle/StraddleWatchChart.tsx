@@ -45,13 +45,31 @@ function formatOi(value: number): string {
   return value.toLocaleString();
 }
 
+function ivAxisBounds(values: Array<number | null | undefined>): {
+  min?: number;
+  max?: number;
+} {
+  const nums = values.filter((v): v is number => v != null && !Number.isNaN(Number(v))).map(Number);
+  if (!nums.length) return {};
+  const lo = Math.min(...nums);
+  const hi = Math.max(...nums);
+  // Pad so small intraday IV moves are visible; floor pad at 1 vol point.
+  const span = hi - lo;
+  const pad = Math.max(1, span * 0.25 || 1);
+  return {
+    min: Math.max(0, Math.floor((lo - pad) * 10) / 10),
+    max: Math.ceil((hi + pad) * 10) / 10,
+  };
+}
+
 export function StraddleWatchChart({ snapshot, loading }: Props) {
   const chartRef = useRef<HighchartsReactRefObject | null>(null);
 
-  const options = useMemo<Highcharts.Options>(() => {
+  const options = useMemo(() => {
     const series = snapshot?.series;
     const t = series?.t ?? [];
-    return {
+    const ivBounds = ivAxisBounds(series?.iv ?? []);
+    const opts = {
       chart: {
         backgroundColor: "#ffffff",
         height: 620,
@@ -101,6 +119,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
       },
       yAxis: [
         {
+          // Price pane (right)
           height: "62%",
           resize: { enabled: true },
           title: { text: "Call / Put Price", style: { fontSize: "11px" } },
@@ -109,6 +128,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
           labels: { style: { fontSize: "10px" } },
         },
         {
+          // OI pane (right)
           top: "65%",
           height: "22%",
           offset: 0,
@@ -121,6 +141,25 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
               return formatOi(Number(this.value));
             },
           },
+        },
+        {
+          // IV scale on the left of the price pane (own axis — not mixed with premium ₹)
+          height: "62%",
+          opposite: false,
+          gridLineWidth: 0,
+          title: {
+            text: "IV %",
+            style: { fontSize: "11px", color: "#5C6BC0" },
+          },
+          labels: {
+            style: { fontSize: "10px", color: "#5C6BC0" },
+            format: "{value:.1f}",
+          },
+          min: ivBounds.min,
+          max: ivBounds.max,
+          softMin: ivBounds.min,
+          softMax: ivBounds.max,
+          showEmpty: false,
         },
       ],
       plotOptions: {
@@ -196,14 +235,26 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         {
           type: "line",
           name: "IV",
-          color: "#90A4AE",
-          yAxis: 0,
+          color: "#5C6BC0",
+          yAxis: 2,
           visible: false,
+          lineWidth: 2,
           data: pairs(t, series?.iv ?? []),
+          tooltip: {
+            valueSuffix: "%",
+            valueDecimals: 2,
+            pointFormatter() {
+              const y = this.y;
+              return `<span style="color:${this.color}">●</span> ${this.series.name}: <b>${
+                y == null ? "—" : `${Number(y).toFixed(2)}%`
+              }</b><br/>`;
+            },
+          },
         },
       ],
       exporting: { enabled: true },
-    };
+    } as Highcharts.Options;
+    return opts;
   }, [snapshot]);
 
   useEffect(() => {
