@@ -81,10 +81,10 @@ def fetch_historical_by_token(
     start_dt = _to_dt(start)
     end_dt = _to_dt(end)
     if isinstance(end, date) and not isinstance(end, datetime) and end == date.today():
-        # Include live session bars (MCX trades until ~23:30; date-only end used to cap at 15:30).
+        # Include live session bars (MCX trades until ~23:30; date-only end used to cap at 15:40 CAS/F&O).
         end_dt = datetime.now()
     elif end_dt.hour == 9 and end_dt.minute == 15 and isinstance(end, date) and not isinstance(end, datetime):
-        end_dt = end_dt.replace(hour=15, minute=30)
+        end_dt = end_dt.replace(hour=15, minute=40)
 
     if start_dt >= end_dt:
         raise ValueError("start must be before end")

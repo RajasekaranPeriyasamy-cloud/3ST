@@ -362,7 +362,7 @@ function HistoryChart({ snap }: { snap: OiVarSnapshot }) {
   if (data.length < 2) {
     return (
       <p className="py-6 text-center text-sm text-muted-foreground">
-        History builds while the desk refreshes during market hours (cash to 15:30 / MCX to 23:30).
+        History builds while the desk refreshes during market hours (cash to 15:40 / MCX to 23:30).
       </p>
     );
   }

@@ -36,7 +36,7 @@ class ThreeSTFilterParams:
     adx_threshold: float = 20.0
     system_mode: SystemMode = "Intraday"
     session_start: str = "09:15"
-    session_end: str = "15:30"
+    session_end: str = "15:40"
     force_exit_start: str = "15:20"
     force_exit_end: str = "15:30"
     trade_mode: TradeMode = "Both"
@@ -48,7 +48,7 @@ class ThreeSTFilterParams:
 def params_from_selection(sel: dict[str, Any]) -> ThreeSTFilterParams:
     """Build params from ``selection_store`` / ``/selection`` payload."""
     force = str(sel.get("force_exit") or "15:20")
-    end = str(sel.get("session_end") or "15:30")
+    end = str(sel.get("session_end") or "15:40")
     return ThreeSTFilterParams(
         atr1=int(sel.get("atr1") or 21),
         factor1=float(sel.get("factor1") or 1.0),

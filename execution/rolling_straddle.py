@@ -1399,7 +1399,7 @@ def tick() -> dict[str, Any]:
     underlying = cfg.get("underlying") or "NIFTY"
     timeframe = cfg.get("timeframe") or "5min"
     entry_start = cfg.get("entry_start") or "09:20"
-    session_end = cfg.get("session_end") or "15:30"
+    session_end = cfg.get("session_end") or "15:40"
     force_exit = cfg.get("force_exit") or "15:20"
     system_mode = cfg.get("system_mode") or "Intraday"
 

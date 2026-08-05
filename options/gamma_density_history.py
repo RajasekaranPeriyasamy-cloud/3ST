@@ -37,7 +37,7 @@ def _save(data: dict[str, Any]) -> None:
 
 
 def session_window(underlying: str) -> tuple[time, time]:
-    """Cash indices 09:15–15:30; MCX 09:00–23:30."""
+    """Cash / index-options 09:15–15:40 (CAS F&O close); MCX 09:00–23:30."""
     if is_mcx_underlying(underlying):
         start = MCX_SESSION.get("session_start", "09:00")
         end = MCX_SESSION.get("session_end", "23:30")
@@ -45,18 +45,18 @@ def session_window(underlying: str) -> tuple[time, time]:
         meta = INDEX_OPTIONS.get(underlying.upper(), {})
         # Prefer instrument session when present; else cash default
         start = meta.get("session_start") or DEFAULT_SESSION.get("session_start", "09:15")
-        end = meta.get("session_end") or DEFAULT_SESSION.get("session_end", "15:30")
+        end = meta.get("session_end") or DEFAULT_SESSION.get("session_end", "15:40")
         # INDEX_OPTIONS entries don't have session_start — use DEFAULT
         if not isinstance(start, str):
             start = "09:15"
         if not isinstance(end, str):
-            end = "15:30"
+            end = "15:40"
     try:
         sh, sm = (int(x) for x in str(start).split(":")[:2])
         eh, em = (int(x) for x in str(end).split(":")[:2])
         return time(sh, sm), time(eh, em)
     except Exception:
-        return time(9, 15), time(15, 30)
+        return time(9, 15), time(15, 40)
 
 
 def in_session(underlying: str, when: datetime | None = None) -> bool:

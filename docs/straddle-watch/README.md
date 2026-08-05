@@ -4,6 +4,8 @@
 
 Read-only CE/PE/straddle premium + OI desk (iCharts-style Latest mode). Does **not** place orders or touch ARM / runners.
 
+**Session:** cash / index options **09:15–15:40 IST** (NSE Closing Auction Session — equity derivatives close 15:40). MCX underlyings keep 09:00–23:30.
+
 ## Controls
 
 | Control | Behavior |

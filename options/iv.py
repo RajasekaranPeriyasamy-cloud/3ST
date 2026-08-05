@@ -16,7 +16,7 @@ _MIN_TTE_YEARS = 1.0 / (365.0 * 24.0 * 60.0)
 
 
 def time_to_expiry_years(expiry: str | date, as_of: datetime | None = None) -> float | None:
-    """Years to expiry; option expires at 15:30 IST on expiry date."""
+    """Years to expiry; index options expire at 15:40 IST (CAS / F&O close) on expiry date."""
     if isinstance(expiry, str):
         exp_date = date.fromisoformat(expiry[:10])
     else:
@@ -28,7 +28,7 @@ def time_to_expiry_years(expiry: str | date, as_of: datetime | None = None) -> f
     else:
         now = now.astimezone(IST)
 
-    expiry_dt = datetime.combine(exp_date, time(15, 30), tzinfo=IST)
+    expiry_dt = datetime.combine(exp_date, time(15, 40), tzinfo=IST)
     delta = expiry_dt - now
     seconds = delta.total_seconds()
     if seconds <= 0:

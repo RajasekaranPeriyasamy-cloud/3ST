@@ -23,7 +23,7 @@ export const defaultSelection: Selection = {
   st_method: "heikin_ashi",
   system_mode: "Intraday",
   session_start: "09:15",
-  session_end: "15:30",
+  session_end: "15:40",
   force_exit: "15:20",
   atr1: 21,
   factor1: 1.0,

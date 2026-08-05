@@ -328,7 +328,7 @@ def fetch_candles(
         start_dt = start
 
     if isinstance(end, date) and not isinstance(end, datetime):
-        end_dt = datetime.combine(end, datetime.min.time()).replace(hour=15, minute=30)
+        end_dt = datetime.combine(end, datetime.min.time()).replace(hour=15, minute=40)
     else:
         end_dt = end
 
@@ -343,7 +343,7 @@ def fetch_candles(
         while cursor < end_dt:
             chunk_end = min(cursor + timedelta(days=chunk_days), end_dt)
             req_start = cursor.replace(hour=9, minute=0, second=0, microsecond=0)
-            req_end = chunk_end.replace(hour=15, minute=30, second=0, microsecond=0)
+            req_end = chunk_end.replace(hour=15, minute=40, second=0, microsecond=0)
             if req_end <= req_start:
                 req_end = chunk_end
 

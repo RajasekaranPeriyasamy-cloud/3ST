@@ -7,13 +7,13 @@ export function pickNearestExpiry(
   underlying?: string,
 ): string | undefined {
   if (!expiries.length) return undefined;
-  // Use IST calendar date. Cash indices close ~15:30; MCX commodities trade until ~23:30.
+  // Use IST calendar date. Cash/index F&O close 15:40 (NSE CAS); MCX until ~23:30.
   const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
   const today = ist.toISOString().slice(0, 10);
   const minutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
   const u = (underlying ?? "").toUpperCase();
   const isMcx = u === "CRUDEOIL" || u === "CRUDEOILM" || u === "NATURALGAS";
-  const closeMinutes = isMcx ? 23 * 60 + 30 : 15 * 60 + 30;
+  const closeMinutes = isMcx ? 23 * 60 + 30 : 15 * 60 + 40;
   const afterClose = minutes >= closeMinutes;
   const firstOk = expiries.find((e) => (afterClose ? e > today : e >= today));
   return firstOk ?? expiries[expiries.length - 1];

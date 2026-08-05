@@ -64,7 +64,7 @@ const MCX_SESSION_DEFAULTS = {
 };
 const NSE_SESSION_DEFAULTS = {
   session_start: "09:15",
-  session_end: "15:30",
+  session_end: "15:40",
   force_exit: "15:20",
   entry_start: "09:20",
   product: "MIS" as const,
@@ -91,7 +91,7 @@ const DEFAULT: PremiumBookConfig = {
   timeframe: "5min",
   entry_start: "09:20",
   session_start: "09:15",
-  session_end: "15:30",
+  session_end: "15:40",
   force_exit: "15:20",
   system_mode: "Intraday",
   order_type: "MARKET",

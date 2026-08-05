@@ -18,7 +18,7 @@ IST = ZoneInfo("Asia/Kolkata")
 def test_session_window_cash_vs_mcx() -> None:
     s, e = session_window("NIFTY")
     assert (s.hour, s.minute) == (9, 15)
-    assert (e.hour, e.minute) == (15, 30)
+    assert (e.hour, e.minute) == (15, 40)
     s2, e2 = session_window("CRUDEOIL")
     assert (s2.hour, s2.minute) == (9, 0)
     assert (e2.hour, e2.minute) == (23, 30)
@@ -29,6 +29,10 @@ def test_in_session_rejects_after_close() -> None:
     assert in_session("NIFTY", after) is False
     during = datetime(2026, 7, 24, 10, 10, tzinfo=IST)
     assert in_session("NIFTY", during) is True
+    # CAS / F&O close window — still in session at 15:35
+    cas = datetime(2026, 7, 24, 15, 35, tzinfo=IST)
+    assert in_session("NIFTY", cas) is True
+    assert in_session("NIFTY", datetime(2026, 7, 24, 15, 41, tzinfo=IST)) is False
 
 
 def test_build_chart_series_keeps_day_spot_and_sparse_gex() -> None:

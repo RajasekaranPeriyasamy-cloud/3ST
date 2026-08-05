@@ -10,7 +10,8 @@ INSTRUMENTS = {
         "trading_symbol": "NIFTY",
         "yahoo_symbol": "^NSEI",
         "session_start": "09:15",
-        "session_end": "15:30",
+        # Equity derivatives close 15:40 IST under NSE Closing Auction Session (CAS).
+        "session_end": "15:40",
         "force_exit": "15:20",
     },
     "SENSEX": {
@@ -19,7 +20,7 @@ INSTRUMENTS = {
         "trading_symbol": "SENSEX",
         "yahoo_symbol": "^BSESN",
         "session_start": "09:15",
-        "session_end": "15:30",
+        "session_end": "15:40",
         "force_exit": "15:20",
     },
     "BANKNIFTY50": {
@@ -28,7 +29,7 @@ INSTRUMENTS = {
         "trading_symbol": "BANKNIFTY",
         "yahoo_symbol": "^NSEBANK",
         "session_start": "09:15",
-        "session_end": "15:30",
+        "session_end": "15:40",
         "force_exit": "15:20",
     },
 }
@@ -155,9 +156,12 @@ def lock_mcx_market_session(cfg: dict) -> dict:
     return cfg
 
 
+# Cash / index-options market hours. From 2026-08-03, NSE Closing Auction Session
+# (CAS) keeps equity derivatives open until 15:40 IST (cash CAS 15:15–15:35).
+# See https://www.nseindia.com/static/products-services/closing-auction-session
 DEFAULT_SESSION = {
     "session_start": "09:15",
-    "session_end": "15:30",
+    "session_end": "15:40",
     "force_exit": "15:20",
 }
 
@@ -250,7 +254,7 @@ GREEKS_ENGINE_DEFAULTS = {
     # calendar = 365-day theta; trading_hours = 252 business-day theta
     "theta_mode": "calendar",
     "trading_days_per_year": 252,
-    "nse_session_hours": 6.25,  # 09:15–15:30 IST
+    "nse_session_hours": 6.42,  # 09:15–15:40 IST (CAS / F&O close)
     "recommendations": {
         "max_ideas": 6,
         "disclaimer": (

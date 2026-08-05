@@ -432,7 +432,7 @@ def _force_exit_due(item: dict[str, Any]) -> bool:
     return force_exit_due(
         datetime.now(),
         force_exit=str(item.get("force_exit") or "15:20"),
-        session_end=str(item.get("session_end") or "15:30"),
+        session_end=str(item.get("session_end") or "15:40"),
         system_mode=str(item.get("system_mode") or "Intraday"),
     )
 

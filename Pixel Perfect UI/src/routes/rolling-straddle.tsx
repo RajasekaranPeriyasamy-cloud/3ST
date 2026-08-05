@@ -96,7 +96,7 @@ function underlyingDefaults(u: RollingUnderlying): Partial<RollingStraddleConfig
     underlying: u,
     expiry: "",
     session_start: "09:15",
-    session_end: "15:30",
+    session_end: "15:40",
     force_exit: "15:20",
     entry_start: "09:20",
     product: "MIS",
@@ -109,7 +109,7 @@ const DEFAULT_CONFIG: RollingStraddleConfig = {
   timeframe: "5min",
   entry_start: "09:20",
   session_start: "09:15",
-  session_end: "15:30",
+  session_end: "15:40",
   force_exit: "15:20",
   system_mode: "Intraday",
   order_type: "MARKET",
@@ -738,7 +738,7 @@ function RollingStraddlePage() {
               <Input type="time" value={config.force_exit} onChange={(e) => patch({ force_exit: e.target.value })} />
             </Field>
             <p className="text-xs text-muted-foreground sm:col-span-2">
-              NSE/BSE typically 09:15–15:30. MCX market hours are fixed 09:00–23:30 — only Entry start and Force exit are editable.
+              NSE/BSE typically 09:15–15:40 (CAS / F&O close). MCX market hours are fixed 09:00–23:30 — only Entry start and Force exit are editable.
             </p>
             <Field label="Tick interval (sec)">
               <Input type="number" value={config.tick_interval_sec} onChange={(e) => patch({ tick_interval_sec: Number(e.target.value) })} />

@@ -1250,7 +1250,7 @@ def tick() -> dict[str, Any]:
     underlying = str(cfg.get("underlying") or "NIFTY")
     timeframe = str(cfg.get("timeframe") or "5min")
     entry_start = str(cfg.get("entry_start") or "09:20")
-    session_end = str(cfg.get("session_end") or "15:30")
+    session_end = str(cfg.get("session_end") or "15:40")
     force_exit = str(cfg.get("force_exit") or "15:20")
     system_mode = str(cfg.get("system_mode") or "Intraday")
     structure = str(cfg.get("structure") or "bull_put")

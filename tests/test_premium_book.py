@@ -276,7 +276,7 @@ def test_apply_underlying_defaults_back_to_nifty() -> None:
         previous_underlying="CRUDEOILM",
     )
     assert cfg["product"] == "MIS"
-    assert cfg["session_end"] == "15:30"
+    assert cfg["session_end"] == "15:40"
     assert cfg["force_exit"] == "15:20"
 
 

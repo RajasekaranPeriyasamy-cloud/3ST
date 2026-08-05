@@ -33,7 +33,7 @@ class BacktestParams:
     trade_mode: TradeMode = "Both"
     system_mode: Literal["Intraday", "Positional"] = "Intraday"
     session_start: str = "09:15"
-    session_end: str = "15:30"
+    session_end: str = "15:40"
     force_exit: str = "15:20"
     tgt_mode: RiskMode = "Off"
     tgt_value: float = 1.0

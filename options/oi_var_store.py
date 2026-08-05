@@ -77,11 +77,11 @@ def save_baseline(underlying: str, expiry: str, baseline_date: str, oi_by_token:
 
 
 def fetch_session_close_oi(instrument_token: int, session_day: date) -> int | None:
-    """Last minute OI on a given session date (15:15–15:30 IST)."""
+    """Last minute OI on a given session date (15:25–15:40 IST, CAS/F&O close)."""
     from kite_client import _kite_direct_client
 
-    start = datetime.combine(session_day, time(15, 15), tzinfo=IST)
-    end = datetime.combine(session_day, time(15, 30), tzinfo=IST)
+    start = datetime.combine(session_day, time(15, 25), tzinfo=IST)
+    end = datetime.combine(session_day, time(15, 40), tzinfo=IST)
     try:
         kite = _kite_direct_client()
         raw = kite.historical_data(

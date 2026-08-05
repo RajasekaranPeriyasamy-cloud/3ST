@@ -72,7 +72,7 @@ def time_to_expiry_years_nse(
     *,
     mode: ThetaMode | str = "calendar",
 ) -> float | None:
-    """Years to 15:30 IST expiry.
+    """Years to 15:40 IST expiry (CAS / equity derivatives close).
 
     * calendar — wall-clock / 365 (weekend decay included).
     * trading_hours — remaining NSE session hours / (252 × session_hours).
@@ -88,7 +88,7 @@ def time_to_expiry_years_nse(
     else:
         now = now.astimezone(IST)
 
-    expiry_dt = datetime.combine(exp_date, time(15, 30), tzinfo=IST)
+    expiry_dt = datetime.combine(exp_date, time(15, 40), tzinfo=IST)
     if expiry_dt <= now:
         return None
 
@@ -98,10 +98,10 @@ def time_to_expiry_years_nse(
         return max(years, _MIN_TTE)
 
     cfg = _defaults()
-    session_h = float(cfg.get("nse_session_hours") or 6.25)
+    session_h = float(cfg.get("nse_session_hours") or 6.42)
     trading_days = float(cfg.get("trading_days_per_year") or 252)
     open_t = time(9, 15)
-    close_t = time(15, 30)
+    close_t = time(15, 40)
 
     remaining_hours = 0.0
     day = now.date()
