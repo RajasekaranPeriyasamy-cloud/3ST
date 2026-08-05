@@ -56,6 +56,7 @@ const items = [
   { title: "Vol Surface", url: "/vol-surface", icon: Grid3x3 },
   { title: "IV Smile", url: "/iv-smile", icon: LineChart },
   { title: "OI Profile", url: "/oi-profile", icon: CandlestickChart },
+  { title: "Straddle Watch", url: "/straddle-watch", icon: LineChart },
   { title: "Algo Execution", url: "/execution", icon: Cpu },
   { title: "Rolling Straddle", url: "/rolling-straddle", icon: TrendingUp },
   { title: "Premium Book", url: "/premium-book", icon: BookMarked },

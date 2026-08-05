@@ -1152,6 +1152,61 @@ export interface ArbitrageSnapshot {
   updated_at: string;
 }
 
+export type StraddleWatchRange = "1D" | "5D" | "30D";
+
+export interface StraddleWatchConfig {
+  underlyings: OiUnderlying[];
+  ranges: StraddleWatchRange[];
+  mode: "latest";
+  note?: string;
+}
+
+export interface StraddleWatchSummary {
+  fut_symbol?: string;
+  fut_tradingsymbol?: string;
+  fut_ltp?: number | null;
+  fut_chg?: number | null;
+  fut_chg_pct?: number | null;
+  asof?: string;
+  fair_price?: number | null;
+  fair_chg?: number | null;
+  fair_chg_pct?: number | null;
+  lot_size?: number;
+  iv?: number | null;
+  ivr?: number | null;
+  ivp?: number | null;
+  max_pain?: number | null;
+  pcr?: number | null;
+  straddle_ltp?: number | null;
+  straddle_bs?: number | null;
+  spot?: number | null;
+}
+
+export interface StraddleWatchSeries {
+  t: string[];
+  call_price: Array<number | null>;
+  put_price: Array<number | null>;
+  straddle_price: Array<number | null>;
+  straddle_vwap: Array<number | null>;
+  call_oi: Array<number | null>;
+  put_oi: Array<number | null>;
+  iv: Array<number | null>;
+}
+
+export interface StraddleWatchSnapshot {
+  ok: boolean;
+  mode: "latest";
+  underlying: OiUnderlying | string;
+  expiry: string;
+  call_strike: number;
+  put_strike: number;
+  atm_strike?: number;
+  range: StraddleWatchRange;
+  summary: StraddleWatchSummary;
+  series: StraddleWatchSeries;
+  updated_at?: string;
+}
+
 export type OiProfileUnderlying = "NIFTY" | "BANKNIFTY" | "FINNIFTY" | "SENSEX";
 export type OiProfileInterval = "1min" | "5min" | "15min";
 
