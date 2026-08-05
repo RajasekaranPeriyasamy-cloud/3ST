@@ -21,6 +21,7 @@ Sidebar categories map to folders below. Deep conversation notes currently live 
 | Pricing Engine | `/pricing-engine` | [pricing-engine/](pricing-engine/) |
 | Calendar Arb | `/arbitrage` | [calendar-arb/](calendar-arb/) |
 | OI Profile | `/oi-profile` | [oi-profile/](oi-profile/) |
+| Straddle Watch | `/straddle-watch` | [straddle-watch/](straddle-watch/) |
 | Algo Execution | `/execution` | [algo-execution/](algo-execution/) |
 | Rolling Straddle | `/rolling-straddle` | [rolling-straddle/](rolling-straddle/) |
 | **Premium Book** | `/premium-book` | **[premium-book/](premium-book/)** ← start here for sell-premium ops ([session 2026-07-20](premium-book/SESSION-2026-07-20.md)) |

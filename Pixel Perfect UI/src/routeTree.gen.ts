@@ -15,6 +15,7 @@ import { Route as VolSurfaceRouteImport } from './routes/vol-surface'
 import { Route as VannaExposureRouteImport } from './routes/vanna-exposure'
 import { Route as TradeSuggestionsRouteImport } from './routes/trade-suggestions'
 import { Route as SurvivorRouteImport } from './routes/survivor'
+import { Route as StraddleWatchRouteImport } from './routes/straddle-watch'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RrgRouteImport } from './routes/rrg'
 import { Route as RollingStraddleRouteImport } from './routes/rolling-straddle'
@@ -64,6 +65,11 @@ const TradeSuggestionsRoute = TradeSuggestionsRouteImport.update({
 const SurvivorRoute = SurvivorRouteImport.update({
   id: '/survivor',
   path: '/survivor',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StraddleWatchRoute = StraddleWatchRouteImport.update({
+  id: '/straddle-watch',
+  path: '/straddle-watch',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -188,6 +194,7 @@ export interface FileRoutesByFullPath {
   '/rolling-straddle': typeof RollingStraddleRoute
   '/rrg': typeof RrgRoute
   '/settings': typeof SettingsRoute
+  '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
@@ -216,6 +223,7 @@ export interface FileRoutesByTo {
   '/rolling-straddle': typeof RollingStraddleRoute
   '/rrg': typeof RrgRoute
   '/settings': typeof SettingsRoute
+  '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
@@ -245,6 +253,7 @@ export interface FileRoutesById {
   '/rolling-straddle': typeof RollingStraddleRoute
   '/rrg': typeof RrgRoute
   '/settings': typeof SettingsRoute
+  '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
@@ -275,6 +284,7 @@ export interface FileRouteTypes {
     | '/rolling-straddle'
     | '/rrg'
     | '/settings'
+    | '/straddle-watch'
     | '/survivor'
     | '/trade-suggestions'
     | '/vanna-exposure'
@@ -303,6 +313,7 @@ export interface FileRouteTypes {
     | '/rolling-straddle'
     | '/rrg'
     | '/settings'
+    | '/straddle-watch'
     | '/survivor'
     | '/trade-suggestions'
     | '/vanna-exposure'
@@ -331,6 +342,7 @@ export interface FileRouteTypes {
     | '/rolling-straddle'
     | '/rrg'
     | '/settings'
+    | '/straddle-watch'
     | '/survivor'
     | '/trade-suggestions'
     | '/vanna-exposure'
@@ -360,6 +372,7 @@ export interface RootRouteChildren {
   RollingStraddleRoute: typeof RollingStraddleRoute
   RrgRoute: typeof RrgRoute
   SettingsRoute: typeof SettingsRoute
+  StraddleWatchRoute: typeof StraddleWatchRoute
   SurvivorRoute: typeof SurvivorRoute
   TradeSuggestionsRoute: typeof TradeSuggestionsRoute
   VannaExposureRoute: typeof VannaExposureRoute
@@ -410,6 +423,13 @@ declare module '@tanstack/react-router' {
       path: '/survivor'
       fullPath: '/survivor'
       preLoaderRoute: typeof SurvivorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/straddle-watch': {
+      id: '/straddle-watch'
+      path: '/straddle-watch'
+      fullPath: '/straddle-watch'
+      preLoaderRoute: typeof StraddleWatchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -576,6 +596,7 @@ const rootRouteChildren: RootRouteChildren = {
   RollingStraddleRoute: RollingStraddleRoute,
   RrgRoute: RrgRoute,
   SettingsRoute: SettingsRoute,
+  StraddleWatchRoute: StraddleWatchRoute,
   SurvivorRoute: SurvivorRoute,
   TradeSuggestionsRoute: TradeSuggestionsRoute,
   VannaExposureRoute: VannaExposureRoute,

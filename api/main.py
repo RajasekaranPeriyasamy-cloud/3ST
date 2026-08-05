@@ -115,6 +115,7 @@ from analysis.fpi_sectors import fpi_status, load_fpi_sectors
 from analysis.rrg import build_rrg_snapshot, clear_rrg_daily_cache, rrg_config
 from analysis.analogue_cycles import analogue_config, build_analogue_snapshot
 from options.spreads import SPREAD_TEMPLATES, build_direction_spreads, preview_spread
+from options.straddle_watch import build_straddle_watch_snapshot, straddle_watch_config
 from risk.limits import get_limits, update_limits
 from selection_store import clear_selection, get_selection, save_selection
 from watchlist_store import add_item as watchlist_add
@@ -2123,6 +2124,39 @@ def trade_suggestions_snapshot(
         if prov.requires_session():
             _require_kite_session()
         return build_trade_suggestions(u, expiry=expiry, strike_window=strike_window)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/straddle-watch/config")
+def straddle_watch_config_route() -> dict[str, Any]:
+    return straddle_watch_config()
+
+
+@app.get("/straddle-watch/snapshot")
+def straddle_watch_snapshot(
+    underlying: str = Query("NIFTY", description="Index / MCX underlying"),
+    expiry: str = Query(..., description="YYYY-MM-DD option expiry"),
+    call_strike: float = Query(..., description="Call strike"),
+    put_strike: float = Query(..., description="Put strike"),
+    range: str = Query("1D", description="1D | 5D | 30D"),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        if not u.replace("_", "").isalnum():
+            raise RuntimeError("Invalid underlying")
+        _require_kite_session()
+        return build_straddle_watch_snapshot(
+            u,
+            expiry,
+            float(call_strike),
+            float(put_strike),
+            range_key=range,
+        )
     except HTTPException:
         raise
     except Exception as e:

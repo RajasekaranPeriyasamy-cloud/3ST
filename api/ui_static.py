@@ -30,6 +30,7 @@ _API_PREFIXES = (
     "/greeks",
     "/trade-suggestions",
     "/pricing",
+    "/straddle-watch",
     "/oi-profile",
     "/vol-surface",
     "/iv-smile",
