@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useRef } from "react";
-import Highcharts from "highcharts/highstock";
-import HighchartsReact, { type HighchartsReactRefObject } from "highcharts-react-official";
+import HighchartsMod from "highcharts/highstock";
+import {
+  HighchartsReact,
+  type HighchartsReactRefObject,
+} from "highcharts-react-official";
 
 import type { StraddleWatchSnapshot } from "@/lib/types";
+
+// Vite/CJS interop: some builds expose `{ default: Highcharts }` instead of the namespace.
+const Highcharts =
+  ((HighchartsMod as unknown as { default?: typeof HighchartsMod }).default ??
+    HighchartsMod) as typeof HighchartsMod;
 
 type Props = {
   snapshot: StraddleWatchSnapshot | null;
