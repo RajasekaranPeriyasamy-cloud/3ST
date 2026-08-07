@@ -14,6 +14,7 @@ Sidebar categories map to folders below. Deep conversation notes currently live 
 | OI Tracker | `/oi-tracker` | [oi-tracker/](oi-tracker/) |
 | OI VAR Desk | `/oi-var` | [oi-var/](oi-var/) |
 | Gamma Density | `/gamma-density` | [gamma-density/](gamma-density/) |
+| CAS Indicative | `/cas-indicative` | [cas-indicative/](cas-indicative/) |
 | Vanna Exposure | `/vanna-exposure` | [vanna-exposure/](vanna-exposure/) |
 | Vol Surface | `/vol-surface` | [vol-surface/](vol-surface/) |
 | IV Smile | `/iv-smile` | [iv-smile/](iv-smile/) |

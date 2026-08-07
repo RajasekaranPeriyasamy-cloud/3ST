@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -o - -w \"\\\\nHTTP_STATUS:%{http_code}\\\\n\" --max-time 5 http://127.0.0.1:8001/health)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 8001 -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Process -Name python,cmd -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Process -Name cmd -ErrorAction SilentlyContinue)",
+      "PowerShell(& \"C:\\\\Dev\\\\3ST\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sys; print\\(sys.version\\)\")",
+      "PowerShell(& \"C:\\\\Dev\\\\3ST\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import sys; sys.path.insert\\(0,'C:/Dev/3ST'\\); import api.main\" 2>&1)",
+      "Bash(timeout 20 \".venv/Scripts/python.exe\" -m uvicorn api.main:app --host 127.0.0.1 --port 8001)",
+      "PowerShell(Stop-Process -Id 10180,11452 -Force -ErrorAction SilentlyContinue)",
+      "Bash(\".venv/Scripts/python.exe\" -m uvicorn api.main:app --host 127.0.0.1 --port 8001)",
+      "Bash(curl -s --max-time 5 http://127.0.0.1:8001/health)",
+      "Bash(curl -s http://127.0.0.1:8001/execution/queue)"
+    ]
+  }
+}
