@@ -3,7 +3,7 @@ import Plotly from "plotly.js-dist-min";
 import type { Config, Data, Layout, PlotHoverEvent, PlotMouseEvent, Shape } from "plotly.js";
 
 import type { GammaSnapshot } from "@/lib/types";
-import { useTheme } from "@/hooks/useTheme";
+import { useChartTheme } from "@/hooks/useChartTheme";
 import { cn } from "@/lib/utils";
 
 /** Net GEX by regime: positive = dark green, negative = darker red. */
@@ -285,8 +285,7 @@ export function GexStrikePlotly({
   const plotRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<StrikeRow[]>([]);
   const infoPinnedRef = useRef(false);
-  const { theme } = useTheme();
-  const isDark = theme === "dark";
+  const chartTheme = useChartTheme();
 
   const [infoRow, setInfoRow] = useState<StrikeRow | null>(null);
   const [infoPinned, setInfoPinned] = useState(false);
@@ -449,13 +448,13 @@ export function GexStrikePlotly({
       return;
     }
 
-    const paper = isDark ? "#0b0f14" : "#ffffff";
-    const plotBg = isDark ? "#0b0f14" : "#fafafa";
-    const grid = isDark ? "rgba(148, 163, 184, 0.18)" : "rgba(148, 163, 184, 0.28)";
-    const axis = isDark ? "rgba(226, 232, 240, 0.75)" : "rgba(51, 65, 85, 0.85)";
-    const zeroLine = isDark ? "rgba(226, 232, 240, 0.45)" : "rgba(100, 116, 139, 0.55)";
-    const hoverBg = isDark ? "rgba(15, 23, 42, 0.95)" : "rgba(255, 255, 255, 0.96)";
-    const hoverBorder = isDark ? "rgba(148, 163, 184, 0.45)" : "rgba(100, 116, 139, 0.35)";
+    const paper = chartTheme.paperBg;
+    const plotBg = chartTheme.plotBg;
+    const grid = chartTheme.grid;
+    const axis = chartTheme.axis;
+    const zeroLine = chartTheme.zeroline;
+    const hoverBg = chartTheme.hoverBg;
+    const hoverBorder = chartTheme.hoverBorder;
 
     const traces: Data[] = [];
 
@@ -723,7 +722,7 @@ export function GexStrikePlotly({
     showCePeOi,
     showDoi,
     height,
-    isDark,
+    chartTheme,
   ]);
 
   const infoLines = infoRow

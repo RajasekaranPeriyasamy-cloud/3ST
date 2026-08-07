@@ -34,6 +34,7 @@
   --color-bear: var(--bear);
   --color-bear-foreground: var(--bear-foreground);
   --color-warn: var(--warn);
+  --color-warn-strong: var(--warn-strong);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -83,6 +84,10 @@
   --bear: oklch(0.48 0.18 18);
   --bear-foreground: oklch(0.99 0.01 18);
   --warn: oklch(0.62 0.15 70);
+  /* Darker amber for small text on light cards — plain --warn is borderline
+     AA at this lightness for text (fine as a background/accent). See
+     docs/UI_UX_VISUAL_ENHANCEMENT_PLAN.md Phase 5. */
+  --warn-strong: oklch(0.5 0.16 70);
   --chart-1: oklch(0.48 0.16 155);
   --chart-2: oklch(0.48 0.18 18);
   --chart-3: oklch(0.48 0.14 195);
@@ -127,6 +132,8 @@
   --bear: oklch(0.72 0.19 18);
   --bear-foreground: oklch(0.99 0.01 18);
   --warn: oklch(0.84 0.14 85);
+  /* Already bright enough for text on dark cards — no separate strong variant needed. */
+  --warn-strong: oklch(0.84 0.14 85);
   --chart-1: oklch(0.78 0.18 155);
   --chart-2: oklch(0.72 0.19 18);
   --chart-3: oklch(0.78 0.14 195);
@@ -173,6 +180,7 @@
     background: color-mix(in oklch, var(--primary) 22%, white);
     color: oklch(0.2 0.08 200);
     font-weight: 650;
+    box-shadow: inset 2px 0 0 var(--sidebar-primary);
   }
 
   /* Stronger default text weight for readability on bright surfaces */
@@ -194,6 +202,11 @@
 }
 @utility text-bear {
   color: var(--color-bear);
+}
+@utility text-warn-strong {
+  /* AA-safe amber for small text/labels — use instead of text-amber-600
+     dark:text-amber-400 hand-rolled pairs (see Phase 5 audit). */
+  color: var(--color-warn-strong);
 }
 @utility bg-bull {
   background-color: var(--color-bull);
@@ -224,4 +237,17 @@
   background-color: var(--color-bear);
   color: var(--color-bear-foreground);
   box-shadow: 0 0 10px color-mix(in oklch, var(--bear) 55%, transparent);
+}
+
+/* Brief highlight on live-polled numbers (LTP/GEX/OI) that just changed — see useFlashOnChange. */
+@keyframes value-flash-pulse {
+  0% {
+    background-color: color-mix(in oklch, var(--primary) 35%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@utility value-flash {
+  animation: value-flash-pulse 700ms ease-out;
 }

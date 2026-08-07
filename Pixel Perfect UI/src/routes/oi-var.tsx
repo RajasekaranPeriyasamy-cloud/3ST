@@ -68,9 +68,9 @@ const FLOW_LABELS: Record<string, string> = {
 function FlowRegimeCard({ side }: { side: OiVarFlowRegimeSide }) {
   const tone =
     side.regime === "long"
-      ? "border-emerald-500/40 bg-emerald-50/70 text-emerald-800"
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
       : side.regime === "short"
-        ? "border-rose-500/40 bg-rose-50/70 text-rose-800"
+        ? "border-rose-500/40 bg-rose-500/10 text-rose-800 dark:text-rose-300"
         : "border-border bg-muted/30 text-muted-foreground";
   const c = side.counts ?? {};
   return (
@@ -568,7 +568,11 @@ function OiVarPage() {
             <Badge
               key={`${a.type}-${i}`}
               variant="outline"
-              className={a.severity === "alert" ? "border-red-500/60 text-red-600" : "border-amber-500/60"}
+              className={
+                a.severity === "alert"
+                  ? "border-red-500/60 text-red-600 dark:text-red-400"
+                  : "border-amber-500/60"
+              }
             >
               {a.message}
             </Badge>
@@ -594,8 +598,8 @@ function OiVarPage() {
                     variant="outline"
                     className={
                       s.to_regime === "long"
-                        ? "border-emerald-500/50 text-emerald-700"
-                        : "border-rose-500/50 text-rose-700"
+                        ? "border-emerald-500/50 text-emerald-700 dark:text-emerald-300"
+                        : "border-rose-500/50 text-rose-700 dark:text-rose-300"
                     }
                   >
                     {s.t

@@ -43,30 +43,49 @@ import {
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-const items = [
-  { title: "Stock Selection", url: "/", icon: Target },
-  { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
-  { title: "Widget Desk", url: "/widget-desk", icon: LayoutGrid },
-  { title: "Backtest", url: "/backtest", icon: BarChart3 },
-  { title: "RRG", url: "/rrg", icon: GitBranch },
-  { title: "OI Tracker", url: "/oi-tracker", icon: Layers },
-  { title: "OI Movers", url: "/oi-movers", icon: ArrowLeftRight },
-  { title: "OI VAR Desk", url: "/oi-var", icon: Scale },
-  { title: "Gamma Density", url: "/gamma-density", icon: Sigma },
-  { title: "CAS Indicative", url: "/cas-indicative", icon: Gavel },
-  { title: "Vanna Exposure", url: "/vanna-exposure", icon: Orbit },
-  { title: "Trade Suggestions", url: "/trade-suggestions", icon: Sparkles },
-  { title: "Vol Surface", url: "/vol-surface", icon: Grid3x3 },
-  { title: "IV Smile", url: "/iv-smile", icon: LineChart },
-  { title: "OI Profile", url: "/oi-profile", icon: CandlestickChart },
-  { title: "Algo Execution", url: "/execution", icon: Cpu },
-  { title: "Straddle Watch", url: "/straddle-watch", icon: ChartNoAxesCombined },
-  { title: "Rolling Straddle", url: "/rolling-straddle", icon: TrendingUp },
-  { title: "Premium Book", url: "/premium-book", icon: BookMarked },
-  { title: "Live Desk", url: "/live", icon: Activity },
-  { title: "Execution Health", url: "/latency", icon: Gauge },
-  { title: "Settings", url: "/settings", icon: Settings },
-];
+/** Grouped for visual scanability — see docs/UI_UX_VISUAL_ENHANCEMENT_PLAN.md Phase 2. */
+const NAV_GROUPS = [
+  {
+    label: "Selection & Backtest",
+    items: [
+      { title: "Stock Selection", url: "/", icon: Target },
+      { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
+      { title: "Widget Desk", url: "/widget-desk", icon: LayoutGrid },
+      { title: "Backtest", url: "/backtest", icon: BarChart3 },
+      { title: "RRG", url: "/rrg", icon: GitBranch },
+    ],
+  },
+  {
+    label: "Options Analytics",
+    items: [
+      { title: "OI Tracker", url: "/oi-tracker", icon: Layers },
+      { title: "OI Movers", url: "/oi-movers", icon: ArrowLeftRight },
+      { title: "OI VAR Desk", url: "/oi-var", icon: Scale },
+      { title: "Gamma Density", url: "/gamma-density", icon: Sigma },
+      { title: "CAS Indicative", url: "/cas-indicative", icon: Gavel },
+      { title: "Vanna Exposure", url: "/vanna-exposure", icon: Orbit },
+      { title: "Trade Suggestions", url: "/trade-suggestions", icon: Sparkles },
+      { title: "Vol Surface", url: "/vol-surface", icon: Grid3x3 },
+      { title: "IV Smile", url: "/iv-smile", icon: LineChart },
+      { title: "OI Profile", url: "/oi-profile", icon: CandlestickChart },
+    ],
+  },
+  {
+    label: "Execution & Live",
+    items: [
+      { title: "Algo Execution", url: "/execution", icon: Cpu },
+      { title: "Straddle Watch", url: "/straddle-watch", icon: ChartNoAxesCombined },
+      { title: "Rolling Straddle", url: "/rolling-straddle", icon: TrendingUp },
+      { title: "Premium Book", url: "/premium-book", icon: BookMarked },
+      { title: "Live Desk", url: "/live", icon: Activity },
+      { title: "Execution Health", url: "/latency", icon: Gauge },
+    ],
+  },
+  {
+    label: "Utility",
+    items: [{ title: "Settings", url: "/settings", icon: Settings }],
+  },
+] as const;
 
 export function AppSidebar() {
   const pathname = useRouterState({ select: (r) => r.location.pathname });
@@ -121,28 +140,30 @@ export function AppSidebar() {
         </Button>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Trading</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {items.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild isActive={isActive(item.url)}>
-                    <Link to={item.url} className="flex items-center gap-2">
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                      {item.url === "/execution" && orphanCount > 0 ? (
-                        <span className="ml-auto rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground">
-                          {orphanCount}
-                        </span>
-                      ) : null}
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {NAV_GROUPS.map((group) => (
+          <SidebarGroup key={group.label}>
+            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {group.items.map((item) => (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton asChild isActive={isActive(item.url)}>
+                      <Link to={item.url} className="flex items-center gap-2">
+                        <item.icon className="h-4 w-4" />
+                        <span>{item.title}</span>
+                        {item.url === "/execution" && orphanCount > 0 ? (
+                          <span className="ml-auto rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground">
+                            {orphanCount}
+                          </span>
+                        ) : null}
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
       <SidebarFooter className="border-t border-sidebar-border">
         <SidebarMenu>

@@ -517,7 +517,7 @@ function RollingStraddlePage() {
           </Badge>
           <Badge variant="outline">{arm?.mode?.toUpperCase() ?? "PAPER"}</Badge>
           {arm?.mode === "live" && !arm?.armed ? (
-            <Badge variant="outline" className="border-amber-500/60 text-amber-400">
+            <Badge variant="outline" className="border-amber-500/60 text-amber-600 dark:text-amber-400">
               Live orders blocked until ARM
             </Badge>
           ) : null}
@@ -525,7 +525,7 @@ function RollingStraddlePage() {
             {running ? "RUNNING" : "STOPPED"}
           </Badge>
           {st?.morning_bar_seen ? (
-            <Badge variant="outline" className="border-green-600 text-green-600">
+            <Badge variant="outline" className="border-emerald-600/60 text-emerald-600 dark:text-emerald-400">
               Entry OK ({entryStartLabel})
             </Badge>
           ) : (
@@ -702,7 +702,7 @@ function RollingStraddlePage() {
                 </SelectContent>
               </Select>
               {expiriesError ? (
-                <p className="mt-1 text-xs text-amber-500">{expiriesError}</p>
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{expiriesError}</p>
               ) : null}
             </Field>
             <Field label="Timeframe">
@@ -1073,14 +1073,14 @@ function RollingStraddlePage() {
       </div>
 
       {(status?.broker_mismatches?.length ?? 0) > 0 ? (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
           Broker sync: {status?.broker_mismatches?.join(" · ")}
         </div>
       ) : null}
 
       {(status?.orphans?.length ?? 0) > 0 ? (
         <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
-          <p className="font-medium text-amber-200">Unlinked Kite positions</p>
+          <p className="font-medium text-amber-800 dark:text-amber-200">Unlinked Kite positions</p>
           <p className="mt-1 text-xs text-muted-foreground">
             Open on Kite but not managed by Rolling Straddle — exits will not run until you adopt or close on Kite.
           </p>
@@ -1091,7 +1091,7 @@ function RollingStraddlePage() {
                 className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/30 px-3 py-2"
               >
                 <div className="font-mono text-xs">
-                  <span className="uppercase text-amber-300">{o.leg_key}</span> · {o.tradingsymbol} · qty{" "}
+                  <span className="uppercase text-amber-700 dark:text-amber-300">{o.leg_key}</span> · {o.tradingsymbol} · qty{" "}
                   {o.quantity}
                   {o.average_price != null ? ` @ ${Number(o.average_price).toFixed(2)}` : ""}
                   {o.has_3st_order ? (
@@ -1311,7 +1311,7 @@ function ExitTriggersBlock({
                 </span>
                 <span className="text-right">
                   {row.triggered ? (
-                    <Badge className="bg-amber-500/20 text-amber-400">Triggered</Badge>
+                    <Badge className="bg-amber-500/20 text-amber-700 dark:text-amber-400">Triggered</Badge>
                   ) : row.missing ? (
                     <span className="text-muted-foreground">n/a</span>
                   ) : row.distance != null && ltp != null ? (
@@ -1339,7 +1339,7 @@ function ExitTriggersBlock({
       {exit.force_exit ? (
         <div className="font-mono text-muted-foreground">
           Session force @ {exit.force_exit}
-          {exit.force_exit_due ? <Badge className="ml-1 bg-amber-500/20 text-amber-400">Due</Badge> : null}
+          {exit.force_exit_due ? <Badge className="ml-1 bg-amber-500/20 text-amber-700 dark:text-amber-400">Due</Badge> : null}
         </div>
       ) : null}
     </div>
@@ -1410,17 +1410,17 @@ function LegCard({
           />
         ) : null}
         {brokerDetached ? (
-          <p className="text-xs text-amber-500">
+          <p className="text-xs text-amber-600 dark:text-amber-400">
             Live Kite position detected (qty {brokerQty}) — refreshing leg state on next status poll.
           </p>
         ) : null}
         {externalOpen ? (
-          <p className="text-xs text-amber-500">
+          <p className="text-xs text-amber-600 dark:text-amber-400">
             External / manual position — not managed by Rolling Straddle. Close on Kite manually.
           </p>
         ) : null}
         {exitBlockedDisarm ? (
-          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+          <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-800 dark:text-amber-200">
             Exit triggered but blocked — <strong>DISARMED</strong>. Click <strong>ARM</strong> above to send the Kite close order.
           </p>
         ) : null}

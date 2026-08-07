@@ -6,6 +6,7 @@ import {
 } from "highcharts-react-official";
 
 import type { StraddleWatchSnapshot } from "@/lib/types";
+import { useChartTheme } from "@/hooks/useChartTheme";
 
 // Vite/CJS interop: some builds expose `{ default: Highcharts }` instead of the namespace.
 const Highcharts =
@@ -64,6 +65,7 @@ function ivAxisBounds(values: Array<number | null | undefined>): {
 
 export function StraddleWatchChart({ snapshot, loading }: Props) {
   const chartRef = useRef<HighchartsReactRefObject | null>(null);
+  const chartTheme = useChartTheme();
 
   const options = useMemo(() => {
     const series = snapshot?.series;
@@ -71,9 +73,9 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
     const ivBounds = ivAxisBounds(series?.iv ?? []);
     const opts = {
       chart: {
-        backgroundColor: "#ffffff",
+        backgroundColor: chartTheme.paperBg,
         height: 620,
-        style: { fontFamily: "Segoe UI, Helvetica, Arial, sans-serif" },
+        style: { fontFamily: chartTheme.fontFamily },
       },
       // Kite candles are IST; without this Highcharts labels the axis in UTC (−5:30).
       time: {
@@ -81,7 +83,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
       },
       title: {
         text: "Straddle Watch",
-        style: { fontSize: "16px", fontWeight: "600", color: "#222" },
+        style: { fontSize: "16px", fontWeight: "600", color: chartTheme.annotation },
       },
       credits: { enabled: false },
       rangeSelector: { enabled: false },
@@ -96,7 +98,8 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         align: "center",
         verticalAlign: "top",
         y: 28,
-        itemStyle: { fontSize: "11px", fontWeight: "500" },
+        itemStyle: { fontSize: "11px", fontWeight: "500", color: chartTheme.axis },
+        itemHoverStyle: { color: chartTheme.annotation },
       },
       tooltip: {
         shared: true,
@@ -107,8 +110,8 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         type: "datetime",
         ordinal: false,
         gridLineWidth: 1,
-        gridLineColor: "#eef1f4",
-        labels: { style: { fontSize: "10px", color: "#666" } },
+        gridLineColor: chartTheme.grid,
+        labels: { style: { fontSize: "10px", color: chartTheme.axis } },
         dateTimeLabelFormats: {
           minute: "%H:%M",
           hour: "%H:%M",
@@ -122,21 +125,21 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
           // Price pane (right)
           height: "62%",
           resize: { enabled: true },
-          title: { text: "Call / Put Price", style: { fontSize: "11px" } },
+          title: { text: "Call / Put Price", style: { fontSize: "11px", color: chartTheme.axis } },
           opposite: true,
-          gridLineColor: "#eef1f4",
-          labels: { style: { fontSize: "10px" } },
+          gridLineColor: chartTheme.grid,
+          labels: { style: { fontSize: "10px", color: chartTheme.axis } },
         },
         {
           // OI pane (right)
           top: "65%",
           height: "22%",
           offset: 0,
-          title: { text: "OI", style: { fontSize: "11px" } },
+          title: { text: "OI", style: { fontSize: "11px", color: chartTheme.axis } },
           opposite: true,
-          gridLineColor: "#eef1f4",
+          gridLineColor: chartTheme.grid,
           labels: {
-            style: { fontSize: "10px" },
+            style: { fontSize: "10px", color: chartTheme.axis },
             formatter() {
               return formatOi(Number(this.value));
             },
@@ -255,7 +258,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
       exporting: { enabled: true },
     } as Highcharts.Options;
     return opts;
-  }, [snapshot]);
+  }, [snapshot, chartTheme]);
 
   useEffect(() => {
     const chart = chartRef.current?.chart;

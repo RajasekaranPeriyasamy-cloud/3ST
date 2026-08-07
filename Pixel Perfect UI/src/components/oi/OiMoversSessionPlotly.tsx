@@ -3,11 +3,8 @@ import Plotly from "plotly.js-dist-min";
 import type { Config, Data, Layout } from "plotly.js";
 
 import type { OiMoversHistoryPoint, OiMoversSnapshot } from "@/lib/types";
-import {
-  SESSION_CHART,
-  SESSION_PLOT_INSET,
-  SESSION_SHELL,
-} from "@/components/charts/sessionChartTheme";
+import { SESSION_PLOT_INSET, SESSION_SHELL } from "@/components/charts/sessionChartTheme";
+import { useChartTheme } from "@/hooks/useChartTheme";
 import { cn } from "@/lib/utils";
 
 const CE_RED = "#ef4444";
@@ -144,6 +141,7 @@ export interface OiMoversSessionPlotlyProps {
  */
 export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotlyProps) {
   const plotRef = useRef<HTMLDivElement>(null);
+  const chartTheme = useChartTheme();
   const chartRaw = (snap.chart_series?.length ? snap.chart_series : snap.history) ?? [];
 
   const series = useMemo(() => {
@@ -401,7 +399,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
         : null;
 
     const { paperBg, plotBg, grid, axis, fontFamily, hoverBg, hoverBorder, hoverText } =
-      SESSION_CHART;
+      chartTheme;
 
     const layout: Partial<Layout> = {
       autosize: true,
@@ -503,7 +501,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
     };
 
     void Plotly.react(el, data, layout, config);
-  }, [series, baseLabel, snap.session_poc?.poc]);
+  }, [series, baseLabel, snap.session_poc?.poc, chartTheme]);
 
   const cePct = formatPctFromBase(series.currCe, series.ceBase);
   const pePct = formatPctFromBase(series.currPe, series.peBase);

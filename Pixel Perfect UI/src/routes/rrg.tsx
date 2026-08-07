@@ -19,6 +19,7 @@ import {
 import { api } from "@/lib/api";
 import type { FpiConfluence, RrgConfig, RrgQuadrant, RrgSnapshot, RrgSymbolRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useChartTheme } from "@/hooks/useChartTheme";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -172,6 +173,7 @@ function RrgTooltip({
 }
 
 function RrgPage() {
+  const chartTheme = useChartTheme();
   const [config, setConfig] = useState<RrgConfig | null>(null);
   const [benchmark, setBenchmark] = useState("NIFTY50");
   const [symbolsText, setSymbolsText] = useState("");
@@ -518,42 +520,46 @@ function RrgPage() {
                     }}
                   />
                   <ZAxis range={[80, 80]} />
-                  <ReferenceLine x={100} stroke="#333" strokeDasharray="4 4" strokeWidth={0.6} />
-                  <ReferenceLine y={100} stroke="#333" strokeDasharray="4 4" strokeWidth={0.6} />
+                  <ReferenceLine x={100} stroke={chartTheme.axis} strokeDasharray="4 4" strokeWidth={0.6} />
+                  <ReferenceLine y={100} stroke={chartTheme.axis} strokeDasharray="4 4" strokeWidth={0.6} />
+                  {/* Improving (top-left) */}
                   <ReferenceArea
                     x1={Math.max(bounds.x_min, 93.5)}
                     x2={100}
                     y1={100}
                     y2={Math.min(bounds.y_max, 106.5)}
-                    fill="#b1ebff"
-                    fillOpacity={0.35}
+                    fill={chartTheme.primary}
+                    fillOpacity={0.22}
                     ifOverflow="extendDomain"
                   />
+                  {/* Leading (top-right) */}
                   <ReferenceArea
                     x1={100}
                     x2={Math.min(bounds.x_max, 106.5)}
                     y1={100}
                     y2={Math.min(bounds.y_max, 106.5)}
-                    fill="#bdffc9"
-                    fillOpacity={0.35}
+                    fill={chartTheme.bull}
+                    fillOpacity={0.22}
                     ifOverflow="extendDomain"
                   />
+                  {/* Weakening (bottom-right) */}
                   <ReferenceArea
                     x1={100}
                     x2={Math.min(bounds.x_max, 106.5)}
                     y1={Math.max(bounds.y_min, 93.5)}
                     y2={100}
-                    fill="#fff7b8"
-                    fillOpacity={0.35}
+                    fill={chartTheme.warn}
+                    fillOpacity={0.22}
                     ifOverflow="extendDomain"
                   />
+                  {/* Lagging (bottom-left) */}
                   <ReferenceArea
                     x1={Math.max(bounds.x_min, 93.5)}
                     x2={100}
                     y1={Math.max(bounds.y_min, 93.5)}
                     y2={100}
-                    fill="#ffb9c6"
-                    fillOpacity={0.35}
+                    fill={chartTheme.bear}
+                    fillOpacity={0.22}
                     ifOverflow="extendDomain"
                   />
                   <Tooltip content={<RrgTooltip />} />
@@ -595,7 +601,7 @@ function RrgPage() {
                   <Scatter
                     name="Head"
                     data={headPoints}
-                    fill="#8884d8"
+                    fill={chartTheme.chart5}
                     shape={(props: {
                       cx?: number;
                       cy?: number;
@@ -608,8 +614,8 @@ function RrgPage() {
                           cx={cx}
                           cy={cy}
                           r={active ? 7 : 5}
-                          fill={payload?.fill ?? "#333"}
-                          stroke="#fff"
+                          fill={payload?.fill ?? chartTheme.axis}
+                          stroke={chartTheme.paperBg}
                           strokeWidth={1}
                           opacity={active ? 1 : 0.65}
                         />

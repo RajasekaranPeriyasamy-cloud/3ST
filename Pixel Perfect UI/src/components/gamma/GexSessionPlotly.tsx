@@ -3,11 +3,8 @@ import Plotly from "plotly.js-dist-min";
 import type { Config, Data, Layout, PlotHoverEvent, PlotMouseEvent, PlotRelayoutEvent } from "plotly.js";
 
 import type { GammaHistoryPoint, GammaReversal, GammaSnapshot, GammaStrikeRow } from "@/lib/types";
-import {
-  SESSION_CHART,
-  SESSION_PLOT_INSET,
-  SESSION_SHELL,
-} from "@/components/charts/sessionChartTheme";
+import { SESSION_PLOT_INSET, SESSION_SHELL } from "@/components/charts/sessionChartTheme";
+import { useChartTheme } from "@/hooks/useChartTheme";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -517,6 +514,7 @@ export function GexSessionPlotly({
   className,
 }: GexSessionPlotlyProps) {
   const plotRef = useRef<HTMLDivElement>(null);
+  const chartTheme = useChartTheme();
   const [showCePeOi, setShowCePeOi] = useState(true);
   const [showDoi, setShowDoi] = useState(true);
   const [showAtmIv, setShowAtmIv] = useState(true);
@@ -1021,7 +1019,7 @@ export function GexSessionPlotly({
     const atmIvAxisPos = overlaysOn && oiMax > 0 ? 0.74 : 0.98;
 
     const { paperBg, plotBg, grid, axis, zeroline, fontFamily, annotation, hoverBg, hoverBorder, hoverText } =
-      SESSION_CHART;
+      chartTheme;
 
     const layout: Partial<Layout> = {
       autosize: true,
@@ -1270,8 +1268,8 @@ export function GexSessionPlotly({
                 showgrid: false,
                 zeroline: false,
                 showticklabels: false,
-                title: { text: "OI", font: { size: 10, color: SESSION_CHART.axis } },
-                tickfont: { color: SESSION_CHART.axis, size: 9 },
+                title: { text: "OI", font: { size: 10, color: axis } },
+                tickfont: { color: axis, size: 9 },
                 fixedrange: true,
                 visible: true,
               }
@@ -1354,6 +1352,7 @@ export function GexSessionPlotly({
     snap.spot,
     gexHistoryPartial,
     reversalGexGate,
+    chartTheme,
   ]);
 
   const hasGexSeries = series.gexX.length >= 1;

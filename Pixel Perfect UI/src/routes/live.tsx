@@ -219,8 +219,8 @@ function LivePage() {
             className={cn(
               "px-3 py-1 text-sm uppercase",
               deskMode === "live"
-                ? "border-amber-500/50 text-amber-400"
-                : "border-sky-500/50 text-sky-400",
+                ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
+                : "border-sky-500/50 text-sky-600 dark:text-sky-400",
             )}
           >
             {deskMode === "live" ? "Live Trade" : "Paper Trade"}
@@ -615,8 +615,8 @@ function ActiveTradesTable({
   };
   const statusClass: Record<ActiveTradeRow["status"], string> = {
     running: "border-bull/40 text-bull",
-    tracking: "border-sky-500/40 text-sky-400",
-    no_quote: "border-amber-500/40 text-amber-400",
+    tracking: "border-sky-500/40 text-sky-600 dark:text-sky-400",
+    no_quote: "border-amber-500/40 text-amber-600 dark:text-amber-400",
     no_position: "border-bear/40 text-bear",
   };
 
@@ -733,7 +733,7 @@ function ActiveTradesTable({
                     {row.tsl_mode === "ATR" ? ` (ATR×${row.tsl_value ?? "—"})` : ""} @{" "}
                     {Number(row.trail_stop).toFixed(2)}
                     {row.risk_exit_triggered && (
-                      <Badge className="ml-1 bg-amber-500/20 text-amber-400">Hit</Badge>
+                      <Badge className="ml-1 bg-amber-500/20 text-amber-700 dark:text-amber-400">Hit</Badge>
                     )}
                   </div>
                 )}
@@ -756,7 +756,7 @@ function ActiveTradesTable({
                       </span>
                     )}
                     {row.st_exit_at_ltp && (
-                      <Badge className="ml-1 bg-amber-500/20 text-amber-400">Zone</Badge>
+                      <Badge className="ml-1 bg-amber-500/20 text-amber-700 dark:text-amber-400">Zone</Badge>
                     )}
                   </div>
                 )}
@@ -781,7 +781,7 @@ function ActiveTradesTable({
                     Force @ {row.force_exit}
                     {row.session_end ? ` → ${row.session_end}` : ""}
                     {row.force_exit_due && (
-                      <Badge className="ml-1 bg-amber-500/20 text-amber-400">Due</Badge>
+                      <Badge className="ml-1 bg-amber-500/20 text-amber-700 dark:text-amber-400">Due</Badge>
                     )}
                   </div>
                 )}

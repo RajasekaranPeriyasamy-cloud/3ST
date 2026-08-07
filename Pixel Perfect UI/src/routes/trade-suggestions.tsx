@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import { LiveValue } from "@/components/ui/live-value";
 import {
   Select,
   SelectContent,
@@ -95,33 +96,52 @@ function RegimeBar({ snap }: { snap: TradeSuggestionsSnapshot }) {
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-primary/20 bg-gradient-to-r from-primary/10 via-card to-accent/20 px-4 py-2.5 text-xs font-medium tracking-wide shadow-sm">
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">REGIME</span>
-        <span className={gammaPos ? "font-semibold text-emerald-600" : "font-semibold text-rose-600"}>
+        <span
+          className={
+            gammaPos
+              ? "font-semibold text-emerald-600 dark:text-emerald-400"
+              : "font-semibold text-rose-600 dark:text-rose-400"
+          }
+        >
           {gammaPos ? "Positive Gamma" : "Negative Gamma"}
         </span>
       </div>
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">NET GEX</span>
-        <span className={(gex ?? 0) >= 0 ? "font-semibold text-emerald-600" : "font-semibold text-rose-600"}>
+        <LiveValue
+          value={gex}
+          className={
+            (gex ?? 0) >= 0
+              ? "font-semibold text-emerald-600 dark:text-emerald-400"
+              : "font-semibold text-rose-600 dark:text-rose-400"
+          }
+        >
           {fmtCr(gex)}
-        </span>
+        </LiveValue>
       </div>
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">PIN</span>
-        <span className="font-semibold text-foreground">{fmt(pin, 0)}</span>
+        <LiveValue value={pin} className="font-semibold text-foreground">
+          {fmt(pin, 0)}
+        </LiveValue>
       </div>
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">FLIP</span>
-        <span className="font-semibold text-amber-600">{flip != null ? fmt(flip, 0) : "—"}</span>
+        <span className="font-semibold text-amber-600 dark:text-amber-400">
+          {flip != null ? fmt(flip, 0) : "—"}
+        </span>
       </div>
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground">VANNA LINE</span>
-        <span className="font-semibold text-cyan-700">
+        <span className="font-semibold text-cyan-700 dark:text-cyan-400">
           {snap.levels?.vanna_line != null ? fmt(snap.levels.vanna_line, 0) : "—"}
         </span>
       </div>
       <div className="ml-auto flex items-center gap-2">
         <span className="text-muted-foreground">SPOT</span>
-        <span className="font-mono font-semibold text-orange-600">{fmt(snap.spot, 2)}</span>
+        <LiveValue value={snap.spot} className="font-semibold text-orange-600 dark:text-orange-400">
+          {fmt(snap.spot, 2)}
+        </LiveValue>
       </div>
     </div>
   );
@@ -140,11 +160,11 @@ function StatCard({
 }) {
   const color =
     tone === "pos"
-      ? "text-emerald-600"
+      ? "text-emerald-600 dark:text-emerald-400"
       : tone === "neg"
-        ? "text-rose-600"
+        ? "text-rose-600 dark:text-rose-400"
         : tone === "warn"
-          ? "text-amber-600"
+          ? "text-amber-600 dark:text-amber-400"
           : "text-foreground";
   return (
     <div className="rounded-md border border-primary/15 bg-card/90 px-3 py-3 shadow-sm shadow-primary/5">
@@ -346,7 +366,7 @@ function IdeaCard({ idea }: { idea: TradeSuggestion }) {
             {idea.bias ? <Badge variant="outline">{idea.bias}</Badge> : null}
             <Badge variant="outline">{idea.structure}</Badge>
             {idea.score != null ? (
-              <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
+              <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-300 dark:hover:bg-emerald-500/15">
                 score {fmt(idea.score, 1)}
               </Badge>
             ) : null}
@@ -363,7 +383,9 @@ function IdeaCard({ idea }: { idea: TradeSuggestion }) {
             <span
               key={`${leg.side}-${leg.option_type}-${leg.strike}-${i}`}
               className={`rounded px-2 py-0.5 ${
-                leg.side === "buy" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                leg.side === "buy"
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                  : "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300"
               }`}
             >
               {leg.side.toUpperCase()} {leg.option_type} {fmt(leg.strike, 0)}
@@ -446,7 +468,7 @@ function StrikeTable({ rows, spot, atm }: { rows: GreeksStrikeRow[]; spot: numbe
               ) : null}
             </TableCell>
             <TableCell
-              className={`text-right font-mono ${(r.net_gex || 0) >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+              className={`text-right font-mono ${(r.net_gex || 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}
             >
               {fmtCr(r.net_gex)}
             </TableCell>
@@ -458,8 +480,8 @@ function StrikeTable({ rows, spot, atm }: { rows: GreeksStrikeRow[]; spot: numbe
                 variant="outline"
                 className={
                   r.side === "ABOVE"
-                    ? "border-emerald-500/40 text-emerald-700"
-                    : "border-rose-500/40 text-rose-700"
+                    ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                    : "border-rose-500/40 text-rose-700 dark:text-rose-300"
                 }
               >
                 {r.side}
@@ -717,27 +739,27 @@ function TradeSuggestionsPage() {
                     </div>
                     <div className="mt-2 space-y-2 text-sm">
                       <div>
-                        <span className="font-medium text-amber-600">Call Wall </span>
+                        <span className="font-medium text-amber-600 dark:text-amber-400">Call Wall </span>
                         <span className="font-mono">{fmt(snapshot.levels?.call_wall, 0)}</span>
                         <div className="text-[10px] text-muted-foreground">
                           {pctFromSpot(snapshot.levels?.call_wall, snapshot.spot)}
                         </div>
                       </div>
                       <div>
-                        <span className="font-medium text-cyan-700">Put Wall </span>
+                        <span className="font-medium text-cyan-700 dark:text-cyan-400">Put Wall </span>
                         <span className="font-mono">{fmt(snapshot.levels?.put_wall, 0)}</span>
                         <div className="text-[10px] text-muted-foreground">
                           {pctFromSpot(snapshot.levels?.put_wall, snapshot.spot)}
                         </div>
                       </div>
                       <div>
-                        <span className="font-medium text-emerald-600">Pin </span>
+                        <span className="font-medium text-emerald-600 dark:text-emerald-400">Pin </span>
                         <span className="font-mono">{fmt(snapshot.levels?.pin_level, 0)}</span>
                       </div>
                     </div>
                   </div>
-                  <div className="rounded-md border border-amber-400/40 bg-amber-50 p-3">
-                    <div className="text-[10px] uppercase tracking-wider text-amber-700">Cliff alert</div>
+                  <div className="rounded-md border border-amber-400/40 bg-amber-50 p-3 dark:bg-amber-500/10">
+                    <div className="text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-300">Cliff alert</div>
                     <div className="mt-1 text-sm font-medium">
                       Flip @ {fmt(snapshot.levels?.dynamic_flip_level ?? snapshot.levels?.flip_level, 0)}
                     </div>

@@ -202,7 +202,7 @@ function VannaChart({ snap }: { snap: VannaSnapshot }) {
               <div className="rounded-md border bg-popover px-3 py-2 text-xs shadow-md">
                 <div className="mb-1 border-b pb-1 font-semibold">Strike {label}</div>
                 {vex != null ? (
-                  <div className={vex >= 0 ? "text-emerald-600" : "text-red-600"}>
+                  <div className={vex >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>
                     Net VEX: {numTick(vex, 2)} ₹Cr / +1 vol
                   </div>
                 ) : null}
@@ -472,9 +472,9 @@ function VannaExposurePage() {
                   <div
                     className={
                       s.direction === "dealers_buy_delta"
-                        ? "text-emerald-600 text-xs mt-1"
+                        ? "text-emerald-600 dark:text-emerald-400 text-xs mt-1"
                         : s.direction === "dealers_sell_delta"
-                          ? "text-red-600 text-xs mt-1"
+                          ? "text-red-600 dark:text-red-400 text-xs mt-1"
                           : "text-muted-foreground text-xs mt-1"
                     }
                   >
