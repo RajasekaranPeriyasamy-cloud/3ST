@@ -60,6 +60,11 @@ from execution.premium_book_store import get_config as premium_book_get_config
 from execution.premium_book_store import get_log as premium_book_get_log
 from execution.premium_book_store import save_config as premium_book_save_config
 from execution.scheduler import scheduler_status, start_scheduler, stop_scheduler
+from options.analytics_scheduler import (
+    analytics_scheduler_status,
+    start_analytics_scheduler,
+    stop_analytics_scheduler,
+)
 from execution.desk_trades import adopt_open_positions, build_active_trades_view, sync_active_trade_entry
 from execution.execution_queue import build_execution_queue, queue_action
 from execution.positions_view import build_positions_view
@@ -161,6 +166,7 @@ async def _lifespan(app: FastAPI):
 
     load_persisted_state()
     start_scheduler()
+    start_analytics_scheduler()
     threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
     await start_ltp_feed()
     try:
@@ -193,6 +199,7 @@ async def _lifespan(app: FastAPI):
     yield
     await stop_ltp_feed()
     stop_scheduler()
+    stop_analytics_scheduler()
 
 
 app = FastAPI(title="3ST Kite Algo API", version="0.2.0", lifespan=_lifespan)
@@ -790,6 +797,7 @@ def health() -> dict[str, Any]:
         "timeframes": list(TIMEFRAMES.keys()),
         "spread_templates": list(SPREAD_TEMPLATES.keys()),
         "st_methods": ["heikin_ashi", "regular", "hybrid"],
+        **analytics_scheduler_status(),
     }
 
 

@@ -20,7 +20,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from config import GAMMA_DENSITY_DEFAULTS, INDEX_OPTIONS
+from config import ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS, GAMMA_DENSITY_DEFAULTS, INDEX_OPTIONS
 from options.gamma_density_provider import (
     GammaDensityDataProvider,
     get_gamma_density_provider,
@@ -2430,16 +2430,10 @@ def build_concentration_summary(
 # Cash + major MCX names the Gamma desk charts. Each wake samples *all* due
 # in-session names (budgeted), not one round-robin pick — RR of 1 left CRUDE
 # with near-empty trails while NIFTY UI polls filled only the open desk.
-_GEX_HISTORY_SAMPLE_CANDIDATES = (
-    "NIFTY",
-    "BANKNIFTY",
-    "SENSEX",
-    "CRUDEOIL",
-    "NATURALGAS",
-    "GOLD",
-    "SILVER",
-)
-GEX_HISTORY_SAMPLE_INTERVAL_SEC = 60
+# Shared with options/oi_var.py via config.ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS
+# so both desks record the same underlyings.
+_GEX_HISTORY_SAMPLE_CANDIDATES = ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS
+GEX_HISTORY_SAMPLE_INTERVAL_SEC = 30
 # Failures retry sooner than a full success interval so a bad tick does not
 # silence an underlying for a full minute while the desk is open.
 GEX_HISTORY_SAMPLE_FAIL_BACKOFF_SEC = 20

@@ -140,6 +140,22 @@ INDEX_OPTIONS = {
 
 MCX_OPTION_UNDERLYINGS = ("CRUDEOIL", "CRUDEOILM", "NATURALGAS")
 
+# Cash + major MCX underlyings sampled continuously in the background so
+# session-history charts (Gamma Density, OI VAR) have data from market open
+# even when no one has the desk page open. Filtered against INDEX_OPTIONS at
+# call time, so a name not yet wired up (e.g. GOLD/SILVER) is silently
+# skipped rather than raising. Shared by options/gamma_density.py and
+# options/oi_var.py — keep both desks sampling the same underlying set.
+ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS = (
+    "NIFTY",
+    "BANKNIFTY",
+    "SENSEX",
+    "CRUDEOIL",
+    "NATURALGAS",
+    "GOLD",
+    "SILVER",
+)
+
 
 def is_mcx_underlying(underlying: str | None) -> bool:
     u = str(underlying or "").upper()
