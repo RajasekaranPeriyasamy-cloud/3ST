@@ -84,6 +84,19 @@ def _run_sync_loop() -> None:
 
         _safe_tick("reconcile", maybe_reconcile_periodic, lambda _k, _m: None)
 
+        # OI Movers chart history — CE/PE/PCR lines need samples from ~09:20 even
+        # when the desk page is not open (spot candles alone leave those blank).
+        try:
+            from options.oi_movers import maybe_sample_oi_movers_history_periodic
+
+            _safe_tick(
+                "oi_movers_history",
+                maybe_sample_oi_movers_history_periodic,
+                lambda _k, _m: None,
+            )
+        except Exception:
+            pass
+
         sleep_sec = min(intervals) if intervals else 30
         _stop_event.wait(sleep_sec)
 

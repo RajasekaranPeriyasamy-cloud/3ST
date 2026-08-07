@@ -32,6 +32,7 @@ import { Route as IvSmileRouteImport } from './routes/iv-smile'
 import { Route as GammaDensityRouteImport } from './routes/gamma-density'
 import { Route as ExecutionRouteImport } from './routes/execution'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as CasIndicativeRouteImport } from './routes/cas-indicative'
 import { Route as BacktestRouteImport } from './routes/backtest'
 import { Route as ArbitrageRouteImport } from './routes/arbitrage'
 import { Route as AnalogueRouteImport } from './routes/analogue'
@@ -152,6 +153,11 @@ const DashboardRoute = DashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CasIndicativeRoute = CasIndicativeRouteImport.update({
+  id: '/cas-indicative',
+  path: '/cas-indicative',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BacktestRoute = BacktestRouteImport.update({
   id: '/backtest',
   path: '/backtest',
@@ -178,6 +184,7 @@ export interface FileRoutesByFullPath {
   '/analogue': typeof AnalogueRoute
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
+  '/cas-indicative': typeof CasIndicativeRoute
   '/dashboard': typeof DashboardRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
@@ -207,6 +214,7 @@ export interface FileRoutesByTo {
   '/analogue': typeof AnalogueRoute
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
+  '/cas-indicative': typeof CasIndicativeRoute
   '/dashboard': typeof DashboardRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
@@ -237,6 +245,7 @@ export interface FileRoutesById {
   '/analogue': typeof AnalogueRoute
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
+  '/cas-indicative': typeof CasIndicativeRoute
   '/dashboard': typeof DashboardRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
@@ -268,6 +277,7 @@ export interface FileRouteTypes {
     | '/analogue'
     | '/arbitrage'
     | '/backtest'
+    | '/cas-indicative'
     | '/dashboard'
     | '/execution'
     | '/gamma-density'
@@ -297,6 +307,7 @@ export interface FileRouteTypes {
     | '/analogue'
     | '/arbitrage'
     | '/backtest'
+    | '/cas-indicative'
     | '/dashboard'
     | '/execution'
     | '/gamma-density'
@@ -326,6 +337,7 @@ export interface FileRouteTypes {
     | '/analogue'
     | '/arbitrage'
     | '/backtest'
+    | '/cas-indicative'
     | '/dashboard'
     | '/execution'
     | '/gamma-density'
@@ -356,6 +368,7 @@ export interface RootRouteChildren {
   AnalogueRoute: typeof AnalogueRoute
   ArbitrageRoute: typeof ArbitrageRoute
   BacktestRoute: typeof BacktestRoute
+  CasIndicativeRoute: typeof CasIndicativeRoute
   DashboardRoute: typeof DashboardRoute
   ExecutionRoute: typeof ExecutionRoute
   GammaDensityRoute: typeof GammaDensityRoute
@@ -544,6 +557,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/cas-indicative': {
+      id: '/cas-indicative'
+      path: '/cas-indicative'
+      fullPath: '/cas-indicative'
+      preLoaderRoute: typeof CasIndicativeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/backtest': {
       id: '/backtest'
       path: '/backtest'
@@ -580,6 +600,7 @@ const rootRouteChildren: RootRouteChildren = {
   AnalogueRoute: AnalogueRoute,
   ArbitrageRoute: ArbitrageRoute,
   BacktestRoute: BacktestRoute,
+  CasIndicativeRoute: CasIndicativeRoute,
   DashboardRoute: DashboardRoute,
   ExecutionRoute: ExecutionRoute,
   GammaDensityRoute: GammaDensityRoute,

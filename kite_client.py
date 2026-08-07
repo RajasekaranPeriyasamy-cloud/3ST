@@ -332,6 +332,14 @@ def fetch_index_minute_spot(underlying: str, minutes: int = 40) -> list[dict[str
     return []
 
 
+def fetch_front_month_minute_candles(underlying: str, minutes: int = 40) -> list[dict[str, Any]]:
+    """Front-month future minute candles (volume overlay for cash-index spot paths)."""
+    from instruments import resolve_future
+
+    fut = resolve_future(underlying)
+    return fetch_minute_candles(int(fut["instrument_token"]), minutes=minutes)
+
+
 
 def fetch_quote_batch(instruments: list[str]) -> dict[str, dict[str, Any]]:
     """Retrieve full market quotes for up to 500 instruments in one call."""

@@ -1,14 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pause, Play, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pause, Play, RefreshCw, Settings2 } from "lucide-react";
 import {
-  Bar,
   CartesianGrid,
-  Cell,
-  ComposedChart,
   Line,
   LineChart,
-  ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -20,10 +16,22 @@ import { api } from "@/lib/api";
 import { pickNearestExpiry, useOptionExpiries } from "@/hooks/useOptionExpiries";
 import type {
   GammaConfig,
+  GammaMomentum,
   GammaSnapshot,
-  GammaStrikeRow,
   OiUnderlying,
 } from "@/lib/types";
+import { ReportPageDownload } from "@/components/ReportPageDownload";
+import { CasChip } from "@/components/CasChip";
+import { ConcentrationBoard } from "@/components/gamma/ConcentrationBoard";
+import { GexSessionPlotly } from "@/components/gamma/GexSessionPlotly";
+import {
+  CALL_OI,
+  GEX_NEG,
+  GEX_POS,
+  GexStrikePlotly,
+  IV_CURVE,
+  PUT_OI,
+} from "@/components/gamma/GexStrikePlotly";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -45,16 +53,45 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export const Route = createFileRoute("/gamma-density")({
   component: GammaDensityPage,
 });
 
 const DEFAULT_UNDERLYINGS: OiUnderlying[] = ["NIFTY", "BANKNIFTY", "SENSEX"];
-const POS = "#22c55e";
-const NEG = "#ef4444";
+/** Page-local — do not share with widget-desk AnalyticsDeskContext. */
+const GAMMA_UNDERLYING_KEY = "3st.gamma-density.underlying";
+
+const SPOT_LINE = "#0891b2"; // cyan
+const FLIP_LINE = "#db2777"; // pink
+
+function loadPersistedUnderlying(): OiUnderlying {
+  try {
+    const raw = localStorage.getItem(GAMMA_UNDERLYING_KEY);
+    if (!raw) return "NIFTY";
+    const u = raw.trim().toUpperCase() as OiUnderlying;
+    return u || "NIFTY";
+  } catch {
+    return "NIFTY";
+  }
+}
+
+function persistUnderlying(u: OiUnderlying) {
+  try {
+    localStorage.setItem(GAMMA_UNDERLYING_KEY, u);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
 
 type SignMode = "naive" | "customer" | "oi_delta";
+type OiBaselineMode = "session_open" | "prev_close";
+type ReversalTf = "1m" | "5m" | "15m";
+type ReversalGexMode = "live" | "research";
+
+const STRIKE_WINDOW_OPTIONS = [10, 15, 20, 25, 30, 40, 50] as const;
 
 const JOINT_LABELS: Record<string, string> = {
   pin_fade: "Pin / fade extremes (GEX>0, far from flip)",
@@ -72,6 +109,82 @@ function fmt(v: number | null | undefined, digits = 0): string {
 function gexCrore(v: number | null | undefined): string {
   if (v == null) return "—";
   return (v / 1e7).toFixed(2);
+}
+
+const MOMENTUM_COMPONENT_LABELS: { key: keyof GammaMomentum["components"]; label: string }[] = [
+  { key: "gex", label: "GEX" },
+  { key: "squeeze", label: "Squeeze" },
+  { key: "oi_flow", label: "OI flow" },
+  { key: "iv", label: "IV" },
+  { key: "structure", label: "Structure" },
+];
+
+function MomentumStrip({ momentum }: { momentum: GammaMomentum }) {
+  const tone =
+    momentum.label === "bullish"
+      ? "pos"
+      : momentum.label === "bearish"
+        ? "neg"
+        : "muted";
+  const scoreTone =
+    tone === "pos"
+      ? "text-emerald-700 dark:text-emerald-400"
+      : tone === "neg"
+        ? "text-red-700 dark:text-red-400"
+        : "text-foreground";
+  const borderTone =
+    tone === "pos"
+      ? "border-emerald-500/35 bg-emerald-50/40 dark:bg-emerald-950/20"
+      : tone === "neg"
+        ? "border-red-500/35 bg-red-50/40 dark:bg-red-950/20"
+        : "border-border/70 bg-muted/20";
+
+  return (
+    <div className={`rounded-md border px-3 py-2.5 ${borderTone}`}>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Squeeze / momentum
+        </p>
+        <p className={`font-mono text-lg font-semibold tabular-nums ${scoreTone}`}>
+          {momentum.score.toFixed(0)}
+        </p>
+        <Badge
+          variant="outline"
+          className={
+            tone === "pos"
+              ? "border-emerald-500/50 capitalize"
+              : tone === "neg"
+                ? "border-red-500/50 capitalize"
+                : "capitalize"
+          }
+        >
+          {momentum.label}
+        </Badge>
+        <span className="text-[10px] text-muted-foreground">
+          &gt;60 up-bias · 40–60 neutral · &lt;40 fade
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {MOMENTUM_COMPONENT_LABELS.map(({ key, label }) => {
+          const v = momentum.components[key];
+          return (
+            <Badge key={key} variant="outline" className="font-mono text-[10px] tabular-nums">
+              {label} {Number.isFinite(v) ? v.toFixed(0) : "—"}
+            </Badge>
+          );
+        })}
+      </div>
+      {(momentum.drivers?.length ?? 0) > 0 ? (
+        <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+          {momentum.drivers.slice(0, 5).map((d) => (
+            <span key={d} className="rounded bg-background/60 px-1.5 py-0.5">
+              {d}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function StatCard({
@@ -102,141 +215,13 @@ function StatCard({
   );
 }
 
-interface TooltipEntry {
-  name?: string;
-  value?: number;
-}
-
-function GammaTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: TooltipEntry[];
-  label?: number | string;
-}) {
-  if (!active || !payload?.length) return null;
-  const gex = payload.find((p) => p.name === "Net GEX")?.value;
-  const den = payload.find((p) => p.name === "Γ×OI density")?.value;
-  return (
-    <div className="rounded-md border bg-popover px-3 py-2 text-xs shadow-md">
-      <div className="mb-1 border-b pb-1 font-semibold text-foreground">
-        Strike: {typeof label === "number" ? label.toLocaleString() : label}
-      </div>
-      {gex != null ? (
-        <div className={gex >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>
-          Net GEX: {gex.toFixed(2)} ₹Cr
-        </div>
-      ) : null}
-      {den != null ? (
-        <div className="text-indigo-500 dark:text-indigo-400">
-          Γ×OI density: {(den / 1e6).toFixed(2)}M
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function StrikeGexChart({ snap }: { snap: GammaSnapshot }) {
-  const data = snap.strikes.map((r) => ({
-    strike: r.strike,
-    net_gex_cr: r.net_gex / 1e7,
-    total_density: r.total_density,
-  }));
-  return (
-    <ResponsiveContainer width="100%" height={340}>
-      <ComposedChart data={data} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-        <XAxis
-          dataKey="strike"
-          type="number"
-          domain={["dataMin", "dataMax"]}
-          tick={{ fontSize: 11 }}
-        />
-        <YAxis
-          yAxisId="gex"
-          tick={{ fontSize: 11 }}
-          tickFormatter={(v) => v.toFixed(1)}
-          label={{ value: "Net GEX (₹Cr / 1%)", angle: -90, position: "insideLeft", fontSize: 11 }}
-        />
-        <YAxis
-          yAxisId="den"
-          orientation="right"
-          tick={{ fontSize: 11 }}
-          tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`}
-        />
-        <Tooltip content={<GammaTooltip />} />
-        <ReferenceLine yAxisId="gex" y={0} stroke="currentColor" className="text-muted-foreground" />
-        <ReferenceLine
-          yAxisId="gex"
-          x={snap.spot}
-          stroke="#3b82f6"
-          strokeWidth={2}
-          label={{ value: "Spot", fontSize: 10, fill: "#3b82f6", position: "top" }}
-        />
-        {snap.flip_level != null ? (
-          <ReferenceLine
-            yAxisId="gex"
-            x={snap.flip_level}
-            stroke="#a855f7"
-            strokeDasharray="4 4"
-            label={{ value: "Flip", fontSize: 10, fill: "#a855f7", position: "top" }}
-          />
-        ) : null}
-        {snap.concentration?.dominant_strike != null ? (
-          <ReferenceLine
-            yAxisId="gex"
-            x={snap.concentration.dominant_strike}
-            stroke="#0d9488"
-            strokeDasharray="3 3"
-            label={{ value: "Dom", fontSize: 10, fill: "#0d9488", position: "insideTopLeft" }}
-          />
-        ) : null}
-        {snap.expected_move ? (
-          <>
-            <ReferenceLine
-              yAxisId="gex"
-              x={snap.expected_move.sigma1_up}
-              stroke="#f59e0b"
-              strokeDasharray="2 4"
-              label={{ value: "+1σ", fontSize: 9, fill: "#f59e0b", position: "top" }}
-            />
-            <ReferenceLine
-              yAxisId="gex"
-              x={snap.expected_move.sigma1_dn}
-              stroke="#f59e0b"
-              strokeDasharray="2 4"
-              label={{ value: "−1σ", fontSize: 9, fill: "#f59e0b", position: "top" }}
-            />
-          </>
-        ) : null}
-        <Bar yAxisId="gex" dataKey="net_gex_cr" name="Net GEX" radius={[2, 2, 0, 0]}>
-          {data.map((d, i) => (
-            <Cell key={i} fill={d.net_gex_cr >= 0 ? POS : NEG} />
-          ))}
-        </Bar>
-        <Line
-          yAxisId="den"
-          type="monotone"
-          dataKey="total_density"
-          name="Γ×OI density"
-          stroke="#6366f1"
-          strokeWidth={2}
-          dot={false}
-        />
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
-}
-
-function GexProfileChart({ snap }: { snap: GammaSnapshot }) {
+function GexProfileChart({ snap, height = 280 }: { snap: GammaSnapshot; height?: number }) {
   const data = snap.gex_profile ?? [];
   if (!data.length) {
     return <p className="py-8 text-center text-sm text-muted-foreground">No GEX(S) profile</p>;
   }
   return (
-    <ResponsiveContainer width="100%" height={280}>
+    <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
         <XAxis dataKey="spot" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 11 }} />
@@ -252,16 +237,16 @@ function GexProfileChart({ snap }: { snap: GammaSnapshot }) {
         <ReferenceLine y={0} stroke="currentColor" className="text-muted-foreground" />
         <ReferenceLine
           x={snap.spot}
-          stroke="#3b82f6"
+          stroke={SPOT_LINE}
           strokeWidth={2}
-          label={{ value: "Spot", fontSize: 10, fill: "#3b82f6", position: "top" }}
+          label={{ value: "Spot", fontSize: 10, fill: SPOT_LINE, position: "top" }}
         />
         {snap.flip_level != null ? (
           <ReferenceLine
             x={snap.flip_level}
-            stroke="#a855f7"
+            stroke={FLIP_LINE}
             strokeDasharray="4 4"
-            label={{ value: "Flip SS", fontSize: 10, fill: "#a855f7", position: "top" }}
+            label={{ value: "Flip SS", fontSize: 10, fill: FLIP_LINE, position: "top" }}
           />
         ) : null}
         {snap.flip_sticky_delta != null ? (
@@ -278,178 +263,215 @@ function GexProfileChart({ snap }: { snap: GammaSnapshot }) {
   );
 }
 
-function HistoryChart({ snap }: { snap: GammaSnapshot }) {
-  const raw = (snap.chart_series?.length ? snap.chart_series : snap.history) ?? [];
-  const data = useMemo(
-    () =>
-      raw.map((h) => {
-        const ms =
-          h.ts_ms ??
-          (h.t ? new Date(h.t).getTime() : NaN);
-        return {
-          ts: Number.isFinite(ms) ? ms : 0,
-          label: h.t
-            ? new Date(h.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-            : "",
-          gex_cr: h.total_gex != null ? h.total_gex / 1e7 : null,
-          flip: h.flip_level,
-          spot: h.spot,
-        };
-      }),
-    [raw],
-  );
-
-  const levelDomain = useMemo((): [number, number] | ["auto", "auto"] => {
-    const levels: number[] = [];
-    for (const row of data) {
-      if (row.spot != null && Number.isFinite(row.spot)) levels.push(Number(row.spot));
-      if (row.flip != null && Number.isFinite(row.flip)) levels.push(Number(row.flip));
-    }
-    if (levels.length < 2) return ["auto", "auto"];
-    const lo = Math.min(...levels);
-    const hi = Math.max(...levels);
-    const span = hi - lo;
-    const pad = Math.max(span * 0.35, Math.max(lo * 0.002, 25));
-    return [Math.floor(lo - pad), Math.ceil(hi + pad)];
-  }, [data]);
-
-  const reversals = snap.reversals ?? [];
-
-  if (data.length < 2) {
-    return (
-      <p className="py-6 text-center text-sm text-muted-foreground">
-        Day spot path loads from minute candles; GEX ticks appear while the desk refreshes in-session.
-      </p>
-    );
-  }
+function GammaOptionsPopover({
+  signMode,
+  onSignModeChange,
+  multiExpiry,
+  onMultiExpiryChange,
+  strikeWindow,
+  onStrikeWindowChange,
+  oiBaseline,
+  onOiBaselineChange,
+  reversalTf,
+  onReversalTfChange,
+  reversalGexGate,
+  onReversalGexGateChange,
+  reversalGexMode,
+  onReversalGexModeChange,
+  reversalOiGate,
+  onReversalOiGateChange,
+}: {
+  signMode: SignMode;
+  onSignModeChange: (v: SignMode) => void;
+  multiExpiry: boolean;
+  onMultiExpiryChange: (v: boolean) => void;
+  strikeWindow: number;
+  onStrikeWindowChange: (v: number) => void;
+  oiBaseline: OiBaselineMode;
+  onOiBaselineChange: (v: OiBaselineMode) => void;
+  reversalTf: ReversalTf;
+  onReversalTfChange: (v: ReversalTf) => void;
+  reversalGexGate: boolean;
+  onReversalGexGateChange: (v: boolean) => void;
+  reversalGexMode: ReversalGexMode;
+  onReversalGexModeChange: (v: ReversalGexMode) => void;
+  reversalOiGate: boolean;
+  onReversalOiGateChange: (v: boolean) => void;
+}) {
   return (
-    <div className="space-y-2">
-      {reversals.length > 0 ? (
-        <div className="flex flex-wrap gap-2 text-[11px]">
-          {reversals.map((r) => (
-            <span
-              key={`${r.t}-${r.side}`}
-              className={
-                r.side === "bullish"
-                  ? "rounded border border-emerald-500/40 bg-emerald-50 px-2 py-0.5 text-emerald-800"
-                  : "rounded border border-rose-500/40 bg-rose-50 px-2 py-0.5 text-rose-800"
-              }
-            >
-              {r.t
-                ? new Date(r.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                : "—"}{" "}
-              · {r.label}
-            </span>
-          ))}
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="report-controls gap-1.5" title="GEX options">
+          <Settings2 className="h-4 w-4" />
+          Options
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 space-y-3 p-4">
+        <div>
+          <p className="text-sm font-medium">GEX parameters</p>
+          <p className="text-[11px] text-muted-foreground">
+            Snapshot knobs from <span className="font-mono">gamma_density</span>. Changing dealer
+            sign or strike window mid-session mixes the GEX Cr recorder series.
+          </p>
         </div>
-      ) : null}
-      <ResponsiveContainer width="100%" height={240}>
-        <ComposedChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-          <XAxis
-            dataKey="ts"
-            type="number"
-            domain={["dataMin", "dataMax"]}
-            tick={{ fontSize: 10 }}
-            tickFormatter={(v) =>
-              new Date(Number(v)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-            }
-          />
-          <YAxis yAxisId="gex" tick={{ fontSize: 10 }} tickFormatter={(v) => v.toFixed(1)} />
-          <YAxis
-            yAxisId="lvl"
-            orientation="right"
-            domain={levelDomain}
-            allowDataOverflow
-            tick={{ fontSize: 10 }}
-            tickFormatter={(v) =>
-              Math.abs(v) >= 1000
-                ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })
-                : String(v)
-            }
-            width={56}
-          />
-          <Tooltip
-            labelFormatter={(v) =>
-              new Date(Number(v)).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              })
-            }
-            formatter={(value: number, name: string) => {
-              if (value == null || Number.isNaN(value)) return ["—", name];
-              if (name === "GEX Cr") return [value.toFixed(2), name];
-              return [Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 }), name];
-            }}
-          />
-          <ReferenceLine yAxisId="gex" y={0} stroke="#94a3b8" />
-          <Line
-            yAxisId="gex"
-            type="monotone"
-            dataKey="gex_cr"
-            stroke="#22c55e"
-            strokeWidth={2}
-            dot={false}
-            connectNulls={false}
-            name="GEX Cr"
-          />
-          <Line
-            yAxisId="lvl"
-            type="monotone"
-            dataKey="flip"
-            stroke="#a855f7"
-            strokeWidth={1.5}
-            dot={false}
-            connectNulls={false}
-            name="Flip"
-          />
-          <Line
-            yAxisId="lvl"
-            type="monotone"
-            dataKey="spot"
-            stroke="#3b82f6"
-            strokeWidth={1.5}
-            dot={false}
-            connectNulls
-            name="Spot"
-          />
-          {reversals.map((r) =>
-            r.ts_ms != null && r.spot != null ? (
-              <ReferenceDot
-                key={`rev-${r.ts_ms}`}
-                yAxisId="lvl"
-                x={r.ts_ms}
-                y={r.spot}
-                r={5}
-                fill={r.side === "bullish" ? "#16a34a" : "#e11d48"}
-                stroke="#fff"
-                strokeWidth={1}
-              />
-            ) : null,
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
-      <p className="text-[10px] text-muted-foreground">
-        Blue = day spot (minute candles). Green/purple GEX &amp; flip only where the desk sampled —
-        gaps stay empty (no post-close inventing). Dots = detected spot reversals.
-      </p>
-    </div>
+        <div className="grid gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Dealer sign</Label>
+            <Select value={signMode} onValueChange={(v) => onSignModeChange(v as SignMode)}>
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="naive">Naive (CE+ / PE−)</SelectItem>
+                <SelectItem value="customer">Customer (inverted)</SelectItem>
+                <SelectItem value="oi_delta">OI Δ (EOD baseline)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Strike window (±ATM)</Label>
+            <Select
+              value={String(strikeWindow)}
+              onValueChange={(v) => onStrikeWindowChange(Number(v))}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STRIKE_WINDOW_OPTIONS.map((n) => (
+                  <SelectItem key={n} value={String(n)}>
+                    {n}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">OI Δ baseline</Label>
+            <Select
+              value={oiBaseline}
+              onValueChange={(v) => onOiBaselineChange(v as OiBaselineMode)}
+            >
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="session_open">Session open</SelectItem>
+                <SelectItem value="prev_close">Prev day close</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Reversal TF</Label>
+            <Select value={reversalTf} onValueChange={(v) => onReversalTfChange(v as ReversalTf)}>
+              <SelectTrigger className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1m">1m (fastest)</SelectItem>
+                <SelectItem value="5m">5m (bar-close)</SelectItem>
+                <SelectItem value="15m">15m (bar-close)</SelectItem>
+              </SelectContent>
+            </Select>
+            {reversalTf !== "1m" ? (
+              <p className="max-w-[14rem] text-[10px] leading-snug text-muted-foreground">
+                {reversalTf} confirms on TF bar close — switch to 1m for real-time pivots.
+                Live still shows provisional chips as soon as the swing clears.
+              </p>
+            ) : null}
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={multiExpiry}
+              onCheckedChange={(v) => onMultiExpiryChange(v === true)}
+            />
+            Multi-expiry stack
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={reversalGexGate}
+              onCheckedChange={(v) => onReversalGexGateChange(v === true)}
+            />
+            Require GEX on reversals
+          </label>
+          {reversalGexGate ? (
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">GEX mode</Label>
+              <Select
+                value={reversalGexMode}
+                onValueChange={(v) => onReversalGexModeChange(v as ReversalGexMode)}
+              >
+                <SelectTrigger className="h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="live">Live</SelectItem>
+                  <SelectItem value="research">Research</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={reversalOiGate}
+              onCheckedChange={(v) => onReversalOiGateChange(v === true)}
+            />
+            Require OI on reversals
+          </label>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 function GammaDensityPage() {
   const [config, setConfig] = useState<GammaConfig | null>(null);
-  const [underlying, setUnderlying] = useState<OiUnderlying>("NIFTY");
+  // Persist so HMR / remount / refresh does not silently snap back to NIFTY.
+  const [underlying, setUnderlyingState] = useState<OiUnderlying>(() => loadPersistedUnderlying());
   const [expiry, setExpiry] = useState<string>("");
   const { expiries, loading: expiriesLoading } = useOptionExpiries(underlying);
   const [refreshSec, setRefreshSec] = useState(60);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [signMode, setSignMode] = useState<SignMode>("naive");
   const [multiExpiry, setMultiExpiry] = useState(true);
+  const [strikeWindow, setStrikeWindow] = useState(20);
   const [snapshot, setSnapshot] = useState<GammaSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [authError, setAuthError] = useState(false);
+  const [showDayLevels, setShowDayLevels] = useState(true);
+  const [showWeekLevels, setShowWeekLevels] = useState(true);
+  const [showIvCurve, setShowIvCurve] = useState(false);
+  const [showCePeOi, setShowCePeOi] = useState(true);
+  const [showDoi, setShowDoi] = useState(true);
+  const [oiBaseline, setOiBaseline] = useState<OiBaselineMode>("session_open");
+  const [reversalTf, setReversalTf] = useState<ReversalTf>("5m");
+  const [reversalGexGate, setReversalGexGate] = useState(true);
+  const [reversalGexMode, setReversalGexMode] = useState<ReversalGexMode>("live");
+  const [reversalOiGate, setReversalOiGate] = useState(false);
+  const [summaryRefreshToken, setSummaryRefreshToken] = useState(0);
+  /** Ignore stale snapshot responses after underlying / options change. */
+  const snapshotReqId = useRef(0);
+
+  const selectUnderlying = useCallback((u: OiUnderlying) => {
+    const next = String(u || "").toUpperCase() as OiUnderlying;
+    if (!next) return;
+    setUnderlyingState((prev) => {
+      if (prev === next) return prev;
+      return next;
+    });
+  }, []);
+
+  // Keep last pick across remount/HMR/refresh; config polls must not write this key.
+  useEffect(() => {
+    persistUnderlying(underlying);
+  }, [underlying]);
+
+  const prevUnderlyingRef = useRef(underlying);
+  useEffect(() => {
+    if (prevUnderlyingRef.current === underlying) return;
+    prevUnderlyingRef.current = underlying;
+    setExpiry("");
+  }, [underlying]);
 
   useEffect(() => {
     api
@@ -458,43 +480,74 @@ function GammaDensityPage() {
         setConfig(c);
         setRefreshSec(c.refresh_seconds);
         if (c.sign_mode) setSignMode(c.sign_mode);
+        if (c.strike_window) setStrikeWindow(c.strike_window);
+        // Config / poll must never overwrite the user's underlying (e.g. CRUDEOIL → NIFTY).
       })
       .catch(() => {});
   }, []);
 
+  // Expiry only — never mutates underlying (pickNearestExpiry is expiry-scoped).
   useEffect(() => {
     if (!expiries.length) return;
     setExpiry((current) => {
       if (current && expiries.includes(current)) return current;
-      return pickNearestExpiry(expiries) ?? "";
+      return pickNearestExpiry(expiries, underlying) ?? "";
     });
   }, [expiries, underlying]);
 
-  const underlyingOptions = config?.underlyings?.length
-    ? (config.underlyings as OiUnderlying[])
-    : DEFAULT_UNDERLYINGS;
+  const underlyingOptions = useMemo(() => {
+    const base = config?.underlyings?.length
+      ? (config.underlyings as OiUnderlying[])
+      : DEFAULT_UNDERLYINGS;
+    // Keep Select controlled-valid while config is loading or MCX is selected.
+    if (underlying && !base.includes(underlying)) {
+      return [...base, underlying];
+    }
+    return base;
+  }, [config?.underlyings, underlying]);
 
   const fetchSnapshot = useCallback(async () => {
+    const reqId = ++snapshotReqId.current;
     setLoading(true);
     setAuthError(false);
     try {
       const q = new URLSearchParams({ underlying, sign_mode: signMode });
       if (expiry) q.set("expiry", expiry);
+      q.set("strike_window", String(strikeWindow));
       q.set("multi_expiry", multiExpiry ? "true" : "false");
+      q.set("oi_baseline", oiBaseline);
+      q.set("reversal_tf", reversalTf);
+      q.set("reversal_gex_gate", reversalGexGate ? "true" : "false");
+      q.set("reversal_gex_mode", reversalGexMode);
+      q.set("reversal_oi_gate", reversalOiGate ? "true" : "false");
       const data = await api.get<GammaSnapshot>(`/gamma-density/snapshot?${q}`);
+      // Drop late responses so a slow Crude poll cannot overwrite Nifty (or vice versa).
+      if (reqId !== snapshotReqId.current) return;
       setSnapshot(data);
     } catch (e: unknown) {
+      if (reqId !== snapshotReqId.current) return;
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("401") || msg.toLowerCase().includes("session")) setAuthError(true);
     } finally {
-      setLoading(false);
+      if (reqId === snapshotReqId.current) setLoading(false);
     }
-  }, [underlying, expiry, signMode, multiExpiry]);
+  }, [
+    underlying,
+    expiry,
+    signMode,
+    strikeWindow,
+    multiExpiry,
+    oiBaseline,
+    reversalTf,
+    reversalGexGate,
+    reversalGexMode,
+    reversalOiGate,
+  ]);
 
   useEffect(() => {
     if (!expiry) return;
     void fetchSnapshot();
-  }, [underlying, expiry, signMode, multiExpiry]);
+  }, [expiry, fetchSnapshot]);
 
   useEffect(() => {
     if (!autoRefresh || !expiry || authError) return;
@@ -511,6 +564,16 @@ function GammaDensityPage() {
     return (
       <>
         Spot <span className="font-mono font-semibold text-foreground">{snapshot.spot.toFixed(2)}</span>
+        <CasChip cas={snapshot.cas} spot={snapshot.spot} />
+        {snapshot.session_poc?.poc != null ? (
+          <>
+            {" · "}
+            Fut POC{" "}
+            <span className="font-mono font-semibold text-violet-700 dark:text-violet-400">
+              {snapshot.session_poc.poc.toFixed(2)}
+            </span>
+          </>
+        ) : null}
         {" · "}ATM {snapshot.atm_strike}
         {" · "}ATM IV {snapshot.atm_iv != null ? `${snapshot.atm_iv}%` : "—"}
         {" · "}q {(snapshot.dividend_yield ?? 0) * 100}%
@@ -527,17 +590,40 @@ function GammaDensityPage() {
     : null;
 
   return (
-    <div className="mx-auto flex max-w-[1400px] flex-col gap-6 pb-10">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">3ST Algo Desk — Gamma Density</h1>
-        <p className="text-sm text-muted-foreground">
-          Dealer-hedging map: Net GEX plus HHI shape, conviction, pin, flip, hedge flow, Vanna strip.
-        </p>
-        {metaLine ? <p className="mt-1 text-xs text-muted-foreground">{metaLine}</p> : null}
+    <div className="report-page mx-auto flex max-w-[1400px] flex-col gap-6 pb-10">
+      <header className="report-controls flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">3ST Algo Desk — Gamma Density</h1>
+          <p className="text-sm text-muted-foreground">
+            Dealer-hedging map: Net GEX plus HHI shape, conviction, pin, flip, hedge flow, Vanna strip.
+          </p>
+          {metaLine ? <p className="mt-1 text-xs text-muted-foreground">{metaLine}</p> : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <GammaOptionsPopover
+            signMode={signMode}
+            onSignModeChange={setSignMode}
+            multiExpiry={multiExpiry}
+            onMultiExpiryChange={setMultiExpiry}
+            strikeWindow={strikeWindow}
+            onStrikeWindowChange={setStrikeWindow}
+            oiBaseline={oiBaseline}
+            onOiBaselineChange={setOiBaseline}
+            reversalTf={reversalTf}
+            onReversalTfChange={setReversalTf}
+            reversalGexGate={reversalGexGate}
+            onReversalGexGateChange={setReversalGexGate}
+            reversalGexMode={reversalGexMode}
+            onReversalGexModeChange={setReversalGexMode}
+            reversalOiGate={reversalOiGate}
+            onReversalOiGateChange={setReversalOiGate}
+          />
+          <ReportPageDownload title="Gamma_Density" />
+        </div>
       </header>
 
       {authError && (
-        <Card className="border-destructive/50">
+        <Card className="report-controls border-destructive/50">
           <CardContent className="py-4 text-sm">
             Kite session required.{" "}
             <Link to="/login" className="text-primary underline">
@@ -547,7 +633,7 @@ function GammaDensityPage() {
         </Card>
       )}
 
-      <Card>
+      <Card className="report-controls">
         <CardHeader>
           <CardTitle className="text-base">Settings</CardTitle>
         </CardHeader>
@@ -556,10 +642,7 @@ function GammaDensityPage() {
             <Label>Underlying</Label>
             <Select
               value={underlying}
-              onValueChange={(v) => {
-                setUnderlying(v as OiUnderlying);
-                setExpiry("");
-              }}
+              onValueChange={(v) => selectUnderlying(v as OiUnderlying)}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -567,7 +650,13 @@ function GammaDensityPage() {
               <SelectContent>
                 {underlyingOptions.map((u) => (
                   <SelectItem key={u} value={u}>
-                    {u}
+                    {u === "CRUDEOIL" ||
+                    u === "CRUDEOILM" ||
+                    u === "NATURALGAS" ||
+                    u === "GOLD" ||
+                    u === "SILVER"
+                      ? `${u} (MCX)`
+                      : u}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -634,8 +723,14 @@ function GammaDensityPage() {
         </CardContent>
       </Card>
 
-      <div className="flex gap-2">
-        <Button onClick={() => void fetchSnapshot()} disabled={loading || !expiry}>
+      <div className="report-controls flex gap-2">
+        <Button
+          onClick={() => {
+            setSummaryRefreshToken((n) => n + 1);
+            void fetchSnapshot();
+          }}
+          disabled={loading || !expiry}
+        >
           <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           {loading ? "Loading…" : "Refresh now"}
         </Button>
@@ -646,7 +741,13 @@ function GammaDensityPage() {
       </div>
 
       {snapshot ? (
-        <>
+        <Tabs defaultValue="profile" className="w-full">
+          <TabsList className="report-controls">
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+            <TabsTrigger value="concentration">Concentration</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="profile" className="mt-4 flex flex-col gap-6">
           {jointHint ? (
             <Card className="border-primary/30 bg-primary/5">
               <CardContent className="flex flex-wrap items-center gap-3 py-3 text-sm">
@@ -718,7 +819,13 @@ function GammaDensityPage() {
               }
               hint={
                 snapshot.concentration?.band
-                  ? `${snapshot.concentration.band} · top1 ${
+                  ? `${
+                      snapshot.concentration.band === "mixed"
+                        ? "balanced"
+                        : snapshot.concentration.band === "diffuse"
+                          ? "dispersed"
+                          : "concentrated"
+                    } · top1 ${
                       snapshot.concentration.top1_share != null
                         ? `${(snapshot.concentration.top1_share * 100).toFixed(0)}%`
                         : "—"
@@ -787,8 +894,76 @@ function GammaDensityPage() {
             />
           </div>
 
+          <Card>
+            <CardHeader className="py-3">
+              <CardTitle className="text-sm">Reference levels · Prev Day / Prev Week</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                    Previous day
+                  </p>
+                  <div className="grid grid-cols-3 gap-2 font-mono tabular-nums">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">High</p>
+                      <p>{fmt(snapshot.reference_levels?.prev_day_high, 2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Low</p>
+                      <p>{fmt(snapshot.reference_levels?.prev_day_low, 2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Close</p>
+                      <p>{fmt(snapshot.reference_levels?.prev_day_close, 2)}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                    Previous week
+                  </p>
+                  <div className="grid grid-cols-3 gap-2 font-mono tabular-nums">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">High</p>
+                      <p>{fmt(snapshot.reference_levels?.prev_week_high, 2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Low</p>
+                      <p>{fmt(snapshot.reference_levels?.prev_week_low, 2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Close</p>
+                      <p>{fmt(snapshot.reference_levels?.prev_week_close, 2)}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                    Key levels
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Badge variant="outline">Flip {fmt(snapshot.flip_level)}</Badge>
+                    <Badge variant="outline" className="border-emerald-500/50">
+                      Call wall {fmt(snapshot.call_wall)}
+                    </Badge>
+                    <Badge variant="outline" className="border-red-500/50">
+                      Put wall {fmt(snapshot.put_wall)}
+                    </Badge>
+                    <Badge variant="outline">
+                      Dom {fmt(snapshot.concentration?.dominant_strike)}
+                    </Badge>
+                    <Badge variant="outline">
+                      Pin {fmt(snapshot.concentration?.pin_strike)}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {snapshot.market_read ? (
-            <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20">
+            <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20 dark:border-amber-500/25">
               <CardContent className="space-y-1.5 py-3 text-sm">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">
                   Market read · shape over size
@@ -801,6 +976,8 @@ function GammaDensityPage() {
               </CardContent>
             </Card>
           ) : null}
+
+          {snapshot.momentum ? <MomentumStrip momentum={snapshot.momentum} /> : null}
 
           <div className="flex flex-wrap gap-2 text-xs">
             <Badge variant="outline" className="border-emerald-500/50">
@@ -825,21 +1002,199 @@ function GammaDensityPage() {
             ) : null}
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
+          <GexSessionPlotly
+            snap={snapshot}
+            reversalTf={reversalTf}
+            onReversalTfChange={setReversalTf}
+            reversalGexGate={reversalGexGate}
+            onReversalGexGateChange={setReversalGexGate}
+            reversalGexMode={reversalGexMode}
+            onReversalGexModeChange={setReversalGexMode}
+            reversalOiGate={reversalOiGate}
+            onReversalOiGateChange={setReversalOiGate}
+            optionsSlot={
+              <GammaOptionsPopover
+                signMode={signMode}
+                onSignModeChange={setSignMode}
+                multiExpiry={multiExpiry}
+                onMultiExpiryChange={setMultiExpiry}
+                strikeWindow={strikeWindow}
+                onStrikeWindowChange={setStrikeWindow}
+                oiBaseline={oiBaseline}
+                onOiBaselineChange={setOiBaseline}
+                reversalTf={reversalTf}
+                onReversalTfChange={setReversalTf}
+                reversalGexGate={reversalGexGate}
+                onReversalGexGateChange={setReversalGexGate}
+                reversalGexMode={reversalGexMode}
+                onReversalGexModeChange={setReversalGexMode}
+                reversalOiGate={reversalOiGate}
+                onReversalOiGateChange={setReversalOiGate}
+              />
+            }
+          />
+
+          <div className="flex flex-col gap-4">
             <Card>
-              <CardHeader className="py-3">
+              <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 py-3">
                 <CardTitle className="text-sm">Net GEX by strike · Γ×OI density</CardTitle>
+                <div className="report-no-print flex flex-wrap items-center gap-3 text-xs">
+                  <label className="flex items-center gap-1.5">
+                    <Checkbox
+                      checked={showDayLevels}
+                      onCheckedChange={(v) => setShowDayLevels(Boolean(v))}
+                    />
+                    Day H/L/C
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <Checkbox
+                      checked={showWeekLevels}
+                      onCheckedChange={(v) => setShowWeekLevels(Boolean(v))}
+                    />
+                    Week H/L/C
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <Checkbox
+                      checked={showIvCurve}
+                      onCheckedChange={(v) => setShowIvCurve(Boolean(v))}
+                    />
+                    IV Curve
+                  </label>
+                  <label className="flex items-center gap-1.5" title="Solid CE/PE OI base at each strike (Put left, Call right)">
+                    <Checkbox
+                      checked={showCePeOi}
+                      onCheckedChange={(v) => setShowCePeOi(Boolean(v))}
+                    />
+                    CE/PE OI
+                  </label>
+                  <label className="flex items-center gap-1.5" title="Striped ΔOI ↑ / hollow ΔOI ↓ stacked on OI base">
+                    <Checkbox checked={showDoi} onCheckedChange={(v) => setShowDoi(Boolean(v))} />
+                    ΔOI
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Baseline</span>
+                    <Select
+                      value={oiBaseline}
+                      onValueChange={(v) => setOiBaseline(v as OiBaselineMode)}
+                    >
+                      <SelectTrigger className="h-7 w-[7.5rem] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="session_open">Session open</SelectItem>
+                        <SelectItem value="prev_close">Prev day</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                </div>
               </CardHeader>
-              <CardContent>
-                <StrikeGexChart snap={snapshot} />
+              <CardContent className="space-y-2">
+                <p className="text-[11px] text-muted-foreground font-mono">
+                  {showDayLevels ? (
+                    <>
+                      PDH {fmt(snapshot.reference_levels?.prev_day_high, 2)} · PDL{" "}
+                      {fmt(snapshot.reference_levels?.prev_day_low, 2)} · PDC{" "}
+                      {fmt(snapshot.reference_levels?.prev_day_close, 2)}
+                    </>
+                  ) : null}
+                  {showDayLevels && showWeekLevels ? " · " : null}
+                  {showWeekLevels ? (
+                    <>
+                      PWH {fmt(snapshot.reference_levels?.prev_week_high, 2)} · PWL{" "}
+                      {fmt(snapshot.reference_levels?.prev_week_low, 2)} · PWC{" "}
+                      {fmt(snapshot.reference_levels?.prev_week_close, 2)}
+                    </>
+                  ) : null}
+                  {!snapshot.reference_levels?.prev_day_close &&
+                  !snapshot.reference_levels?.prev_week_close ? (
+                    <span className="text-amber-700 dark:text-amber-300">
+                      {" "}
+                      Day/Week levels unavailable — restart API / refresh after Kite login
+                    </span>
+                  ) : null}
+                </p>
+                {(showIvCurve || showCePeOi || showDoi) && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                    <span className="inline-flex items-center gap-1" style={{ color: GEX_POS }}>
+                      <span className="inline-block h-2 w-2 rounded-sm" style={{ background: GEX_POS }} />
+                      GEX+
+                    </span>
+                    <span className="inline-flex items-center gap-1" style={{ color: GEX_NEG }}>
+                      <span className="inline-block h-2 w-2 rounded-sm" style={{ background: GEX_NEG }} />
+                      GEX−
+                    </span>
+                    {showIvCurve ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block h-0.5 w-3" style={{ background: IV_CURVE }} />
+                        IV Curve
+                      </span>
+                    ) : null}
+                    {showCePeOi || showDoi ? (
+                      <>
+                        <span className="inline-flex items-center gap-1" style={{ color: PUT_OI }}>
+                          <span className="inline-block h-2 w-2 rounded-sm" style={{ background: PUT_OI }} />
+                          Put (left)
+                        </span>
+                        <span className="inline-flex items-center gap-1" style={{ color: CALL_OI }}>
+                          <span className="inline-block h-2 w-2 rounded-sm" style={{ background: CALL_OI }} />
+                          Call (right)
+                        </span>
+                        <span className="text-muted-foreground/80">OI ↑ from GEX 0</span>
+                      </>
+                    ) : null}
+                    {showCePeOi ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block h-2 w-2 rounded-sm" style={{ background: CALL_OI }} />
+                        solid = OI base
+                      </span>
+                    ) : null}
+                    {showDoi ? (
+                      <>
+                        <span className="inline-flex items-center gap-1">
+                          <span
+                            className="inline-block h-2 w-3 border"
+                            style={{
+                              borderColor: CALL_OI,
+                              background:
+                                "repeating-linear-gradient(45deg, transparent, transparent 1px, #ef4444 1px, #ef4444 2px)",
+                            }}
+                          />
+                          stripes = ΔOI ↑
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <span
+                            className="inline-block h-2 w-3 bg-transparent"
+                            style={{ border: `1.5px solid ${PUT_OI}` }}
+                          />
+                          hollow = ΔOI ↓
+                        </span>
+                      </>
+                    ) : null}
+                    {snapshot.oi_baseline_note ? (
+                      <span className="font-mono text-muted-foreground/80">· {snapshot.oi_baseline_note}</span>
+                    ) : null}
+                  </div>
+                )}
+                <GexStrikePlotly
+                  key="net-gex-by-strike-v2"
+                  snap={snapshot}
+                  showDayLevels={showDayLevels}
+                  showWeekLevels={showWeekLevels}
+                  showIvCurve={showIvCurve}
+                  showCePeOi={showCePeOi}
+                  showDoi={showDoi}
+                  height={400}
+                />
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="py-3">
-                <CardTitle className="text-sm">GEX(S) profile · sticky-strike / sticky-delta flips</CardTitle>
+                <CardTitle className="text-sm">
+                  GEX(S) profile · sticky-strike / sticky-delta flips
+                </CardTitle>
               </CardHeader>
               <CardContent>
-                <GexProfileChart snap={snapshot} />
+                <GexProfileChart snap={snapshot} height={300} />
               </CardContent>
             </Card>
           </div>
@@ -933,15 +1288,6 @@ function GammaDensityPage() {
             </Card>
           </div>
 
-          <Card>
-            <CardHeader className="py-3">
-              <CardTitle className="text-sm">Intraday GEX / flip history</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <HistoryChart snap={snapshot} />
-            </CardContent>
-          </Card>
-
           <div className="grid gap-6 lg:grid-cols-2">
             <Card>
               <CardHeader className="py-3">
@@ -991,7 +1337,7 @@ function GammaDensityPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {snapshot.strikes.map((r: GammaStrikeRow) => (
+                      {snapshot.strikes.map((r) => (
                         <TableRow key={r.strike} className="text-xs font-mono">
                           <TableCell className={r.strike === snapshot.atm_strike ? "font-bold text-primary" : ""}>
                             {r.strike}
@@ -1019,7 +1365,17 @@ function GammaDensityPage() {
             candles; GEX ticks only while desk polls in-session (no post-close append). Reversals =
             spot swing extremes with ≥~0.15% reclaim, optional GEX regime confirm.
           </p>
-        </>
+          </TabsContent>
+
+          <TabsContent value="concentration" className="mt-4">
+            <ConcentrationBoard
+              snap={snapshot}
+              selectedUnderlying={underlying}
+              onSelectUnderlying={selectUnderlying}
+              summaryRefreshToken={summaryRefreshToken}
+            />
+          </TabsContent>
+        </Tabs>
       ) : (
         !loading && (
           <p className="text-sm text-muted-foreground">Select an expiry and refresh to load gamma density.</p>

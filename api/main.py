@@ -96,7 +96,17 @@ from options.oi_tracker import build_snapshot, tracker_config
 from options.oi_tracker_store import append_log, get_log as oi_get_log
 from options.oi_movers import build_movers_snapshot, movers_config
 from options.oi_var import build_var_snapshot, var_config
-from options.gamma_density import build_gamma_snapshot, gamma_config
+from options.cas_indicative import (
+    CAS_UNDERLYINGS,
+    debug_quote_dump,
+    fetch_cas_indicative,
+    fetch_cas_indicative_batch,
+)
+from options.gamma_density import (
+    build_concentration_summary,
+    build_gamma_snapshot,
+    gamma_config,
+)
 from options.gamma_density_provider import get_gamma_density_provider
 from options.vanna_exposure import build_vanna_snapshot, vanna_config
 from options.greeks_desk import build_greeks_snapshot, desk_config as greeks_desk_config
@@ -1955,6 +1965,57 @@ def oi_tracker_snapshot(
         raise _err(e) from e
 
 
+@app.get("/cas/indicative")
+def cas_indicative(
+    underlying: str | None = Query(
+        None,
+        description="NIFTY | BANKNIFTY | SENSEX; omit for batch of all three",
+    ),
+) -> dict[str, Any]:
+    """CAS indicative index values (display-only).
+
+    Single: CasIndicative object.
+    Batch (no underlying): ``{\"items\": [CasIndicative, ...]}``.
+    """
+    try:
+        _require_kite_session()
+        if underlying is None or str(underlying).strip() == "":
+            return fetch_cas_indicative_batch()
+        u = underlying.upper()
+        if u not in CAS_UNDERLYINGS:
+            raise RuntimeError(f"CAS indicative supports {list(CAS_UNDERLYINGS)}; got '{underlying}'")
+        return fetch_cas_indicative(u)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/cas/debug-quote")
+def cas_debug_quote(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+) -> dict[str, Any]:
+    """Temporary Phase-0 spike: raw quote keys + auction-looking fields (no secrets).
+
+    Opt-in only — disabled by default. Set ``CAS_DEBUG_QUOTE=1`` to enable.
+    """
+    import os
+
+    flag = (os.getenv("CAS_DEBUG_QUOTE") or "0").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        raise HTTPException(status_code=404, detail="CAS debug quote disabled (set CAS_DEBUG_QUOTE=1)")
+    try:
+        _require_kite_session()
+        u = underlying.upper()
+        if u not in CAS_UNDERLYINGS:
+            raise RuntimeError(f"CAS debug supports {list(CAS_UNDERLYINGS)}; got '{underlying}'")
+        return debug_quote_dump(u)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
 @app.get("/oi-movers/config")
 def oi_movers_config() -> dict[str, Any]:
     return movers_config()
@@ -2026,6 +2087,17 @@ def gamma_density_snapshot(
         description="naive | customer | oi_delta — dealer gamma sign convention",
     ),
     multi_expiry: bool = Query(True, description="Include next-expiry GEX stack"),
+    oi_baseline: str | None = Query(
+        None,
+        description="session_open | prev_close — ΔOI baseline for strike strip / OI gate",
+    ),
+    reversal_tf: str | None = Query(None, description="1m | 5m | 15m spot reversal TF"),
+    reversal_gex_gate: bool = Query(True, description="Require GEX regime on reversals"),
+    reversal_gex_mode: str | None = Query(
+        "live",
+        description="live (provisional pivots while gated) | research (relax when sparse)",
+    ),
+    reversal_oi_gate: bool = Query(False, description="Require supportive OI on reversals"),
 ) -> dict[str, Any]:
     try:
         u = underlying.upper()
@@ -2040,7 +2112,33 @@ def gamma_density_snapshot(
             strike_window=strike_window,
             sign_mode=sign_mode,
             include_multi_expiry=multi_expiry,
+            oi_baseline_mode=oi_baseline,
+            reversal_tf=reversal_tf,
+            reversal_gex_gate=reversal_gex_gate,
+            reversal_gex_mode=reversal_gex_mode,
+            reversal_oi_gate=reversal_oi_gate,
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/gamma-density/concentration-summary")
+def gamma_density_concentration_summary(
+    underlyings: str | None = Query(
+        None,
+        description="Comma-separated underlyings; default from gamma config",
+    ),
+) -> dict[str, Any]:
+    try:
+        names: list[str] | None = None
+        if underlyings is not None and str(underlyings).strip():
+            names = [p.strip().upper() for p in str(underlyings).split(",") if p.strip()]
+        prov = get_gamma_density_provider()
+        if prov.requires_session():
+            _require_kite_session()
+        return build_concentration_summary(underlyings=names)
     except HTTPException:
         raise
     except Exception as e:

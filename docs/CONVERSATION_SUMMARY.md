@@ -1,12 +1,97 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-07-21 (21:27 IST)  
+**Last updated:** 2026-08-06 (late evening IST)  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Analogue Paths desk · NSE/BSE expiry calendar · IV Chart removed
+**Session focus:** Straddle Watch plan · reviews · sign-off gaps
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-06 (late) — Straddle Watch plan · security/bugbot · sign-off
+
+Late evening IST. User asked to save this conversation for later review.
+
+### Reviews (start of thread)
+
+- **Security review:** 1 medium — unvalidated `underlying` on `GET /chain-history/coverage` can path-traverse outside `data/chain_history/` (allowlist / path containment).
+- **Bugbot:** 1 medium — `useTheme()` per-hook state; Sonner `toasterTheme` stale after toggle in `__root.tsx`.
+
+### Straddle Watch product understanding
+
+- Screenshot + recording (`Recording 2026-08-05 183626.mp4`) = **iCharts** Straddle Watch (`icharts.in/opt/StraddleWatch.php`), not Sensibull/Opstra.
+- Controls: Latest | Historical · Symbol · Expiry · Call/Put strike · SHOW CHART · 1D/5D/30D.
+- Summary: futures quote, Fair, Lot, IV/IVR/IVP, Max Pain, PCR.
+- Dual-pane chart: Call/Put/Straddle (+ VWAP/IV optional) over Call/Put OI; navigator; `"Please Wait Loading..."`.
+
+### Decisions locked
+
+| Decision | Choice |
+|----------|--------|
+| Historical mode | **Paused** — radio disabled stub; Latest only for v1 |
+| Visual / chart | **2B** — Highcharts Stock dual-pane + navigator (closer iCharts clone) |
+
+### Implementation reality (already in repo)
+
+Desk largely shipped before this planning pass — do not rebuild from scratch:
+
+- Engine: `options/straddle_watch.py`
+- API: `GET /straddle-watch/config`, `GET /straddle-watch/snapshot`
+- UI: `/straddle-watch` · `Pixel Perfect UI/src/routes/straddle-watch.tsx` · `components/straddle/StraddleWatchChart.tsx`
+- Docs: `docs/straddle-watch/README.md` · index row in `docs/README.md`
+- Tests: `tests/test_straddle_watch.py` — **9/9 passed** this session
+
+### Gap plan (not executed yet) — blocking clean sign-off
+
+Plan file: Straddle Watch Gaps (Cursor plan). Remaining:
+
+1. Add missing `StraddleWatchRange` / `StraddleWatchSnapshot` types in `Pixel Perfect UI/src/lib/types.ts` (imported but absent).
+2. Default Call/Put strikes to nearest **ATM** (currently list midpoint).
+3. Auto-load **1D** once params resolve (today requires SHOW CHART first).
+
+**Sign-off verdict this session:** not yet — backend/tests OK; three UI gaps open. Historical stays out of scope.
+
+### Sign-off
+
+Conversation saved here at user request. No commit from this note-taking pass.
+
+---
+
+## Session 2026-08-06 — CAS Indicative page · chart UI · strike strip
+
+Evening IST session. User asked to save this conversation for later review.
+
+### CAS Index Indicative (NIFTY-first)
+
+- New desk page `/cas-indicative` (tabs: Indicative · Equilibrium · Methodology). BANKNIFTY / SENSEX remain stubs.
+- Reuses engine `options/cas_indicative.py` + `GET /cas/indicative`. Compact `CasChip` on Gamma Density / OI Movers links to the page during the CAS window.
+- **Display-only** — does not replace spot for GEX / OI math.
+- NSE context: cash index is flat in the closing auction; indicative comes from the equilibrium book. Dedicated page for desk focus vs chip glance on other desks.
+- Below the CAS strip: **Fut POC** (`compute_session_poc`, all-day session) + **Synth F** (nearest-expiry ATM `K + CE − PE`) + **basis vs spot** (`options/synthetic_future.py`). Stub docs: `docs/cas-indicative/README.md`.
+- Full original Hybrid plan + status matrix: [`docs/cas-indicative/PLAN.md`](cas-indicative/PLAN.md). Full original Hybrid plan + shipped status: `docs/cas-indicative/PLAN.md`.
+
+### Gamma / OI Movers chart look
+
+- Align session charts with Straddle Watch’s light look; keep **Plotly** (no Highcharts migration).
+- Shared theme helper: `Pixel Perfect UI/src/components/charts/sessionChartTheme.ts` (used by GEX / OI Movers session Plotly components).
+
+### Net GEX by strike
+
+- PIN level drawn dotted like ±1σ / Fut POC; value strip under the chart.
+- Fixed a dedupe bug that followed DOM order incorrectly.
+- Removed +VE/−VE GEX and ±1σ from the strike value strip and their chart lines (PIN / Fut POC remain the focus).
+
+### Earlier context still relevant (not in a prior 08-03 entry)
+
+- **Live reversal:** provisional pivots emit without waiting for a full confirm pad; API wires TF / gate params (`live` vs research modes).
+- **OI Movers session-open lock:** freeze chart CE/PE Open aggregates once per session so ATM±N window rolls cannot drift Open lines mid-session (`ensure_session_open_oi` / chart Open totals).
+- **GEX history:** no reverse-fill of pre-first-sample minutes; prefer recording from the open via the scheduler so the series is honest from the start of the session.
+
+### Sign-off
+
+Conversation saved here at user request. No commit from this note-taking pass.
 
 ---
 

@@ -12,32 +12,220 @@ Enhancements (P0–P3)
 
 from __future__ import annotations
 
+import logging
 import math
-from datetime import datetime
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from config import GAMMA_DENSITY_DEFAULTS, INDEX_OPTIONS
 from options.gamma_density_provider import (
     GammaDensityDataProvider,
     get_gamma_density_provider,
 )
+from options.gamma_momentum import compute_gamma_momentum
 from options.greeks_engine import compute_greeks, d1_d2
 from options.iv import implied_volatility, time_to_expiry_years
 from options.oi_var import _flatten_chain_legs
+from utils.logging import get_logger, log_event
 
 CRORE = 1e7
+IST = ZoneInfo("Asia/Kolkata")
 SignMode = Literal["naive", "customer", "oi_delta"]
 ConcentrationBand = Literal["concentrated", "mixed", "diffuse"]
+_log = get_logger("gamma_density")
 
 # HHI bands + pin clarity (tunable; also overridable via GAMMA_DENSITY_DEFAULTS)
 HHI_CONCENTRATED = 0.25
 HHI_MIXED = 0.12
+GINI_EQUAL_CUT = 0.40  # Ávila-style equal vs unequal (fixed; not rolling median)
 PIN_SHARE_THRESHOLD = 0.18
 PIN_STABILITY_LOOKBACK = 12
+
+# HHI band → Ávila quadrant suffix (UI-facing labels)
+_QUADRANT_SUFFIX: dict[ConcentrationBand, str] = {
+    "diffuse": "dispersed",
+    "mixed": "balanced",
+    "concentrated": "concentrated",
+}
+
+
+def _empty_reference_levels() -> dict[str, float | None]:
+    return {
+        "prev_day_high": None,
+        "prev_day_low": None,
+        "prev_day_close": None,
+        "prev_week_high": None,
+        "prev_week_low": None,
+        "prev_week_close": None,
+    }
+
+
+def _today_ist() -> date:
+    return datetime.now(IST).date()
+
+
+def _bar_date(raw: Any) -> date | None:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        # Normalize to IST calendar day so UTC midnights don't shift the session date.
+        if raw.tzinfo is not None:
+            return raw.astimezone(IST).date()
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(IST).date()
+        return parsed.date()
+    except Exception:
+        return None
+
+
+def compute_reference_levels_from_daily_bars(
+    bars: list[dict[str, Any]],
+    *,
+    today: date | None = None,
+) -> dict[str, float | None]:
+    """Derive Prev Day / Prev Week H/L/C from completed daily candles.
+
+    Excludes bars dated ``today`` (session may still be open). Prev week is the
+    prior ISO calendar week (Mon–Sun) relative to ``today``.
+    """
+    out = _empty_reference_levels()
+    if not bars:
+        return out
+    today = today or _today_ist()
+
+    completed: list[tuple[date, float, float, float]] = []
+    for bar in bars:
+        d = _bar_date(bar.get("date") or bar.get("time") or bar.get("timestamp"))
+        if d is None or d >= today:
+            continue
+        try:
+            high = float(bar["high"])
+            low = float(bar["low"])
+            close = float(bar["close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if high <= 0 or low <= 0 or close <= 0:
+            continue
+        completed.append((d, high, low, close))
+
+    if not completed:
+        return out
+
+    completed.sort(key=lambda x: x[0])
+    # Prev day = last completed daily bar
+    _, pdh, pdl, pdc = completed[-1]
+    out["prev_day_high"] = round(pdh, 2)
+    out["prev_day_low"] = round(pdl, 2)
+    out["prev_day_close"] = round(pdc, 2)
+
+    # Prior ISO week relative to today
+    this_week_monday = today - timedelta(days=today.weekday())
+    prior_week_monday = this_week_monday - timedelta(days=7)
+    prior_week_sunday = this_week_monday - timedelta(days=1)
+    week_bars = [
+        row for row in completed if prior_week_monday <= row[0] <= prior_week_sunday
+    ]
+    if week_bars:
+        out["prev_week_high"] = round(max(r[1] for r in week_bars), 2)
+        out["prev_week_low"] = round(min(r[2] for r in week_bars), 2)
+        out["prev_week_close"] = round(week_bars[-1][3], 2)
+
+    return out
+
+
+def _resolve_spot_instrument_token(underlying: str) -> int | None:
+    """Index cash token or MCX front-month future — same source as minute spot."""
+    und = str(underlying or "").upper()
+    if und not in INDEX_OPTIONS:
+        return None
+    meta = INDEX_OPTIONS[und]
+    try:
+        key = meta.get("index_token_key")
+        if key:
+            from instruments import resolve_instrument
+
+            return int(resolve_instrument(key)["instrument_token"])
+        if (meta.get("spot_source") or "").lower() == "future" or str(
+            meta.get("exchange") or ""
+        ).upper() == "MCX":
+            from instruments import resolve_future
+
+            return int(resolve_future(und)["instrument_token"])
+    except Exception:
+        return None
+    return None
+
+
+def fetch_underlying_daily_ohlc_bars(
+    underlying: str,
+    *,
+    lookback_days: int = 21,
+) -> list[dict[str, Any]]:
+    """Raw Kite daily candles for the underlying spot instrument (fail soft → [])."""
+    token = _resolve_spot_instrument_token(underlying)
+    if token is None:
+        return []
+    end = _today_ist()
+    start = end - timedelta(days=max(7, int(lookback_days)))
+    last_err: Exception | None = None
+    for factory in ("_kite_direct_client", "get_kite_client"):
+        try:
+            from kite_client import _kite_direct_client, get_kite_client
+
+            kite = _kite_direct_client() if factory == "_kite_direct_client" else get_kite_client()
+            raw = kite.historical_data(
+                instrument_token=int(token),
+                from_date=start,
+                to_date=end,
+                interval="day",
+                continuous=False,
+                oi=False,
+            )
+            if raw:
+                return list(raw)
+        except Exception as exc:  # noqa: BLE001 — soft-fail with fallback client
+            last_err = exc
+            continue
+    _ = last_err
+    return []
+
+
+def build_reference_levels(underlying: str, *, today: date | None = None) -> dict[str, float | None]:
+    """Fetch day candles and compute Prev Day / Prev Week H/L/C (nulls on failure)."""
+    try:
+        bars = fetch_underlying_daily_ohlc_bars(underlying)
+        return compute_reference_levels_from_daily_bars(bars, today=today or _today_ist())
+    except Exception:
+        return _empty_reference_levels()
 
 
 def _cfg() -> dict[str, Any]:
     return dict(GAMMA_DENSITY_DEFAULTS)
+
+
+def _hedge_moves_for_underlying(underlying: str, d: dict[str, Any] | None = None) -> list[int]:
+    """Resolve hedge-flow point shocks for an underlying (global default or per-u override)."""
+    cfg = d if d is not None else _cfg()
+    default = [int(x) for x in (cfg.get("hedge_moves_pts") or (50, 100))]
+    key = str(underlying or "").upper()
+    by_u = cfg.get("hedge_moves_pts_by_underlying") or {}
+    if key in by_u:
+        return [int(x) for x in by_u[key]]
+    # Fallback: scale with strike grid when step is larger than the default shocks
+    # (covers new large-step commodities without an explicit override).
+    meta = INDEX_OPTIONS.get(key) or {}
+    step = int(meta.get("strike_step") or 0)
+    if step > 0 and default and step > max(default):
+        return [step, step * 2]
+    return default
 
 
 def gamma_config() -> dict[str, Any]:
@@ -52,10 +240,28 @@ def gamma_config() -> dict[str, Any]:
         "sign_modes": ["naive", "customer", "oi_delta"],
         "sign_mode": d.get("sign_mode", "naive"),
         "hedge_moves_pts": list(d.get("hedge_moves_pts") or (50, 100)),
+        "hedge_moves_pts_by_underlying": {
+            str(k).upper(): [int(x) for x in v]
+            for k, v in (d.get("hedge_moves_pts_by_underlying") or {}).items()
+        },
         "multi_expiry_count": int(d.get("multi_expiry_count") or 2),
+        "concentration_summary_window": int(d.get("concentration_summary_window") or 8),
+        "concentration_summary_refresh_seconds": int(
+            d.get("concentration_summary_refresh_seconds") or 90
+        ),
+        "concentration_summary_underlyings": default_concentration_underlyings(),
         "provider": prov.name,
         "requires_session": prov.requires_session(),
     }
+
+
+# Cash indices for the multi-index strip — never default every MCX underlying.
+_CONCENTRATION_CASH_CANDIDATES = ("NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY")
+
+
+def default_concentration_underlyings() -> list[str]:
+    """NIFTY / BANKNIFTY / SENSEX (+ FINNIFTY when present in INDEX_OPTIONS)."""
+    return [u for u in _CONCENTRATION_CASH_CANDIDATES if u in INDEX_OPTIONS]
 
 
 def _norm_cdf(x: float) -> float:
@@ -257,7 +463,31 @@ def _leg_gamma(
         "density": density,
         "gex": signed_gex,
         "sign": sign,
+        "instrument_token": int(token) if token is not None else None,
     }
+
+
+def gex_components_from_strikes(strikes: list[dict[str, Any]]) -> tuple[float, float, float]:
+    """Split strike GEX into +VE mass, −VE mass (absolute), and net.
+
+    Returns ``(pos_gex, neg_gex_abs, net_gex)`` where ``pos`` / ``neg`` are the
+    sums of positive and |negative| leg GEX (ce_gex / pe_gex), matching the
+    Unusual-Whales-style dual component lines (both plotted above zero).
+    """
+    pos = 0.0
+    neg_abs = 0.0
+    for row in strikes:
+        for key in ("ce_gex", "pe_gex"):
+            try:
+                g = float(row.get(key) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if g > 0:
+                pos += g
+            elif g < 0:
+                neg_abs += -g
+    net = pos - neg_abs
+    return round(pos, 2), round(neg_abs, 2), round(net, 2)
 
 
 def total_gex_at_spot(
@@ -503,6 +733,36 @@ def _hhi_band(hhi: float) -> ConcentrationBand:
     return "diffuse"
 
 
+def _gini_from_masses(masses: list[float]) -> float | None:
+    """Strike-level Gini of absolute masses (same base as HHI).
+
+    Sort ascending x_1 <= ... <= x_n, X = sum x_i, n >= 2:
+
+        G = 2 * sum(i * x_i) / (n * X) - (n + 1) / n
+
+    Clamped to [0, 1]. Returns None when n < 2 or X <= 0.
+    """
+    xs = [float(m) for m in masses]
+    n = len(xs)
+    if n < 2:
+        return None
+    total = sum(xs)
+    if total <= 0:
+        return None
+    xs_sorted = sorted(xs)
+    weighted = sum((i + 1) * x for i, x in enumerate(xs_sorted))
+    g = (2.0 * weighted) / (n * total) - (n + 1) / n
+    return max(0.0, min(1.0, g))
+
+
+def _shape_quadrant(hhi: float, gini: float | None) -> str | None:
+    """Ávila HHI×Gini quadrant label (e.g. unequal-dispersed)."""
+    if gini is None:
+        return None
+    prefix = "unequal" if gini >= GINI_EQUAL_CUT else "equal"
+    return f"{prefix}-{_QUADRANT_SUFFIX[_hhi_band(hhi)]}"
+
+
 def _pin_stability(
     history: list[dict[str, Any]] | None,
     pin_strike: float | None,
@@ -529,6 +789,170 @@ def _pin_stability(
     return pct >= 70.0, pct
 
 
+def _side_masses(strikes: list[dict[str, Any]], gex_key: str) -> list[float]:
+    """Absolute GEX masses for one side (ce_gex or pe_gex).
+
+    Falls back to side density, then signed |net_gex|, matching Call/Put HHI/Gini.
+    Returns [] when no positive mass is available.
+    """
+    density_key = "ce_density" if gex_key == "ce_gex" else "pe_density"
+
+    def _masses_from(key: str) -> list[float]:
+        out: list[float] = []
+        for row in strikes:
+            try:
+                out.append(abs(float(row.get(key) or 0.0)))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    masses = _masses_from(gex_key)
+    total = sum(masses)
+    if total <= 0:
+        masses = _masses_from(density_key)
+        total = sum(masses)
+    if total <= 0:
+        # Last resort: attribute |net_gex| by sign (call ← positive, put ← negative).
+        masses = []
+        for row in strikes:
+            try:
+                net = float(row.get("net_gex") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if gex_key == "ce_gex":
+                masses.append(max(net, 0.0))
+            else:
+                masses.append(abs(min(net, 0.0)))
+        total = sum(masses)
+    if total <= 0:
+        return []
+    return masses
+
+
+def _side_hhi(strikes: list[dict[str, Any]], gex_key: str) -> float | None:
+    """HHI of absolute GEX shares for one side (ce_gex or pe_gex)."""
+    masses = _side_masses(strikes, gex_key)
+    if not masses:
+        return None
+    total = sum(masses)
+    return round(sum((m / total) ** 2 for m in masses), 4)
+
+
+def _side_gini(strikes: list[dict[str, Any]], gex_key: str) -> float | None:
+    """Gini of absolute GEX masses for one side (same fallbacks as ``_side_hhi``)."""
+    g = _gini_from_masses(_side_masses(strikes, gex_key))
+    return round(g, 4) if g is not None else None
+
+
+def _contributor_side_bias(row: dict[str, Any]) -> str:
+    try:
+        ce = abs(float(row.get("ce_gex") or 0.0))
+        pe = abs(float(row.get("pe_gex") or 0.0))
+    except (TypeError, ValueError):
+        return "mixed"
+    if ce > pe * 1.05:
+        return "call"
+    if pe > ce * 1.05:
+        return "put"
+    return "mixed"
+
+
+def _cliff_strike(
+    strikes: list[dict[str, Any]],
+    *,
+    spot: float,
+    flip_level: float | None,
+    call_wall: float | None,
+    put_wall: float | None,
+) -> float | None:
+    """Nearest destabilizer: flip if in strike window, else breakout-side wall."""
+    ks: list[float] = []
+    for row in strikes:
+        try:
+            ks.append(float(row["strike"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not ks:
+        return None
+    lo, hi = min(ks), max(ks)
+    if flip_level is not None:
+        try:
+            flip = float(flip_level)
+        except (TypeError, ValueError):
+            flip = None
+        else:
+            if lo - 1e-9 <= flip <= hi + 1e-9:
+                return flip
+
+    # Breakout-side wall: call wall above spot (upside), put wall below (downside).
+    # When both exist, pick the farther wall from spot (the cliff you break into).
+    candidates: list[float] = []
+    if call_wall is not None:
+        try:
+            cw = float(call_wall)
+        except (TypeError, ValueError):
+            cw = None
+        else:
+            if cw >= float(spot) - 1e-9:
+                candidates.append(cw)
+    if put_wall is not None:
+        try:
+            pw = float(put_wall)
+        except (TypeError, ValueError):
+            pw = None
+        else:
+            if pw <= float(spot) + 1e-9:
+                candidates.append(pw)
+    if not candidates:
+        for w in (call_wall, put_wall):
+            if w is None:
+                continue
+            try:
+                candidates.append(float(w))
+            except (TypeError, ValueError):
+                continue
+    if not candidates:
+        return None
+    return max(candidates, key=lambda w: abs(w - float(spot)))
+
+
+def _hhi_intraday_stats(
+    history: list[dict[str, Any]] | None,
+    current_hhi: float,
+) -> tuple[float | None, float | None]:
+    """Session mean + percentile rank of current HHI among today's ticks (incl. current)."""
+    vals: list[float] = []
+    if history:
+        for p in history:
+            if p.get("hhi") is None:
+                continue
+            try:
+                vals.append(float(p["hhi"]))
+            except (TypeError, ValueError):
+                continue
+    vals.append(float(current_hhi))
+    if not vals:
+        return None, None
+    mean = round(sum(vals) / len(vals), 4)
+    # Percentile: share of ticks ≤ current (intraday rank, not cross-session).
+    n_le = sum(1 for v in vals if v <= float(current_hhi) + 1e-12)
+    pct = round(100.0 * n_le / len(vals), 1)
+    return mean, pct
+
+
+def _hhi_sessions_stats(
+    daily_history: list[dict[str, Any]] | None,
+    current_hhi: float,
+    *,
+    n: int = 30,
+) -> tuple[float | None, int | None]:
+    """Percentile of current HHI among last ``n`` trading-day HHIs (incl. today)."""
+    from options.gamma_density_history import hhi_percentile_sessions
+
+    pct, count = hhi_percentile_sessions(daily_history, current_hhi, n=n)
+    return pct, count
+
+
 def compute_gamma_concentration(
     strikes: list[dict[str, Any]],
     *,
@@ -539,6 +963,8 @@ def compute_gamma_concentration(
     strike_step: float,
     history: list[dict[str, Any]] | None = None,
     pin_threshold: float | None = None,
+    flip_level: float | None = None,
+    daily_hhi_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Herfindahl-Hirschman concentration of |net_gex| across strikes."""
     empty = {
@@ -553,27 +979,46 @@ def compute_gamma_concentration(
         "pin_share": None,
         "pin_stable": None,
         "pin_stability_pct": None,
+        "call_hhi": None,
+        "put_hhi": None,
+        "gini": None,
+        "call_gini": None,
+        "put_gini": None,
+        "shape_quadrant": None,
+        "top_contributors": [],
+        "cliff_strike": None,
+        "hhi_session_mean": None,
+        "hhi_percentile_intraday": None,
+        "hhi_percentile_30d": None,
+        "hhi_session_count": None,
     }
     if not strikes:
         return empty
 
-    masses: list[tuple[float, float]] = []
+    masses: list[tuple[float, float, dict[str, Any]]] = []
     for row in strikes:
         try:
             k = float(row["strike"])
         except (KeyError, TypeError, ValueError):
             continue
-        masses.append((k, _strike_mass(row)))
+        masses.append((k, _strike_mass(row), row))
 
-    total = sum(m for _, m in masses)
+    total = sum(m for _, m, _ in masses)
     if total <= 0:
+        empty["cliff_strike"] = _cliff_strike(
+            strikes, spot=spot, flip_level=flip_level, call_wall=call_wall, put_wall=put_wall
+        )
+        empty["call_hhi"] = _side_hhi(strikes, "ce_gex")
+        empty["put_hhi"] = _side_hhi(strikes, "pe_gex")
+        empty["call_gini"] = _side_gini(strikes, "ce_gex")
+        empty["put_gini"] = _side_gini(strikes, "pe_gex")
         return empty
 
-    shares = [(k, m / total) for k, m in masses]
-    hhi = sum(s * s for _, s in shares)
+    shares = [(k, m / total, row) for k, m, row in masses]
+    hhi = sum(s * s for _, s, _ in shares)
     ranked = sorted(shares, key=lambda x: x[1], reverse=True)
     top1_share = ranked[0][1]
-    top3_share = sum(s for _, s in ranked[:3])
+    top3_share = sum(s for _, s, _ in ranked[:3])
     dominant_strike = ranked[0][0]
     dominant_share = ranked[0][1]
     threshold = float(pin_threshold if pin_threshold is not None else PIN_SHARE_THRESHOLD)
@@ -585,16 +1030,46 @@ def compute_gamma_concentration(
         step = max(float(strike_step), 1.0)
         mid = (float(call_wall) + float(put_wall)) / 2.0
         pin_strike = round(mid / step) * step
-        pin_share = next((s for k, s in shares if abs(k - pin_strike) < 1e-9), top1_share)
+        pin_share = next((s for k, s, _ in shares if abs(k - pin_strike) < 1e-9), top1_share)
     elif atm_strike is not None:
         pin_strike = float(atm_strike)
-        pin_share = next((s for k, s in shares if abs(k - pin_strike) < 1e-9), top1_share)
+        pin_share = next((s for k, s, _ in shares if abs(k - pin_strike) < 1e-9), top1_share)
     else:
         pin_strike = dominant_strike
         pin_share = top1_share
 
     pin_stable, pin_stability_pct = _pin_stability(history, pin_strike, strike_step)
     eff = (1.0 / hhi) if hhi > 0 else None
+
+    top_contributors: list[dict[str, Any]] = []
+    for k, share, row in ranked[:25]:
+        try:
+            net_gex = float(row.get("net_gex") or 0.0)
+        except (TypeError, ValueError):
+            net_gex = 0.0
+        top_contributors.append(
+            {
+                "strike": k,
+                "share": round(share, 4),
+                "net_gex": round(net_gex, 2),
+                "side_bias": _contributor_side_bias(row),
+            }
+        )
+
+    call_hhi = _side_hhi(strikes, "ce_gex")
+    put_hhi = _side_hhi(strikes, "pe_gex")
+    gini = _gini_from_masses([m for _, m, _ in masses])
+    call_gini = _side_gini(strikes, "ce_gex")
+    put_gini = _side_gini(strikes, "pe_gex")
+    shape_quadrant = _shape_quadrant(hhi, gini)
+    cliff = _cliff_strike(
+        strikes, spot=spot, flip_level=flip_level, call_wall=call_wall, put_wall=put_wall
+    )
+    hhi_mean, hhi_pct = _hhi_intraday_stats(history, hhi)
+    hhi_30d: float | None = None
+    hhi_session_count: int | None = None
+    if daily_hhi_history is not None:
+        hhi_30d, hhi_session_count = _hhi_sessions_stats(daily_hhi_history, hhi)
 
     return {
         "hhi": round(hhi, 4),
@@ -608,6 +1083,18 @@ def compute_gamma_concentration(
         "pin_share": round(float(pin_share), 4) if pin_share is not None else None,
         "pin_stable": pin_stable,
         "pin_stability_pct": pin_stability_pct,
+        "call_hhi": call_hhi,
+        "put_hhi": put_hhi,
+        "gini": round(gini, 4) if gini is not None else None,
+        "call_gini": call_gini,
+        "put_gini": put_gini,
+        "shape_quadrant": shape_quadrant,
+        "top_contributors": top_contributors,
+        "cliff_strike": cliff,
+        "hhi_session_mean": hhi_mean,
+        "hhi_percentile_intraday": hhi_pct,
+        "hhi_percentile_30d": hhi_30d,
+        "hhi_session_count": hhi_session_count,
     }
 
 
@@ -685,6 +1172,7 @@ def build_gamma_market_read(
     distance_to_flip: float | None,
     call_wall: float | None,
     put_wall: float | None,
+    reference_levels: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Short narrative answering the five trader questions."""
     band = concentration.get("band") or "unknown"
@@ -733,6 +1221,14 @@ def build_gamma_market_read(
         f"Pin candidate {pin if pin is not None else '—'} ({pin_note}) · "
         f"Walls C{call_wall if call_wall is not None else '—'}/P{put_wall if put_wall is not None else '—'}"
     )
+    ref = reference_levels or {}
+    pdc = ref.get("prev_day_close")
+    pwc = ref.get("prev_week_close")
+    if pdc is not None or pwc is not None:
+        levels_line += (
+            f" · Day close {pdc if pdc is not None else '—'} · "
+            f"Week close {pwc if pwc is not None else '—'}"
+        )
 
     return {
         "regime_line": regime_line,
@@ -759,6 +1255,180 @@ def _joint_read(
     if gamma_regime == "positive":
         return "mean_revert"
     return "mixed"
+
+
+def _pick_strike_oi_baseline(
+    open_oi: int | None,
+    prev_close_oi: int | None,
+    mode: str,
+) -> tuple[int | None, str | None]:
+    """Resolve baseline OI for a CE/PE strike side.
+
+    ``session_open`` prefers open then prev-close (OI Movers rule).
+    ``prev_close`` uses previous-day close only.
+    """
+    from options.oi_movers import pick_baseline_oi
+
+    if mode == "prev_close":
+        if prev_close_oi is not None:
+            return int(prev_close_oi), "prev_close"
+        return None, None
+    return pick_baseline_oi(open_oi, prev_close_oi)
+
+
+def attach_strike_oi_baselines(
+    strikes: list[dict[str, Any]],
+    underlying: str,
+    expiry: str,
+    *,
+    oi_baseline_mode: str = "session_open",
+    after_hhmm: str = "09:20",
+    open_map: dict[str, int] | None = None,
+    prev_map: dict[str, int] | None = None,
+    session_capture_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Attach ``ce/pe_oi_base``, ``*_doi``, and ``*_oi_base_source`` to strike rows.
+
+    Soft-fails when session/prev maps are unavailable: bases and ΔOI stay null
+    and the snapshot still builds. When ``open_map`` / ``prev_map`` are passed
+    (tests), network/session stores are skipped.
+
+    ``session_capture_rows`` (optional) should be the pre-window chain legs so
+    session-open persistence is not narrowed to the ATM window.
+    """
+    mode = (oi_baseline_mode or "session_open").lower()
+    if mode not in ("session_open", "prev_close"):
+        mode = "session_open"
+
+    meta: dict[str, Any] = {
+        "oi_baseline_mode": mode,
+        "oi_baseline_note": None,
+        "oi_baseline_open_count": 0,
+        "oi_baseline_prev_close_count": 0,
+    }
+
+    # Initialise null fields so the schema is stable even on soft-fail.
+    for row in strikes:
+        for side in ("ce", "pe"):
+            row.setdefault(f"{side}_oi_base", None)
+            row.setdefault(f"{side}_doi", None)
+            row.setdefault(f"{side}_oi_base_source", None)
+
+    token_rows: list[dict[str, Any]] = []
+    tokens: list[int] = []
+    seen_tok: set[str] = set()
+
+    def _collect(row: dict[str, Any]) -> None:
+        for side in ("ce", "pe"):
+            tok = row.get(f"_{side}_token")
+            if tok is None:
+                continue
+            try:
+                tok_i = int(tok)
+            except (TypeError, ValueError):
+                continue
+            tok_s = str(tok_i)
+            if tok_s in seen_tok:
+                continue
+            seen_tok.add(tok_s)
+            tokens.append(tok_i)
+            curr_oi = row.get(f"{side}_oi")
+            token_rows.append(
+                {
+                    "instrument_token": tok_i,
+                    "latest_oi": int(curr_oi) if curr_oi is not None else 0,
+                }
+            )
+
+    if session_capture_rows:
+        for row in session_capture_rows:
+            _collect(row)
+    for row in strikes:
+        _collect(row)
+
+    try:
+        from options.oi_movers import ensure_session_open_oi, get_prev_day_oi_map
+
+        resolved_open = open_map
+        resolved_prev = prev_map
+        if resolved_open is None and mode == "session_open":
+            resolved_open = (
+                ensure_session_open_oi(
+                    underlying, expiry, token_rows, after_hhmm=after_hhmm
+                )
+                if token_rows
+                else {}
+            )
+        if resolved_open is None:
+            resolved_open = {}
+        if resolved_prev is None:
+            resolved_prev = get_prev_day_oi_map(tokens) if tokens else {}
+    except Exception:
+        resolved_open = open_map or {}
+        resolved_prev = prev_map or {}
+
+    open_count = 0
+    prev_count = 0
+    for row in strikes:
+        for side in ("ce", "pe"):
+            tok = row.pop(f"_{side}_token", None)
+            open_oi = None
+            prev_close = None
+            if tok is not None:
+                tok_s = str(tok)
+                raw_open = resolved_open.get(tok_s)
+                raw_prev = resolved_prev.get(tok_s)
+                try:
+                    open_oi = int(raw_open) if raw_open is not None else None
+                except (TypeError, ValueError):
+                    open_oi = None
+                try:
+                    prev_close = int(raw_prev) if raw_prev is not None else None
+                except (TypeError, ValueError):
+                    prev_close = None
+
+            base, source = _pick_strike_oi_baseline(open_oi, prev_close, mode)
+            curr = row.get(f"{side}_oi")
+            doi = None
+            if base is not None and curr is not None:
+                try:
+                    doi = int(curr) - int(base)
+                except (TypeError, ValueError):
+                    doi = None
+
+            row[f"{side}_oi_base"] = base
+            row[f"{side}_doi"] = doi
+            row[f"{side}_oi_base_source"] = source
+            if source == "open":
+                open_count += 1
+            elif source == "prev_close":
+                prev_count += 1
+
+    # Drop private tokens from any pre-window capture rows still held by caller.
+    if session_capture_rows:
+        for row in session_capture_rows:
+            row.pop("_ce_token", None)
+            row.pop("_pe_token", None)
+
+    meta["oi_baseline_open_count"] = open_count
+    meta["oi_baseline_prev_close_count"] = prev_count
+    if mode == "session_open":
+        if open_count and prev_count:
+            note = f"session open · {prev_count} strikes with prev_close fallback"
+        elif open_count:
+            note = f"session open · {open_count} legs"
+        elif prev_count:
+            note = f"prev_close fallback · {prev_count} legs"
+        else:
+            note = "OI baseline unavailable"
+    else:
+        note = (
+            f"prev day close · {prev_count} legs"
+            if prev_count
+            else "prev_close baseline unavailable"
+        )
+    meta["oi_baseline_note"] = note
+    return meta
 
 
 def _build_legs_for_expiry(
@@ -837,6 +1507,12 @@ def build_gamma_snapshot(
     include_multi_expiry: bool = True,
     include_history: bool = True,
     include_vanna_strip: bool = True,
+    build_session_chart: bool = True,
+    oi_baseline_mode: str | None = None,
+    reversal_tf: str | None = None,
+    reversal_gex_gate: bool = True,
+    reversal_gex_mode: str | None = "live",
+    reversal_oi_gate: bool = False,
 ) -> dict[str, Any]:
     if underlying not in INDEX_OPTIONS:
         raise ValueError(f"Unknown underlying '{underlying}'. Use {list(INDEX_OPTIONS)}")
@@ -847,13 +1523,16 @@ def build_gamma_snapshot(
     mode = (sign_mode or d.get("sign_mode") or "naive").lower()
     if mode not in ("naive", "customer", "oi_delta"):
         mode = "naive"
+    baseline_mode = (oi_baseline_mode or "session_open").lower()
+    if baseline_mode not in ("session_open", "prev_close"):
+        baseline_mode = "session_open"
     r = float(d["risk_free_rate"])
     q = float(d["dividend_yield"])
     max_spread = float(d.get("max_mid_spread_pct") or 0.12)
     min_oi = int(d.get("min_oi") or 0)
     profile_steps = int(d.get("gex_profile_steps") or 80)
     hist_max = int(d.get("history_max_points") or 120)
-    hedge_moves = [int(x) for x in (d.get("hedge_moves_pts") or (50, 100))]
+    hedge_moves = _hedge_moves_for_underlying(underlying, d)
     multi_n = int(d.get("multi_expiry_count") or 2)
 
     exp = expiry or prov.nearest_expiry(underlying)
@@ -921,16 +1600,20 @@ def build_gamma_snapshot(
             row["ce_gex"] = built["gex"]
             row["ce_iv"] = built["iv"]
             row["ce_price_source"] = built["price_source"]
+            row["_ce_token"] = built.get("instrument_token")
         else:
             row["pe_oi"] = built["oi"]
             row["pe_density"] = built["density"]
             row["pe_gex"] = built["gex"]
             row["pe_iv"] = built["iv"]
             row["pe_price_source"] = built["price_source"]
+            row["_pe_token"] = built.get("instrument_token")
 
     strikes = sorted(per_strike.values(), key=lambda x: x["strike"])
     all_strike_vals = [x["strike"] for x in strikes]
     s_min, s_max = min(all_strike_vals), max(all_strike_vals)
+    # Keep a full-chain copy for session-open capture before ATM window trim.
+    all_strikes_for_oi = [dict(r) for r in strikes]
 
     atm = min(strikes, key=lambda x: abs(x["strike"] - spot))
     if window > 0:
@@ -952,8 +1635,18 @@ def build_gamma_snapshot(
             4,
         )
 
+    oi_baseline_meta = attach_strike_oi_baselines(
+        strikes,
+        underlying,
+        exp,
+        oi_baseline_mode=baseline_mode,
+        session_capture_rows=all_strikes_for_oi,
+    )
+
     total_gex = round(total_gex_at_spot(resolved_legs, spot, tte, r=r, q=q), 2)
     gamma_regime = "positive" if total_gex >= 0 else "negative"
+    # Chart-only +VE/−VE masses (Day spot dual lines). Signal triggers still use total_gex.
+    pos_gex, neg_gex, _net_from_strikes = gex_components_from_strikes(strikes)
 
     smiles: dict[str, list[tuple[float, float]]] = {"CE": [], "PE": []}
     for strike, _oi, _lot, otype, iv, _sign in resolved_legs:
@@ -1124,16 +1817,31 @@ def build_gamma_snapshot(
     history: list[dict[str, Any]] = []
     chart_series: list[dict[str, Any]] = []
     reversals: list[dict[str, Any]] = []
+    reversals_gex_relaxed = False
+    reversals_gex_waiting = False
+    reversals_gex_samples = 0
+    from options.gamma_density_history import (
+        REVERSAL_GEX_MIN_SAMPLES,
+        normalize_reversal_gex_mode,
+    )
+
+    gex_mode = normalize_reversal_gex_mode(reversal_gex_mode)
+    reversals_gex_min_samples = REVERSAL_GEX_MIN_SAMPLES
     prior_history: list[dict[str, Any]] = []
+    prior_daily_hhi: list[dict[str, Any]] = []
     if include_history:
         try:
-            from options.gamma_density_history import get_history
+            from options.gamma_density_history import get_daily_hhi_series, get_history
 
             prior_history = get_history(underlying, exp)
+            prior_daily_hhi = get_daily_hhi_series(underlying)
         except Exception:
             prior_history = []
+            prior_daily_hhi = []
 
     pin_threshold = float(d.get("pin_share_threshold") or PIN_SHARE_THRESHOLD)
+    # Provisional concentration (intraday stats); 30d percentile refreshed after
+    # upserting today's session HHI so the sample includes the latest day-end value.
     concentration = compute_gamma_concentration(
         strikes,
         spot=spot,
@@ -1143,7 +1851,27 @@ def build_gamma_snapshot(
         strike_step=float(strike_step),
         history=prior_history,
         pin_threshold=pin_threshold,
+        flip_level=scan["flip"],
+        daily_hhi_history=prior_daily_hhi or None,
     )
+    if include_history and concentration.get("hhi") is not None:
+        try:
+            from options.gamma_density_history import (
+                DAILY_HHI_PERCENTILE_N,
+                hhi_percentile_sessions,
+                upsert_daily_hhi,
+            )
+
+            daily_series = upsert_daily_hhi(underlying, float(concentration["hhi"]))
+            pct_30d, sess_n = hhi_percentile_sessions(
+                daily_series,
+                float(concentration["hhi"]),
+                n=DAILY_HHI_PERCENTILE_N,
+            )
+            concentration["hhi_percentile_30d"] = pct_30d
+            concentration["hhi_session_count"] = sess_n
+        except Exception:
+            pass
     conviction = compute_gamma_conviction(
         total_gex=total_gex,
         gamma_regime=gamma_regime,
@@ -1153,6 +1881,7 @@ def build_gamma_snapshot(
         expected_move=bands,
         history=prior_history,
     )
+    reference_levels = build_reference_levels(underlying)
     market_read = build_gamma_market_read(
         gamma_regime=gamma_regime,
         concentration=concentration,
@@ -1161,19 +1890,52 @@ def build_gamma_snapshot(
         distance_to_flip=scan["distance_to_flip"],
         call_wall=call_wall,
         put_wall=put_wall,
+        reference_levels=reference_levels,
+    )
+    momentum = compute_gamma_momentum(
+        {
+            "spot": spot,
+            "total_gex": total_gex,
+            "call_wall": call_wall,
+            "put_wall": put_wall,
+            "strike_step": float(strike_step),
+            "atm_iv": atm_iv,
+            "strikes": strikes,
+            "concentration": concentration,
+            "history": prior_history,
+            "distance_to_flip": scan["distance_to_flip"],
+            "flip_level": scan["flip"],
+        }
     )
 
     if include_history:
         try:
-            from kite_client import fetch_index_minute_spot
+            from kite_client import fetch_front_month_minute_candles, fetch_index_minute_spot
             from options.gamma_density_history import (
+                adaptive_reversal_min_move,
                 append_history_point,
+                apply_partial_history_gex_policy,
+                attach_volume_from_candles,
                 build_chart_series,
+                count_usable_gex_points,
                 detect_spot_reversals,
+                enrich_series_nearest_gex,
+                gex_gate_match_sec,
+                gex_history_recording_meta,
                 get_history,
                 minutes_since_session_open,
+                normalize_reversal_tf,
+                persist_session_reversals,
+                resample_chart_series,
+                resolve_gex_gate,
+                reversal_tf_params,
+                series_has_usable_volume,
+                session_history_max_points,
             )
 
+            # append_history_point reloads disk under lock; never starts from empty memory.
+            # UI polls (build_session_chart=True) also append — belt-and-suspenders with
+            # the background scheduler so the open desk never starves its own trail.
             history = append_history_point(
                 underlying,
                 exp,
@@ -1181,29 +1943,183 @@ def build_gamma_snapshot(
                 total_gex=total_gex,
                 flip_level=scan["flip"],
                 gamma_regime=gamma_regime,
-                max_points=max(hist_max, 400),
+                max_points=max(hist_max, session_history_max_points(underlying)),
                 hhi=concentration.get("hhi"),
                 conviction=conviction.get("score"),
                 pin_strike=concentration.get("pin_strike"),
+                atm_iv=atm_iv,
+                pos_gex=pos_gex,
+                neg_gex=neg_gex,
             )
             if not history:
                 history = get_history(underlying, exp)
 
-            spot_candles: list[dict[str, Any]] = []
-            try:
-                lookback = minutes_since_session_open(underlying)
-                spot_candles = fetch_index_minute_spot(underlying, minutes=lookback)
-            except Exception:
-                spot_candles = []
+            # Scheduler samples only need the tick persisted — skip candle/reversal work.
+            if not build_session_chart:
+                reversals_gex_samples = count_usable_gex_points(history)
+            else:
+                note_gamma_desk_underlying(underlying)
 
-            # Adaptive min move: ~0.15% of spot (Nifty ~35 pts, Crude ~10)
-            min_move = max(25.0, round(float(spot) * 0.0015, 1))
-            chart_series = build_chart_series(underlying, history, spot_candles)
-            reversals = detect_spot_reversals(chart_series, min_move_pts=min_move)
+                lookback = 40
+                spot_candles: list[dict[str, Any]] = []
+                try:
+                    lookback = minutes_since_session_open(underlying)
+                    spot_candles = fetch_index_minute_spot(underlying, minutes=lookback)
+                except Exception:
+                    spot_candles = []
+
+                # Blue path stays 1m with short GEX attach (chart gaps stay honest).
+                # Detection uses a TF-wider GEX lookback so sparse polls don't wipe pivots.
+                chart_series = build_chart_series(underlying, history, spot_candles)
+                # Cash-index volume is usually 0 — overlay front-month futures volume (chart-only).
+                if not series_has_usable_volume(chart_series):
+                    try:
+                        fut_candles = fetch_front_month_minute_candles(
+                            underlying, minutes=max(int(lookback), 40)
+                        )
+                        chart_series = attach_volume_from_candles(chart_series, fut_candles)
+                    except Exception:
+                        pass
+                tf_key = normalize_reversal_tf(reversal_tf)
+                tf_params = reversal_tf_params(tf_key)
+                reversals_gex_samples = count_usable_gex_points(history)
+                recording_meta_early = gex_history_recording_meta(underlying, history)
+                gex_partial = bool(recording_meta_early.get("gex_history_partial"))
+                effective_gate, reversals_gex_relaxed, reversals_gex_waiting = resolve_gex_gate(
+                    bool(reversal_gex_gate),
+                    history,
+                    min_points=reversals_gex_min_samples,
+                    mode=gex_mode,
+                    history_partial=gex_partial,
+                )
+                # Live + Require GEX/OI: surface price pivots immediately as provisional
+                # (muted) even while sparse-waiting or hard gate fails; Research keeps
+                # hard reject / relax behavior (no provisional path).
+                live_mode = gex_mode == "live"
+                want_provisional = live_mode and (
+                    bool(reversal_gex_gate) or bool(reversal_oi_gate)
+                )
+                detection_base = enrich_series_nearest_gex(
+                    chart_series,
+                    history,
+                    match_sec=gex_gate_match_sec(tf_key),
+                    underlying=underlying,
+                )
+                tf_series = resample_chart_series(detection_base, tf_key)
+                min_move = adaptive_reversal_min_move(float(spot), tf_series)
+                # Mid-session GEX: detect ungated, then gate only where samples exist.
+                use_partial_hybrid = bool(reversal_gex_gate) and gex_partial
+                # Sparse Live wait: still detect with hard gate + provisional emit so
+                # the board is not blank until samples arrive (chips stay muted).
+                if reversals_gex_waiting:
+                    gate_for_detect = True
+                elif use_partial_hybrid:
+                    gate_for_detect = False
+                else:
+                    gate_for_detect = effective_gate
+                candidates = detect_spot_reversals(
+                    tf_series,
+                    swing_bars=tf_params["swing_bars"],
+                    confirm_bars=tf_params["confirm_bars"],
+                    lock_ms=tf_params["lock_ms"],
+                    min_move_pts=min_move,
+                    gex_gate=gate_for_detect,
+                    oi_gate=bool(reversal_oi_gate),
+                    provisional_ungated=want_provisional,
+                    tf=tf_key,
+                    pin_strike=concentration.get("pin_strike"),
+                    call_wall=call_wall,
+                    put_wall=put_wall,
+                    cliff_strike=concentration.get("cliff_strike"),
+                    strike_step=float(strike_step),
+                    strikes=strikes,
+                )
+                if use_partial_hybrid and effective_gate:
+                    candidates = apply_partial_history_gex_policy(
+                        tf_series,
+                        candidates,
+                        confirm_bars=tf_params["confirm_bars"],
+                        provisional_ungated=want_provisional,
+                    )
+                # Freeze move_pts after confirm window so TF rebuilds don't drift labels.
+                reversals = persist_session_reversals(
+                    underlying,
+                    exp,
+                    candidates,
+                    tf=tf_key,
+                    confirm_bars=tf_params["confirm_bars"],
+                    lock_ms=tf_params["lock_ms"],
+                )
+                # Display stays sparse: no reverse/forward GEX fill (avoids flat invented lines).
         except Exception:
-            history = prior_history
-            chart_series = []
-            reversals = []
+            history = prior_history or history
+            if not build_session_chart:
+                try:
+                    from options.gamma_density_history import (
+                        count_usable_gex_points,
+                        get_history,
+                    )
+
+                    if not history:
+                        history = get_history(underlying, exp)
+                    reversals_gex_samples = count_usable_gex_points(history)
+                except Exception:
+                    reversals_gex_samples = 0
+                chart_series = []
+                reversals = []
+                reversals_gex_relaxed = False
+                reversals_gex_waiting = False
+            else:
+                note_gamma_desk_underlying(underlying)
+                try:
+                    from options.gamma_density_history import (
+                        build_chart_series,
+                        get_history,
+                        get_session_reversals,
+                        normalize_reversal_tf,
+                    )
+
+                    if not history:
+                        history = get_history(underlying, exp)
+                    chart_series = build_chart_series(underlying, history, None)
+                    reversals = get_session_reversals(
+                        underlying, exp, normalize_reversal_tf(reversal_tf)
+                    )
+                except Exception:
+                    chart_series = []
+                    reversals = []
+                reversals_gex_relaxed = False
+                reversals_gex_waiting = False
+                reversals_gex_samples = 0
+
+    recording_meta: dict[str, Any] = {
+        "gex_history_started_at": None,
+        "gex_history_partial": False,
+        "gex_history_points": 0,
+    }
+    if include_history:
+        try:
+            from options.gamma_density_history import gex_history_recording_meta
+
+            recording_meta = gex_history_recording_meta(underlying, history)
+        except Exception:
+            pass
+
+    cas_block = None
+    try:
+        from options.cas_indicative import cas_for_snapshot
+
+        cas_block = cas_for_snapshot(underlying)
+    except Exception:
+        cas_block = None
+
+    session_poc_block = None
+    try:
+        from options.session_poc import compute_session_poc
+
+        session_poc_block = compute_session_poc(underlying)
+    except Exception:
+        session_poc_block = None
 
     return {
         "underlying": underlying,
@@ -1216,6 +2132,10 @@ def build_gamma_snapshot(
         "atm_iv": atm_iv,
         "total_gex": total_gex,
         "total_gex_cr": round(total_gex / CRORE, 4),
+        "pos_gex": pos_gex,
+        "neg_gex": neg_gex,
+        "pos_gex_cr": round(pos_gex / CRORE, 4),
+        "neg_gex_cr": round(neg_gex / CRORE, 4),
         "gamma_regime": gamma_regime,
         "sign_mode": mode,
         "dividend_yield": q,
@@ -1239,13 +2159,395 @@ def build_gamma_snapshot(
         "vanna_strip": vanna_strip,
         "concentration": concentration,
         "conviction": conviction,
+        "momentum": momentum,
         "market_read": market_read,
+        "reference_levels": reference_levels,
         "history": history,
         "chart_series": chart_series,
         "reversals": reversals,
+        "reversals_gex_relaxed": reversals_gex_relaxed,
+        "reversals_gex_waiting": reversals_gex_waiting,
+        "reversals_gex_samples": reversals_gex_samples,
+        "reversals_gex_min_samples": reversals_gex_min_samples,
+        "reversal_gex_mode": gex_mode,
+        "gex_history_started_at": recording_meta.get("gex_history_started_at"),
+        "gex_history_partial": bool(recording_meta.get("gex_history_partial")),
+        "gex_history_points": int(recording_meta.get("gex_history_points") or 0),
         "chain_legs_quoted": len(built_rows),
         "chain_legs_total": raw_total,
         "strike_window": window,
         "convexity_zones": convexity_zones,
         "strikes": strikes,
+        "oi_baseline_mode": oi_baseline_meta.get("oi_baseline_mode", baseline_mode),
+        "oi_baseline_note": oi_baseline_meta.get("oi_baseline_note"),
+        "oi_baseline_open_count": oi_baseline_meta.get("oi_baseline_open_count", 0),
+        "oi_baseline_prev_close_count": oi_baseline_meta.get(
+            "oi_baseline_prev_close_count", 0
+        ),
+        "cas": cas_block,
+        "session_poc": session_poc_block,
     }
+
+
+def _empty_concentration_summary_row(
+    underlying: str,
+    *,
+    error: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "underlying": underlying,
+        "expiry": None,
+        "spot": None,
+        "hhi": None,
+        "band": None,
+        "pin_strike": None,
+        "cliff_strike": None,
+        "gini": None,
+        "shape_quadrant": None,
+        "hhi_percentile_30d": None,
+        "hhi_session_count": None,
+        "source": source,
+        "error": error,
+    }
+
+
+def _enrich_summary_daily_hhi(row: dict[str, Any], underlying: str) -> None:
+    """Fill 30d HHI percentile from the daily store (read-only; no upsert)."""
+    if row.get("hhi") is None:
+        return
+    try:
+        from options.gamma_density_history import (
+            DAILY_HHI_PERCENTILE_N,
+            get_daily_hhi_series,
+            hhi_percentile_sessions,
+        )
+
+        daily = get_daily_hhi_series(underlying)
+        pct, n = hhi_percentile_sessions(
+            daily, float(row["hhi"]), n=DAILY_HHI_PERCENTILE_N
+        )
+        row["hhi_percentile_30d"] = pct
+        row["hhi_session_count"] = n if n > 0 else row.get("hhi_session_count")
+    except Exception:
+        pass
+
+
+def _summary_row_from_snapshot(snap: dict[str, Any]) -> dict[str, Any]:
+    conc = snap.get("concentration") if isinstance(snap.get("concentration"), dict) else {}
+    cliff = conc.get("cliff_strike")
+    if cliff is None:
+        cliff = snap.get("flip_level")
+    row = {
+        "underlying": snap.get("underlying"),
+        "expiry": snap.get("expiry"),
+        "spot": snap.get("spot"),
+        "hhi": conc.get("hhi"),
+        "band": conc.get("band"),
+        "pin_strike": conc.get("pin_strike"),
+        "cliff_strike": cliff,
+        "gini": conc.get("gini"),
+        "shape_quadrant": conc.get("shape_quadrant"),
+        "hhi_percentile_30d": conc.get("hhi_percentile_30d"),
+        "hhi_session_count": conc.get("hhi_session_count"),
+        "source": "live",
+        "error": None,
+    }
+    und = str(row.get("underlying") or "")
+    if und and (row.get("hhi_percentile_30d") is None or row.get("hhi_session_count") is None):
+        _enrich_summary_daily_hhi(row, und)
+    return row
+
+
+def _fallback_concentration_row(
+    underlying: str,
+    *,
+    provider: GammaDensityDataProvider | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Soft degrade when a thin live snapshot fails.
+
+    Prefer live thin snapshot first. Fallback uses last ``daily_hhi`` plus the
+    latest pin / flip from session history so one bad underlying does not blank
+    the multi-index strip.
+    """
+    row = _empty_concentration_summary_row(
+        underlying, error=error, source="history"
+    )
+    expiry: str | None = None
+    try:
+        prov = provider or get_gamma_density_provider()
+        expiry = prov.nearest_expiry(underlying)
+        row["expiry"] = expiry
+        spot = prov.get_spot(underlying)
+        if spot is not None:
+            row["spot"] = float(spot)
+    except Exception:
+        pass
+
+    try:
+        from options.gamma_density_history import get_daily_hhi_series, get_history
+
+        daily = get_daily_hhi_series(underlying)
+        if daily:
+            last_hhi = daily[-1].get("hhi")
+            if last_hhi is not None:
+                hhi = float(last_hhi)
+                row["hhi"] = round(hhi, 4)
+                row["band"] = _hhi_band(hhi)
+                _enrich_summary_daily_hhi(row, underlying)
+
+        hist: list[dict[str, Any]] = []
+        if expiry:
+            hist = get_history(underlying, expiry)
+        if hist:
+            last = hist[-1]
+            pin = last.get("pin_strike")
+            if pin is not None:
+                row["pin_strike"] = float(pin)
+            flip = last.get("flip_level")
+            if flip is not None:
+                row["cliff_strike"] = float(flip)
+            if row.get("spot") is None and last.get("spot") is not None:
+                row["spot"] = float(last["spot"])
+    except Exception:
+        pass
+
+    if row.get("hhi") is None and error:
+        row["source"] = "error"
+    return row
+
+
+def _thin_concentration_for_underlying(
+    underlying: str,
+    *,
+    strike_window: int,
+    provider: GammaDensityDataProvider | None = None,
+    sign_mode: str | None = None,
+) -> dict[str, Any]:
+    """Nearest-expiry concentration via a narrow-window snapshot (no history write)."""
+    try:
+        snap = build_gamma_snapshot(
+            underlying,
+            strike_window=strike_window,
+            sign_mode=sign_mode,
+            provider=provider,
+            include_multi_expiry=False,
+            include_history=False,
+            include_vanna_strip=False,
+        )
+        return _summary_row_from_snapshot(snap)
+    except Exception as exc:
+        return _fallback_concentration_row(
+            underlying, provider=provider, error=str(exc)[:240]
+        )
+
+
+def build_concentration_summary(
+    underlyings: list[str] | None = None,
+    *,
+    strike_window: int | None = None,
+    provider: GammaDensityDataProvider | None = None,
+    sign_mode: str | None = None,
+    parallel: bool = True,
+) -> dict[str, Any]:
+    """Multi-index concentration strip — thin live snapshots in parallel.
+
+    Defaults to cash indices only (not every MCX). Each underlying uses a narrow
+    ``strike_window`` (default 8) with ``include_history=False`` so the strip
+    stays cheap vs the full desk snapshot.
+    """
+    d = _cfg()
+    window = (
+        int(strike_window)
+        if strike_window is not None
+        else int(d.get("concentration_summary_window") or 8)
+    )
+    window = max(1, min(window, 60))
+
+    if underlyings is None:
+        names = default_concentration_underlyings()
+    else:
+        names = []
+        for raw in underlyings:
+            u = str(raw or "").upper().strip()
+            if not u:
+                continue
+            if u not in INDEX_OPTIONS:
+                names.append(u)  # keep order; row will carry error
+                continue
+            if u not in names:
+                names.append(u)
+
+    if not names:
+        names = default_concentration_underlyings()
+
+    prov = provider or get_gamma_density_provider()
+    items: list[dict[str, Any]] = []
+
+    def _one(u: str) -> dict[str, Any]:
+        if u not in INDEX_OPTIONS:
+            return _empty_concentration_summary_row(
+                u, error=f"Unknown underlying '{u}'", source="error"
+            )
+        return _thin_concentration_for_underlying(
+            u,
+            strike_window=window,
+            provider=prov,
+            sign_mode=sign_mode,
+        )
+
+    if parallel and len(names) > 1:
+        by_u: dict[str, dict[str, Any]] = {}
+        workers = min(4, len(names))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(_one, u): u for u in names}
+            for fut in as_completed(futs):
+                u = futs[fut]
+                try:
+                    by_u[u] = fut.result()
+                except Exception as exc:
+                    by_u[u] = _fallback_concentration_row(
+                        u, provider=prov, error=str(exc)[:240]
+                    )
+        items = [by_u[u] for u in names if u in by_u]
+    else:
+        items = [_one(u) for u in names]
+
+    return {
+        "underlyings": names,
+        "strike_window": window,
+        "updated_at": datetime.now().astimezone().isoformat(),
+        "provider": prov.name,
+        "items": items,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Background session GEX recorder (scheduler) — persists ticks without UI open
+# ---------------------------------------------------------------------------
+
+# Cash + major MCX names the Gamma desk charts. Each wake samples *all* due
+# in-session names (budgeted), not one round-robin pick — RR of 1 left CRUDE
+# with near-empty trails while NIFTY UI polls filled only the open desk.
+_GEX_HISTORY_SAMPLE_CANDIDATES = (
+    "NIFTY",
+    "BANKNIFTY",
+    "SENSEX",
+    "CRUDEOIL",
+    "NATURALGAS",
+    "GOLD",
+    "SILVER",
+)
+GEX_HISTORY_SAMPLE_INTERVAL_SEC = 60
+# Failures retry sooner than a full success interval so a bad tick does not
+# silence an underlying for a full minute while the desk is open.
+GEX_HISTORY_SAMPLE_FAIL_BACKOFF_SEC = 20
+# Cap work per scheduler wake so a slow MCX chain does not stall runners.
+GEX_HISTORY_SAMPLE_BUDGET_SEC = 50
+_gex_sample_last_ok: dict[str, float] = {}
+_gex_last_desk_underlying: str | None = None
+
+
+def default_gex_history_sample_underlyings() -> list[str]:
+    """Underlyings the scheduler records GEX for while their session is open."""
+    return [u for u in _GEX_HISTORY_SAMPLE_CANDIDATES if u in INDEX_OPTIONS]
+
+
+def note_gamma_desk_underlying(underlying: str) -> None:
+    """Remember the last underlying the Gamma Density UI charted (priority sample)."""
+    global _gex_last_desk_underlying
+    u = str(underlying or "").strip().upper()
+    if u:
+        _gex_last_desk_underlying = u
+
+
+def _prioritized_gex_sample_names(due: list[str]) -> list[str]:
+    """Desk-open underlying first, then majors, then remaining due names."""
+    due_set = set(due)
+    out: list[str] = []
+    desk = _gex_last_desk_underlying
+    if desk and desk in due_set:
+        out.append(desk)
+    for u in _GEX_HISTORY_SAMPLE_CANDIDATES:
+        if u in due_set and u not in out:
+            out.append(u)
+    for u in due:
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def maybe_sample_gex_history_periodic() -> bool:
+    """Scheduler hook: persist GEX ticks for every due in-session underlying.
+
+    Spot candles always cover the full session; GEX lines only exist where we
+    recorded samples. UI polls append for the open underlying; this hook must
+    cover the rest (especially MCX after cash close) or CRUDE shows a late
+    fragment only.
+
+    Samples all names whose last success is older than
+    ``GEX_HISTORY_SAMPLE_INTERVAL_SEC``, prioritized by last-viewed desk +
+    majors, within ``GEX_HISTORY_SAMPLE_BUDGET_SEC``. Never raises.
+    """
+    from options.gamma_density_history import in_session
+
+    now = datetime.now(tz=IST)
+    if now.weekday() >= 5:
+        return False
+
+    names = default_gex_history_sample_underlyings()
+    if not names:
+        return False
+
+    now_ts = time.time()
+    due = [
+        u
+        for u in names
+        if in_session(u, now)
+        and (now_ts - _gex_sample_last_ok.get(u, 0.0)) >= GEX_HISTORY_SAMPLE_INTERVAL_SEC
+    ]
+    if not due:
+        return False
+
+    ordered = _prioritized_gex_sample_names(due)
+    deadline = now_ts + GEX_HISTORY_SAMPLE_BUDGET_SEC
+    any_ok = False
+    sampled = 0
+    for underlying in ordered:
+        if sampled > 0 and time.time() >= deadline:
+            log_event(
+                _log,
+                logging.WARNING,
+                "gex_history_sample_budget",
+                sampled=sampled,
+                remaining=",".join(ordered[ordered.index(underlying) :]),
+            )
+            break
+        try:
+            # Persist tick only — skip candle fetch / reversal / display fill.
+            build_gamma_snapshot(
+                underlying,
+                include_multi_expiry=False,
+                include_vanna_strip=False,
+                include_history=True,
+                build_session_chart=False,
+            )
+            _gex_sample_last_ok[underlying] = time.time()
+            any_ok = True
+            sampled += 1
+        except Exception as exc:
+            # Short backoff — do not silence the name for a full success interval.
+            _gex_sample_last_ok[underlying] = (
+                time.time()
+                - GEX_HISTORY_SAMPLE_INTERVAL_SEC
+                + GEX_HISTORY_SAMPLE_FAIL_BACKOFF_SEC
+            )
+            log_event(
+                _log,
+                logging.WARNING,
+                "gex_history_sample_failed",
+                underlying=underlying,
+                error=str(exc),
+            )
+    return any_ok

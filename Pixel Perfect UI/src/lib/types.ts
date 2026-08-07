@@ -284,7 +284,9 @@ export type OiUnderlying =
   | "SENSEX"
   | "CRUDEOIL"
   | "CRUDEOILM"
-  | "NATURALGAS";
+  | "NATURALGAS"
+  | "GOLD"
+  | "SILVER";
 
 export interface OiTrackerConfig {
   underlyings: OiUnderlying[];
@@ -383,6 +385,105 @@ export interface OiMoversConfig {
   mcx_underlyings?: OiUnderlying[];
 }
 
+export interface OiMoversHistoryPoint {
+  t: string;
+  ts_ms?: number;
+  spot?: number | null;
+  ce_oi?: number | null;
+  pe_oi?: number | null;
+  /** Flat Open/PD CE baseline (session open preferred). */
+  ce_base_oi?: number | null;
+  /** Flat Open/PD PE baseline (session open preferred). */
+  pe_base_oi?: number | null;
+  pcr?: number | null;
+  base_source?: "open" | "prev_close" | string | null;
+  source?: string;
+}
+
+/** Last good in-window CAS tick (process memory) for outside-window desk display. */
+export interface CasIndicativeLast {
+  indicative: number | null;
+  spot?: number | null;
+  reference_limit_price?: number | null;
+  upper_circuit_limit?: number | null;
+  lower_circuit_limit?: number | null;
+  total_imbalance?: number | null;
+  source?: string;
+  asof?: string;
+}
+
+/** ATM synthetic future from nearest-expiry CE/PE (display-only on CAS desk). */
+export interface SyntheticFuture {
+  F: number;
+  atm_strike: number;
+  expiry: string;
+  ce_symbol?: string;
+  pe_symbol?: string;
+  ce_price?: number;
+  pe_price?: number;
+  ce_source?: "mid" | "ltp" | string;
+  pe_source?: "mid" | "ltp" | string;
+  price_source?: "mid" | "ltp" | "mixed" | string;
+  spot?: number | null;
+  basis_vs_spot?: number | null;
+  basis_vs_indicative?: number | null;
+  asof?: string;
+}
+
+/** Proxy / constituent components for the desk pre-close forecast. */
+export interface CasEstimateComponents {
+  synth_f?: number | null;
+  fut_ltp?: number | null;
+  ref_vwap?: number | null;
+  fut_poc?: number | null;
+  fut_symbol?: string | null;
+  ref_vwap_source?: string | null;
+  /** pre_close_1515 | running_1500 | session */
+  ref_vwap_window?: string | null;
+  weights?: Record<string, number>;
+  weights_used?: Record<string, number>;
+  clamped?: boolean;
+  clamp_low?: number | null;
+  clamp_high?: number | null;
+  constituent?: Record<string, unknown> | null;
+}
+
+export interface CasIndicative {
+  underlying: string;
+  in_cas_window: boolean;
+  spot: number | null;
+  /** Sanitized official Kite/NSE indicative (null when missing or fails spot sanity). */
+  indicative: number | null;
+  /** Same as indicative — sanitized official only. */
+  official_indicative?: number | null;
+  /** Desk pre-close forecast / proxy (primary hero when official is null). Not official CAS. */
+  estimate?: number | null;
+  estimate_components?: CasEstimateComponents | null;
+  estimate_method?: "proxy_v1" | "constituent_v1" | string | null;
+  reference_limit_price?: number | null;
+  upper_circuit_limit?: number | null;
+  lower_circuit_limit?: number | null;
+  total_imbalance?: number | null;
+  source: "kite_quote" | "unavailable" | string;
+  asof: string;
+  /** Present when API process saw a prior in-window indicative for this underlying. */
+  last?: CasIndicativeLast | null;
+  /** All-day futures volume POC (same helper as Gamma / OI Movers). */
+  session_poc?: SessionPoc | null;
+  /** Nearest-expiry ATM synth F = K + CE − PE. */
+  synthetic_future?: SyntheticFuture | null;
+}
+
+export interface SessionPoc {
+  poc: number;
+  fut_symbol?: string;
+  fut_token?: number;
+  bin_step?: number;
+  total_volume?: number;
+  asof?: string;
+  path?: Array<{ t: string; close: number; ts_ms?: number }>;
+}
+
 export interface OiMoversSnapshot {
   underlying: string;
   expiry: string;
@@ -401,12 +502,21 @@ export interface OiMoversSnapshot {
     call_oi_total: number;
     put_oi_total: number;
   };
+  ce_oi?: number;
+  pe_oi?: number;
+  ce_base_oi?: number | null;
+  pe_base_oi?: number | null;
+  base_source?: "open" | "prev_close" | string | null;
+  history?: OiMoversHistoryPoint[];
+  chart_series?: OiMoversHistoryPoint[];
   baseline?: {
     prefer: string;
     open_count: number;
     prev_close_count: number;
     total: number;
   };
+  cas?: CasIndicative | null;
+  session_poc?: SessionPoc | null;
 }
 
 export interface OiTrackerSnapshot {
@@ -623,8 +733,35 @@ export interface GammaConfig {
   sign_mode?: "naive" | "customer" | "oi_delta";
   hedge_moves_pts?: number[];
   multi_expiry_count?: number;
+  concentration_summary_window?: number;
+  concentration_summary_refresh_seconds?: number;
+  concentration_summary_underlyings?: OiUnderlying[];
   provider?: string;
   requires_session?: boolean;
+}
+
+export interface GammaConcentrationSummaryItem {
+  underlying: OiUnderlying | string;
+  expiry: string | null;
+  spot: number | null;
+  hhi: number | null;
+  band: GammaConcentrationBand | null;
+  pin_strike: number | null;
+  cliff_strike: number | null;
+  gini?: number | null;
+  shape_quadrant?: string | null;
+  hhi_percentile_30d?: number | null;
+  hhi_session_count?: number | null;
+  source?: "live" | "history" | "error" | string | null;
+  error?: string | null;
+}
+
+export interface GammaConcentrationSummary {
+  underlyings: string[];
+  strike_window: number;
+  updated_at: string;
+  provider?: string;
+  items: GammaConcentrationSummaryItem[];
 }
 
 export interface GammaStrikeRow {
@@ -642,6 +779,12 @@ export interface GammaStrikeRow {
   magnet?: number;
   ce_price_source?: string | null;
   pe_price_source?: string | null;
+  ce_oi_base?: number | null;
+  pe_oi_base?: number | null;
+  ce_doi?: number | null;
+  pe_doi?: number | null;
+  ce_oi_base_source?: "open" | "prev_close" | null;
+  pe_oi_base_source?: "open" | "prev_close" | null;
 }
 
 export interface GammaExpectedMove {
@@ -688,6 +831,14 @@ export interface GammaHistoryPoint {
   t: string;
   spot: number | null;
   total_gex: number | null;
+  /** Sum of +VE leg GEX (plotted green, Cr). */
+  pos_gex?: number | null;
+  /** Absolute sum of −VE leg GEX (plotted red, Cr). */
+  neg_gex?: number | null;
+  /** Minute candle volume when row comes from spot path. */
+  volume?: number | null;
+  /** ATM IV % when the history tick carried it (sparse on chart_series). */
+  atm_iv?: number | null;
   flip_level: number | null;
   gamma_regime?: string | null;
   hhi?: number | null;
@@ -700,10 +851,21 @@ export interface GammaHistoryPoint {
 export interface GammaReversal {
   t: string | null;
   ts_ms?: number | null;
+  /** First TF bar where min_move cleared (IST ISO), not wall-clock accept time. */
+  confirmed_at?: string | null;
+  confirmed_ts_ms?: number | null;
   spot: number;
   side: "bullish" | "bearish";
   move_pts: number;
   gex_confirm: boolean;
+  /** True when pivot is before mid-session GEX recording (shown muted, no GEX gate). */
+  partial_ungated?: boolean;
+  /** Live: price pivot shown before GEX/OI hard gate; muted until promoted. */
+  provisional?: boolean;
+  oi_align?: boolean;
+  /** Hard OI gate: true=supportive, false=hostile/unsupported, null=oi_unknown. */
+  oi_gate_pass?: boolean | null;
+  tf?: "1m" | "5m" | "15m" | string;
   label: string;
 }
 
@@ -714,6 +876,13 @@ export interface GammaVannaStrip {
 }
 
 export type GammaConcentrationBand = "concentrated" | "mixed" | "diffuse";
+
+export interface GammaTopContributor {
+  strike: number;
+  share: number;
+  net_gex: number;
+  side_bias: "call" | "put" | "mixed" | string;
+}
 
 export interface GammaConcentration {
   hhi: number | null;
@@ -727,6 +896,22 @@ export interface GammaConcentration {
   pin_share: number | null;
   pin_stable: boolean | null;
   pin_stability_pct: number | null;
+  call_hhi?: number | null;
+  put_hhi?: number | null;
+  /** Strike-level Gini of |GEX| shares (inequality; not concentration). */
+  gini?: number | null;
+  call_gini?: number | null;
+  put_gini?: number | null;
+  /** Ávila HHI×Gini label, e.g. unequal-dispersed. */
+  shape_quadrant?: string | null;
+  top_contributors?: GammaTopContributor[];
+  cliff_strike?: number | null;
+  hhi_session_mean?: number | null;
+  hhi_percentile_intraday?: number | null;
+  /** Percentile of current HHI among last ~30 trading-day (session) HHIs. */
+  hhi_percentile_30d?: number | null;
+  /** Number of trading days in the 30d percentile sample. */
+  hhi_session_count?: number | null;
 }
 
 export interface GammaConviction {
@@ -743,6 +928,30 @@ export interface GammaMarketRead {
   levels_line: string;
 }
 
+export interface GammaMomentumComponents {
+  gex: number;
+  squeeze: number;
+  oi_flow: number;
+  iv: number;
+  structure: number;
+}
+
+export interface GammaMomentum {
+  score: number;
+  label: "bullish" | "neutral" | "bearish" | string;
+  components: GammaMomentumComponents;
+  drivers: string[];
+}
+
+export interface GammaReferenceLevels {
+  prev_day_high?: number | null;
+  prev_day_low?: number | null;
+  prev_day_close?: number | null;
+  prev_week_high?: number | null;
+  prev_week_low?: number | null;
+  prev_week_close?: number | null;
+}
+
 export interface GammaSnapshot {
   underlying: OiUnderlying;
   expiry: string;
@@ -753,6 +962,10 @@ export interface GammaSnapshot {
   atm_iv: number | null;
   total_gex: number;
   total_gex_cr?: number;
+  pos_gex?: number;
+  neg_gex?: number;
+  pos_gex_cr?: number;
+  neg_gex_cr?: number;
   gamma_regime: "positive" | "negative";
   sign_mode?: string;
   dividend_yield?: number;
@@ -776,16 +989,43 @@ export interface GammaSnapshot {
   vanna_strip?: GammaVannaStrip | null;
   concentration?: GammaConcentration | null;
   conviction?: GammaConviction | null;
+  momentum?: GammaMomentum | null;
   market_read?: GammaMarketRead | null;
+  reference_levels?: GammaReferenceLevels | null;
   history?: GammaHistoryPoint[];
   chart_series?: GammaHistoryPoint[];
   reversals?: GammaReversal[];
+  /**
+   * True when Require GEX was ON but the gate was relaxed / hybrid:
+   * Research+sparse, or mid-session GEX recording (partial history).
+   */
+  reversals_gex_relaxed?: boolean;
+  /** True when Require GEX was ON, Live mode, complete history still sparse — GEX confirm waits; provisional pivots may still show. */
+  reversals_gex_waiting?: boolean;
+  /** Usable session GEX ticks counted toward the min-samples gate. */
+  reversals_gex_samples?: number;
+  /** Min usable GEX ticks before the hard gate applies (default 5). */
+  reversals_gex_min_samples?: number;
+  /** Echo of sparse-GEX policy: live | research. */
+  reversal_gex_mode?: "live" | "research" | string;
+  /** ISO timestamp of the first persisted GEX sample today (if any). */
+  gex_history_started_at?: string | null;
+  /** True when first GEX sample is well after session open (or history empty). */
+  gex_history_partial?: boolean;
+  /** Count of usable session GEX history ticks. */
+  gex_history_points?: number;
   chain_legs_quoted: number;
   chain_legs_total: number;
   strike_window: number;
   convexity_zones: GammaConvexityZone[];
   strikes: GammaStrikeRow[];
   provider?: string;
+  oi_baseline_mode?: "session_open" | "prev_close" | string;
+  oi_baseline_note?: string | null;
+  oi_baseline_open_count?: number;
+  oi_baseline_prev_close_count?: number;
+  cas?: CasIndicative | null;
+  session_poc?: SessionPoc | null;
 }
 
 export interface VannaConfig {
@@ -1152,61 +1392,6 @@ export interface ArbitrageSnapshot {
   updated_at: string;
 }
 
-export type StraddleWatchRange = "1D" | "5D" | "30D";
-
-export interface StraddleWatchConfig {
-  underlyings: OiUnderlying[];
-  ranges: StraddleWatchRange[];
-  mode: "latest";
-  note?: string;
-}
-
-export interface StraddleWatchSummary {
-  fut_symbol?: string;
-  fut_tradingsymbol?: string;
-  fut_ltp?: number | null;
-  fut_chg?: number | null;
-  fut_chg_pct?: number | null;
-  asof?: string;
-  fair_price?: number | null;
-  fair_chg?: number | null;
-  fair_chg_pct?: number | null;
-  lot_size?: number;
-  iv?: number | null;
-  ivr?: number | null;
-  ivp?: number | null;
-  max_pain?: number | null;
-  pcr?: number | null;
-  straddle_ltp?: number | null;
-  straddle_bs?: number | null;
-  spot?: number | null;
-}
-
-export interface StraddleWatchSeries {
-  t: string[];
-  call_price: Array<number | null>;
-  put_price: Array<number | null>;
-  straddle_price: Array<number | null>;
-  straddle_vwap: Array<number | null>;
-  call_oi: Array<number | null>;
-  put_oi: Array<number | null>;
-  iv: Array<number | null>;
-}
-
-export interface StraddleWatchSnapshot {
-  ok: boolean;
-  mode: "latest";
-  underlying: OiUnderlying | string;
-  expiry: string;
-  call_strike: number;
-  put_strike: number;
-  atm_strike?: number;
-  range: StraddleWatchRange;
-  summary: StraddleWatchSummary;
-  series: StraddleWatchSeries;
-  updated_at?: string;
-}
-
 export type OiProfileUnderlying = "NIFTY" | "BANKNIFTY" | "FINNIFTY" | "SENSEX";
 export type OiProfileInterval = "1min" | "5min" | "15min";
 
@@ -1335,7 +1520,8 @@ export interface LatencyRow {
   error: string | null;
 }
 
-export type RollingUnderlying = "NIFTY" | "BANKNIFTY" | "SENSEX" | "CRUDEOIL" | "CRUDEOILM" | "NATURALGAS";
+export type RollingUnderlying =
+  "NIFTY" | "BANKNIFTY" | "SENSEX" | "CRUDEOIL" | "CRUDEOILM" | "NATURALGAS";
 export type ReentryStyle = "zone_active" | "edge_only";
 export type TradeMode = "Both" | "LongOnly" | "ShortOnly" | "ShortSignalsOnly";
 export type OrderSizeMode = "lots" | "qty";
@@ -1564,24 +1750,13 @@ export interface SurvivorLogEntry {
 }
 
 export type PremiumBookStructure =
-  | "bull_put"
-  | "bear_call"
-  | "long_call"
-  | "long_put"
-  | "bull_call"
-  | "bear_put"
-  | "long_strangle";
+  "bull_put" | "bear_call" | "long_call" | "long_put" | "bull_call" | "bear_put" | "long_strangle";
 
 export type PremiumBookTradeBias = "sell_premium" | "buy_hold";
 /** @deprecated use trade_bias */
 export type PremiumBookSide = "sell" | "buy";
 
-export type PremiumBookUnderlying =
-  | "NIFTY"
-  | "BANKNIFTY"
-  | "SENSEX"
-  | "CRUDEOIL"
-  | "CRUDEOILM";
+export type PremiumBookUnderlying = "NIFTY" | "BANKNIFTY" | "SENSEX" | "CRUDEOIL" | "CRUDEOILM";
 
 export interface PremiumBookConfig {
   underlying: PremiumBookUnderlying;
@@ -1735,13 +1910,7 @@ export interface WaveLogEntry {
 
 export type RrgQuadrant = "leading" | "weakening" | "lagging" | "improving";
 
-export type FpiConfluence =
-  | "aligned"
-  | "divergence"
-  | "watch"
-  | "contrarian"
-  | "neutral"
-  | "n/a";
+export type FpiConfluence = "aligned" | "divergence" | "watch" | "contrarian" | "neutral" | "n/a";
 
 export interface RrgFpiRow {
   fpi_sector: string;
@@ -1842,10 +2011,7 @@ export interface AnalogueConfig {
   max_analogue_paths: number;
   refresh_seconds: number;
   expiry_weekday_cutover?: string;
-  expiry_weekdays?: Record<
-    string,
-    { before: string; on_or_after_cutover: string; note?: string }
-  >;
+  expiry_weekdays?: Record<string, { before: string; on_or_after_cutover: string; note?: string }>;
   note?: string;
 }
 
@@ -2002,4 +2168,150 @@ export interface PricingDeskSnapshot {
 export interface PricingCalcResult {
   bs: Record<string, number | string | null>;
   heston?: Record<string, number | null> | null;
+}
+
+/** IV vs GARCH-forecast realized vol desk — GET /dashboard/iv-vs-garch/{config,data} */
+export type IvGarchUnderlying = "NIFTY" | "BANKNIFTY";
+
+export interface IvGarchThresholds {
+  rich_above: number;
+  cheap_below: number;
+}
+
+export interface IvGarchConfig {
+  underlyings: IvGarchUnderlying[];
+  history_days: number;
+  fit_years: number;
+  refresh_seconds: number;
+  thresholds: IvGarchThresholds;
+  signals: { rich: string; cheap: string; neutral: string };
+}
+
+export interface IvGarchHistoryPoint {
+  date: string;
+  iv: number;
+  garch_forecast: number;
+  spread: number;
+}
+
+export interface IvGarchAtmLeg {
+  tradingsymbol: string;
+  last_price: number | null;
+  iv: number | null;
+  error?: string;
+}
+
+export interface IvGarchAtm {
+  expiry: string;
+  spot: number;
+  atm_strike: number;
+  days_to_expiry: number;
+  ce: IvGarchAtmLeg | null;
+  pe: IvGarchAtmLeg | null;
+  atm_iv: number;
+  leg_errors: string[] | null;
+}
+
+export interface IvGarchModel {
+  spec: string;
+  observations: number;
+  sample_start: string;
+  sample_end: string;
+  omega: number;
+  alpha: number;
+  beta: number;
+  persistence: number;
+  long_run_vol: number | null;
+  log_likelihood: number;
+}
+
+export interface IvGarchHistoryMeta {
+  iv_history_source: string;
+  iv_history_scale: number;
+  days: number;
+  mean_spread: number;
+  latest_history_spread: number;
+  latest_history_date: string;
+  latest_spread_percentile: number | null;
+}
+
+export interface IvGarchSnapshot {
+  instrument: IvGarchUnderlying;
+  current_iv: number;
+  garch_forecast_vol: number;
+  spread: number;
+  signal: string;
+  history: IvGarchHistoryPoint[];
+  thresholds: IvGarchThresholds;
+  atm: IvGarchAtm;
+  garch: IvGarchModel;
+  history_meta: IvGarchHistoryMeta;
+  notes: string[];
+  updated_at: string;
+}
+
+/** Expiry Calendar — GET /expiry-calendar */
+export type ExpiryCalInstrumentFilter = "all" | "opt" | "fut";
+export type ExpiryCalKindFilter = "all" | "weekly" | "monthly";
+export type ExpiryCalAssetClass = "all" | "indices" | "stocks" | "commodities";
+export type ExpiryCalExchange = "NFO" | "BFO" | "MCX";
+
+export interface ExpiryCalConfig {
+  supported_exchanges: ExpiryCalExchange[];
+  default_exchanges: ExpiryCalExchange[];
+  segment_map: Record<string, ExpiryCalExchange>;
+  instrument_filters: ExpiryCalInstrumentFilter[];
+  kind_filters: ExpiryCalKindFilter[];
+  asset_class_filters: ExpiryCalAssetClass[];
+  index_underlyings: string[];
+}
+
+export interface ExpiryCalItem {
+  exchange: ExpiryCalExchange | string;
+  segment: string;
+  underlying: string;
+  label: string;
+  instrument_family: "OPT" | "FUT" | string;
+  instrument_types: string[];
+  has_fut_same_day: boolean;
+  expiry: string;
+  expiry_kind: "weekly" | "monthly" | string;
+  lot_size: number;
+  contract_count: number;
+  strike_min: number | null;
+  strike_max: number | null;
+  color_key: string;
+  asset_class?: ExpiryCalAssetClass | string;
+}
+
+export interface ExpiryCalDay {
+  date: string;
+  expiries: ExpiryCalItem[];
+}
+
+export interface ExpiryCalUnderlying {
+  underlying: string;
+  exchange: string;
+  label: string;
+  color_key: string;
+  asset_class?: ExpiryCalAssetClass | string;
+  expiry_dates: string[];
+}
+
+export interface ExpiryCalMonthBoard {
+  as_of: string;
+  year: number;
+  month: number;
+  exchanges: string[];
+  instrument: string;
+  kind: string;
+  asset_class?: string;
+  q: string;
+  instruments_cache_updated: string | null;
+  instruments_cache_fresh: boolean;
+  days: ExpiryCalDay[];
+  underlyings: ExpiryCalUnderlying[];
+  day_count: number;
+  expiry_row_count: number;
+  month_days: number;
 }

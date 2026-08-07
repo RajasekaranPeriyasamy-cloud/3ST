@@ -11,6 +11,9 @@ import type {
   OiUnderlying,
 } from "@/lib/types";
 
+import { CasChip } from "@/components/CasChip";
+import { OiMoversSessionPlotly } from "@/components/oi/OiMoversSessionPlotly";
+import { ReportPageDownload } from "@/components/ReportPageDownload";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -131,14 +134,17 @@ function OiMoversPage() {
   }, [autoRefresh, refreshSec, expiry, authError, fetchSnapshot]);
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Highest OI Increase / Decrease
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          CE and PE ranked by OI change from session open (or previous-day close) to current.
-        </p>
+    <div className="report-page mx-auto flex max-w-7xl flex-col gap-6">
+      <header className="report-controls flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Highest OI Increase / Decrease
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            CE and PE ranked by OI change from session open (or previous-day close) to current.
+          </p>
+        </div>
+        <ReportPageDownload title="OI_Movers" />
       </header>
 
       {authError && (
@@ -271,8 +277,19 @@ function OiMoversPage() {
         <>
           <p className="text-sm text-muted-foreground">
             <ArrowLeftRight className="mr-1 inline h-4 w-4" />
-            {snapshot.underlying} · expiry {snapshot.expiry} · spot {snapshot.spot.toFixed(2)} · ATM{" "}
-            {snapshot.atm_strike} · updated {new Date(snapshot.updated_at).toLocaleTimeString()}
+            {snapshot.underlying} · expiry {snapshot.expiry} · spot {snapshot.spot.toFixed(2)}
+            <CasChip cas={snapshot.cas} spot={snapshot.spot} />
+            {snapshot.session_poc?.poc != null ? (
+              <>
+                {" · "}
+                Fut POC{" "}
+                <span className="font-mono font-semibold text-violet-700 dark:text-violet-400">
+                  {snapshot.session_poc.poc.toFixed(2)}
+                </span>
+              </>
+            ) : null}
+            {" · "}ATM {snapshot.atm_strike} · updated{" "}
+            {new Date(snapshot.updated_at).toLocaleTimeString()}
             {snapshot.baseline ? (
               <>
                 {" · "}
@@ -282,6 +299,8 @@ function OiMoversPage() {
             ) : null}
             {snapshot.spot_warning ? ` · ${snapshot.spot_warning}` : ""}
           </p>
+
+          <OiMoversSessionPlotly snap={snapshot} />
 
           <OiChangeBoardsSection
             underlying={snapshot.underlying}
