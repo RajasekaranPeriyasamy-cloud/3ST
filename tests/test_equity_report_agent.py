@@ -56,8 +56,9 @@ class _FakeClient:
         self.beta = None
 
 
-def _cfg(stub: bool = False):
+def _cfg(stub: bool = False, provider: str = "anthropic"):
     return {
+        "provider": provider,
         "model": "claude-opus-5",
         "effort": "high",
         "daily_usd_cap": 0.0,

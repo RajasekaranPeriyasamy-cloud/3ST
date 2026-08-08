@@ -18,3 +18,5 @@ pytest>=8.0.0
 mibian>=0.1.3
 cryptography>=42.0.0
 anthropic>=0.116.0
+# Equity Report alternate provider; >=2.3.0 for the Interactions API
+google-genai>=2.3.0

@@ -787,6 +787,8 @@ def health() -> dict[str, Any]:
     from settings import (
         anthropic_ready,
         env,
+        equity_report_config,
+        equity_report_ready,
         kite_allowed_egress_ip,
         kite_use_staticip_proxy,
         proxy_ready,
@@ -828,6 +830,8 @@ def health() -> dict[str, Any]:
         **analytics_scheduler_status(),
         **report_runner_status(),
         "anthropic_ready": anthropic_ready(),
+        "equity_report_provider": equity_report_config()["provider"],
+        "equity_report_ready": equity_report_ready(),
     }
 
 
@@ -1080,11 +1084,15 @@ def options_spread_preview_directions(body: SpreadConfigIn) -> dict[str, Any]:
 @app.get("/equity/reports")
 def equity_reports_list(limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
     from analysis.equity_report.agent import stub_mode
-    from settings import anthropic_ready
+    from settings import equity_report_config, equity_report_ready
 
+    cfg = equity_report_config()
     return {
         "jobs": equity_store.list_jobs(limit=limit),
-        "anthropic_ready": anthropic_ready(),
+        # anthropic_ready is kept as the "provider is configured" flag the UI
+        # already reads; provider says which backend that refers to.
+        "anthropic_ready": equity_report_ready(),
+        "provider": cfg["provider"],
         "stub_mode": stub_mode(),
         **equity_store.cap_status(),
     }

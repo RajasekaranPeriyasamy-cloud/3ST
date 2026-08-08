@@ -36,7 +36,7 @@ Do not restate docs content into a second location — edit the source file and 
 - **Static-IP egress for orders.** Kite whitelists a fixed IP for order placement (data reads are unrestricted). 3ST supports both a direct bind (`KITE_ALLOWED_EGRESS_IP`) and a `staticip.in` proxy (`KITE_USE_STATICIP_PROXY`). Whitelist updates on developers.kite.trade are capped at once per calendar week — misconfiguring this has blocked live orders for days at a time (see CONVERSATION_SUMMARY, 2026-07-15 sessions). Verify via `GET /health` → `kite_egress_mode`.
 - **Kite tokens expire ~6 AM IST daily** — expect a re-login every trading day.
 - Secrets: `.env` (API key/secret, egress IP, proxy creds) and all session/state files under `data/` are gitignored except `data/fpi_sectors_seed.json` (an intentional offline fallback seed). Never commit `access_token*` or `.kite_session.json`.
-- **`ANTHROPIC_API_KEY`** (added 2026-08-07) is used by the Equity Report desk only and spends money per report. `EQUITY_REPORT_DAILY_USD_CAP` (default $10) refuses to queue a new report once today's accumulated cost crosses it; `EQUITY_REPORT_STUB=1` returns canned reports so the UI can be worked on with zero spend. Leaving the key blank disables the desk cleanly — the page says so rather than failing obscurely.
+- **LLM credentials for the Equity Report desk only.** `EQUITY_REPORT_PROVIDER` selects `anthropic` (default) or `gemini`; each reads its own key (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`). Anthropic spends money per report — `EQUITY_REPORT_DAILY_USD_CAP` (default $10) refuses to queue a new report once today's accumulated cost crosses it. `EQUITY_REPORT_STUB=1` returns canned reports so the UI can be worked on with zero spend. A blank key disables the desk cleanly — the page says so rather than failing obscurely.
 
 ## Development Environment Setup
 
@@ -95,11 +95,13 @@ execution/      ~30 modules: 5 parallel runners (Rolling Straddle, Watchlist/Liv
                   until a runner is migrated to call order_router.submit_intent().
 options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG, etc.)
                 — analysis/equity_report/ (added 2026-08-07): the only module that calls an
-                  LLM. Runs the vendored `india-equity-report` prompt against the Anthropic
-                  API with the web_search/web_fetch server tools to produce NSE/BSE research
-                  reports. Its own daemon thread (runner.py), its own JSON stores, and no
-                  imports from broker/ execution/ risk/ — a slow model call must never be
-                  able to delay an order-placing tick.
+                  LLM. Runs the vendored `india-equity-report` prompt to produce NSE/BSE
+                  research reports. Its own daemon thread (runner.py), its own JSON stores,
+                  and no imports from broker/ execution/ risk/ — a slow model call must
+                  never be able to delay an order-placing tick.
+                  Two backends behind one generate_report(): agent.py (Anthropic,
+                  web_search + web_fetch) and gemini_backend.py (Gemini Interactions API).
+                  See "Equity Report providers" below before touching either.
 strategy_3st.py, backtest_engine.py   Core indicator + backtest engine
 tests/          40+ pytest files — good coverage of strategy parity, risk limits,
                 reconcile, bar-churn, exit-grace edge cases
@@ -126,6 +128,53 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | `equity_pins.json` | `analysis/equity_report/pins.py` |
 
 There is no single source of truth across runners for "what legs are open" today — that's exactly the gap `position_ledger.py` exists to close, once runners migrate to it.
+
+## Equity Report providers
+
+`EQUITY_REPORT_PROVIDER` picks the backend; both satisfy the same
+`generate_report()` contract and share the prompt, the `sources.py` allowlist,
+the store, the runner and the page.
+
+| | `anthropic` (default) | `gemini` |
+| --- | --- | --- |
+| Search | `web_search` server tool | **none** — see below |
+| Fetch | `web_fetch` server tool | `url_context` |
+| Continuation | `pause_turn` re-send | `previous_interaction_id` on `status: incomplete` |
+| Cost | ~$1–3/report (unmeasured) | free tier, recorded as $0.00 |
+
+**Gemini has no search.** Measured 2026-08-08 on a free-tier key: plain generation
+and `url_context` both work, but `google_search` grounding 429s — it sits behind a
+separate quota the free tier doesn't grant. `EQUITY_REPORT_GEMINI_SEARCH` exists to
+turn it on if you get a plan that includes it; leave it `0` otherwise or every
+report fails.
+
+That is survivable because `sources.seed_urls()` templates the canonical URLs per
+ticker, so search was only ever doing *discovery*. What is genuinely lost: recent
+news, credit ratings, and analyst consensus. The prompt addendum tells the model to
+mark those "not available in this run" instead of inventing them.
+
+**The anti-hallucination backstop lives in `gemini_backend.generate_report_gemini`:**
+`url_context_result` reports per-URL success/failure, and if *nothing* fetched the
+function raises rather than returning a report whose every number came from model
+memory. Several finance sites (Trendlyne, observed) block automated retrieval, so
+partial failure is normal and expected.
+
+**Model choice matters more than usual.** Measured against the report template
+(RELIANCE, same prompt, `thinking_level: high`):
+
+| model | time | words | mandatory sections |
+| --- | --- | --- | --- |
+| `gemini-3.1-flash-lite` | 20s | 1,045 | 3/6 |
+| `gemini-3.5-flash-lite` (default) | 46s | 3,406 | 5/6 |
+| `gemini-3.5-flash` | 194s | 5,311 | 5/6 |
+| `gemini-3.6-flash` | 88s | 5,775 | 5/6 |
+
+Flash-Lite 3.1 drops the Bull/Base/Bear table and the split verdict — both mandatory
+in the skill's rubric — which is why the default is 3.5-flash-lite despite being
+slower.
+
+Gemini needs `google-genai >= 2.3.0` for the Interactions API (`client.interactions.create`);
+the older `generate_content` surface does not carry these tools.
 
 ## Runtime Constraints
 

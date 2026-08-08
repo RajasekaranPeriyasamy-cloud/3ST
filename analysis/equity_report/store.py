@@ -53,8 +53,15 @@ def _body_path(job_id: str):
 
 
 def estimate_cost_usd(usage: dict[str, Any] | None, model: str) -> float:
-    """Cost of one report from an Anthropic ``usage`` block."""
+    """Cost of one report from an Anthropic ``usage`` block.
+
+    Gemini reports run on a free-tier key and are recorded as $0.00. That is
+    accurate today but would silently under-report on a paid Gemini plan — add a
+    rate entry here before moving this desk onto one.
+    """
     if not usage:
+        return 0.0
+    if model.startswith("gemini") or model == "stub":
         return 0.0
     rate_in, rate_out = _RATES.get(model, _DEFAULT_RATE)
     per_token_in = rate_in / 1_000_000

@@ -330,6 +330,21 @@ def generate_report(
         return _stub_result(ticker, company)
 
     cfg = equity_report_config()
+
+    if cfg["provider"] == "gemini":
+        # Imported here so the Anthropic path never pulls in google-genai, and to
+        # keep the two backends from importing each other at module load.
+        from .gemini_backend import generate_report_gemini
+
+        return generate_report_gemini(
+            ticker=ticker,
+            company=company,
+            exchange=exchange,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+            client=client,
+        )
+
     client = client or _client()
 
     messages: list[dict[str, Any]] = [
