@@ -2,7 +2,7 @@
 
 Python trading core for **Triple HA SuperTrend + ADX** (EMA200 removed) with:
 
-- **FastAPI** backend for Lovable / React UI — [docs/LOVABLE_UI_SPEC.md](docs/LOVABLE_UI_SPEC.md)
+- **FastAPI** backend for the React desk UI — `Pixel Perfect UI/`
 - **Zerodha Kite Connect** auth, historical backtests, ARM/DISARM — [docs/KITE_SETUP.md](docs/KITE_SETUP.md)
 - **Yahoo Finance** fallback backtests (no broker login)
 - Legacy **Streamlit** UI: `streamlit run app.py`
@@ -33,12 +33,24 @@ uvicorn api.main:app --reload --host 127.0.0.1 --port 8001
 
 See **`docs/CONVERSATION_SUMMARY.md`** for Rolling Straddle, paper trading, and recent fixes.
 
-## Lovable UI
+## Desk UI
 
-1. Open Lovable and paste the prompt from [docs/LOVABLE_UI_SPEC.md](docs/LOVABLE_UI_SPEC.md)
-2. Set `VITE_API_BASE_URL=http://127.0.0.1:8000`
-3. Sync to GitHub → place under `web/`
-4. Never put `KITE_API_SECRET` in the frontend
+React 19 + Vite 8 + Tailwind 4 + TanStack Router, in `Pixel Perfect UI/`.
+
+```bash
+cd "Pixel Perfect UI"
+npm install
+npm run dev     # http://127.0.0.1:8080, calls the API on :8001
+```
+
+To serve it from FastAPI on :8001 instead, **stop the API**, then:
+
+```bash
+npm run build   # -> Pixel Perfect UI/.output/public
+```
+
+Never put `KITE_API_SECRET` in the frontend or any `VITE_*` variable — anything
+prefixed `VITE_` is compiled into the public bundle.
 
 ## Layout
 

@@ -1,6 +1,15 @@
+> ⚠️ **HISTORICAL — superseded, do not follow as instructions.**
+>
+> This was the original prompt used to generate the first version of the UI with
+> Lovable. The project no longer uses Lovable (removed 2026-08-08 — see
+> [UI_LOVABLE_EXIT_PLAN.md](UI_LOVABLE_EXIT_PLAN.md)), and the real UI in
+> `Pixel Perfect UI/` has long since diverged: 29 routes, TanStack Router (not
+> React Router), Highcharts/Plotly, and the API on **:8001** (not :8000).
+>
+> Kept only as a record of the original screen-by-screen intent. For current
+> conventions see `Pixel Perfect UI/AGENTS.md`.
+
 # Lovable AI — UI build prompt / screen spec for 3ST Kite Algo Platform
-# Paste this into Lovable to generate the React + Vite + Tailwind frontend.
-# Point VITE_API_BASE_URL to http://127.0.0.1:8000 (Python FastAPI).
 # NEVER put KITE_API_SECRET in the frontend.
 
 ## Product

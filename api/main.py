@@ -1,4 +1,4 @@
-"""FastAPI backend for Lovable UI + Kite Connect algo platform."""
+"""FastAPI backend for the Pixel Perfect UI + Kite Connect algo platform."""
 
 from __future__ import annotations
 
@@ -223,8 +223,10 @@ app.add_middleware(
         "http://127.0.0.1:8080",
         "http://localhost:8081",
         "http://127.0.0.1:8081",
-        "https://*.lovable.app",
-        "https://*.lovable.dev",
+        # NOTE: the trailing "*" makes every entry above redundant — Starlette
+        # echoes any Origin back once a wildcard is present, so this is effectively
+        # "allow all", including with credentials. Left as-is to avoid changing
+        # request behaviour during the UI build migration; tighten separately.
         "*",
     ],
     allow_credentials=True,
