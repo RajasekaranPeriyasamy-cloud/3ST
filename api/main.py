@@ -28,6 +28,14 @@ from config import (
     TIMEFRAMES,
     YAHOO_MAX_DAYS,
 )
+from analysis.equity_report import pins as equity_pins
+from analysis.equity_report import store as equity_store
+from analysis.equity_report.runner import (
+    notify_job_queued,
+    report_runner_status,
+    start_report_runner,
+    stop_report_runner,
+)
 from execution.arming import arm, disarm, get_arm_state, set_mode
 from execution.rolling_straddle import close_all, close_leg, adopt_leg, unlink_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
 from execution.rolling_straddle_store import get_config as rs_get_config
@@ -167,6 +175,7 @@ async def _lifespan(app: FastAPI):
     load_persisted_state()
     start_scheduler()
     start_analytics_scheduler()
+    start_report_runner()
     threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
     await start_ltp_feed()
     try:
@@ -200,6 +209,7 @@ async def _lifespan(app: FastAPI):
     await stop_ltp_feed()
     stop_scheduler()
     stop_analytics_scheduler()
+    stop_report_runner()
 
 
 app = FastAPI(title="3ST Kite Algo API", version="0.2.0", lifespan=_lifespan)
@@ -623,6 +633,18 @@ class PricingCalculateIn(BaseModel):
     heston_overrides: dict[str, float] | None = None
 
 
+class EquityReportIn(BaseModel):
+    ticker: str
+    company: str = ""
+    exchange: str = "NSE"
+
+
+class EquityPinIn(BaseModel):
+    symbol: str
+    company: str = ""
+    exchange: str = "NSE"
+
+
 def _err(e: Exception, status: int = 400) -> HTTPException:
     return HTTPException(status_code=status, detail=friendly_kite_message(str(e)))
 
@@ -762,7 +784,13 @@ def health() -> dict[str, Any]:
 
     from instruments import cache_status
     from kite_auth import kite_egress_status
-    from settings import env, kite_allowed_egress_ip, kite_use_staticip_proxy, proxy_ready
+    from settings import (
+        anthropic_ready,
+        env,
+        kite_allowed_egress_ip,
+        kite_use_staticip_proxy,
+        proxy_ready,
+    )
 
     egress = kite_egress_status()
     proxy_on = egress["mode"] == "staticip_proxy"
@@ -798,6 +826,8 @@ def health() -> dict[str, Any]:
         "spread_templates": list(SPREAD_TEMPLATES.keys()),
         "st_methods": ["heikin_ashi", "regular", "hybrid"],
         **analytics_scheduler_status(),
+        **report_runner_status(),
+        "anthropic_ready": anthropic_ready(),
     }
 
 
@@ -1035,6 +1065,97 @@ def options_spread_preview_directions(body: SpreadConfigIn) -> dict[str, Any]:
         )
     except HTTPException:
         raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+# --------------------------------------------------------------------------- #
+# Equity Report desk (/equity-report)
+#
+# Research only — these endpoints never place, cancel, or read orders. Report
+# generation is handed to the background runner because it takes minutes.
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/equity/reports")
+def equity_reports_list(limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
+    from analysis.equity_report.agent import stub_mode
+    from settings import anthropic_ready
+
+    return {
+        "jobs": equity_store.list_jobs(limit=limit),
+        "anthropic_ready": anthropic_ready(),
+        "stub_mode": stub_mode(),
+        **equity_store.cap_status(),
+    }
+
+
+@app.post("/equity/reports")
+def equity_reports_create(body: EquityReportIn) -> dict[str, Any]:
+    try:
+        job = equity_store.create_job(
+            ticker=body.ticker, company=body.company, exchange=body.exchange
+        )
+    except ValueError as e:
+        raise _err(e, 400) from e
+    except RuntimeError as e:
+        # Daily spend cap, or a report for this ticker already queued/running.
+        status = 429 if "cap" in str(e).lower() else 409
+        raise HTTPException(status_code=status, detail=str(e)) from e
+    notify_job_queued()
+    return job
+
+
+@app.get("/equity/reports/{job_id}")
+def equity_report_get(job_id: str) -> dict[str, Any]:
+    job = equity_store.get_job(job_id, with_body=True)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No report job {job_id}")
+    return job
+
+
+@app.post("/equity/reports/{job_id}/cancel")
+def equity_report_cancel(job_id: str) -> dict[str, Any]:
+    job = equity_store.cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No report job {job_id}")
+    return job
+
+
+@app.delete("/equity/reports/{job_id}")
+def equity_report_delete(job_id: str) -> dict[str, Any]:
+    if not equity_store.delete_job(job_id):
+        raise HTTPException(status_code=404, detail=f"No report job {job_id}")
+    return {"deleted": job_id}
+
+
+@app.get("/equity/pins")
+def equity_pins_list() -> dict[str, Any]:
+    return {"pins": equity_pins.list_pins()}
+
+
+@app.post("/equity/pins")
+def equity_pins_add(body: EquityPinIn) -> dict[str, Any]:
+    try:
+        pin = equity_pins.add_pin(body.symbol, body.company, body.exchange)
+    except ValueError as e:
+        raise _err(e, 400) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return {"pin": pin, "pins": equity_pins.list_pins()}
+
+
+@app.delete("/equity/pins/{symbol}")
+def equity_pins_remove(symbol: str) -> dict[str, Any]:
+    if not equity_pins.remove_pin(symbol):
+        raise HTTPException(status_code=404, detail=f"{symbol} is not pinned")
+    return {"removed": symbol.upper(), "pins": equity_pins.list_pins()}
+
+
+@app.post("/equity/pins/import-watchlist")
+def equity_pins_import_watchlist() -> dict[str, Any]:
+    try:
+        return equity_pins.import_from_watchlist()
     except Exception as e:
         raise _err(e) from e
 

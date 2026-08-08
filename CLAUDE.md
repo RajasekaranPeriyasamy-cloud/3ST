@@ -13,6 +13,7 @@ This file provides guidance to Claude (Claude Code / Cowork) when working with c
 | Premium Book | `/premium-book` | `execution/premium_book_runner.py` |
 | Live Desk / Watchlist | `/live` | `execution/watchlist_activation.py`, `watchlist_exit_runner.py` |
 | Algo Execution (taskbar) | `/execution` | `execution/execution_queue.py` |
+| Equity Report | `/equity-report` | `analysis/equity_report/` |
 | RRG, OI Tracker, OI VAR, Gamma Density, Vanna Exposure, Vol Surface, IV Smile, Pricing Engine, Calendar Arb, OI Profile, Analogue Paths | various | `analysis/`, `options/` |
 
 Legacy **Streamlit** UI (`app.py`) still exists but is not actively developed — treat `Pixel Perfect UI` + FastAPI as canonical.
@@ -35,6 +36,7 @@ Do not restate docs content into a second location — edit the source file and 
 - **Static-IP egress for orders.** Kite whitelists a fixed IP for order placement (data reads are unrestricted). 3ST supports both a direct bind (`KITE_ALLOWED_EGRESS_IP`) and a `staticip.in` proxy (`KITE_USE_STATICIP_PROXY`). Whitelist updates on developers.kite.trade are capped at once per calendar week — misconfiguring this has blocked live orders for days at a time (see CONVERSATION_SUMMARY, 2026-07-15 sessions). Verify via `GET /health` → `kite_egress_mode`.
 - **Kite tokens expire ~6 AM IST daily** — expect a re-login every trading day.
 - Secrets: `.env` (API key/secret, egress IP, proxy creds) and all session/state files under `data/` are gitignored except `data/fpi_sectors_seed.json` (an intentional offline fallback seed). Never commit `access_token*` or `.kite_session.json`.
+- **`ANTHROPIC_API_KEY`** (added 2026-08-07) is used by the Equity Report desk only and spends money per report. `EQUITY_REPORT_DAILY_USD_CAP` (default $10) refuses to queue a new report once today's accumulated cost crosses it; `EQUITY_REPORT_STUB=1` returns canned reports so the UI can be worked on with zero spend. Leaving the key blank disables the desk cleanly — the page says so rather than failing obscurely.
 
 ## Development Environment Setup
 
@@ -60,6 +62,21 @@ Or use the combined dev script: `powershell -ExecutionPolicy Bypass -File "C:\De
 
 **Health check:** `GET http://127.0.0.1:8001/health`. **Swagger:** `/docs`.
 
+**Two surfaces serve the UI, and they are not equivalent.** Port 8080 is the Vite dev server (live source). Port 8001 is FastAPI serving a *prebuilt* bundle from `Pixel Perfect UI/.output/public` (`api/ui_static.py`). A new route added to `src/routes/` appears on 8080 immediately and on 8001 **only after `npm run build`** — verifying a UI change on 8080 alone proves nothing about the app as normally opened. `.output/` is gitignored, so a build artifact that gets overwritten is not recoverable from git.
+
+> ⚠️ **Stop the API before running `npm run build`.** FastAPI mounts `.output/public/assets` via `StaticFiles`, which holds a Windows directory lock; Vite then fails to clean it with `EBUSY: resource busy or locked, rmdir` and can leave a half-written bundle.
+
+**Why `scripts/build-desk.mjs` is not just `vite build`** (rewritten 2026-08-07). TanStack Start's prerender step cannot run in this project, and prerender is what normally emits the SPA shell:
+
+- `start-plugin-core`'s preview-server plugin imports `<serverOutputDir>/server.js` and calls `.default.fetch()`. The Lovable preset routes the server build through **nitro**, which writes `.output/server/index.mjs` instead — so the import fails, `/` 500s, and prerender emits nothing. This is an upstream incompatibility between `@lovable.dev/vite-tanstack-config` and `@tanstack/start-plugin-core`; it is **not** a version drift (`@tanstack/react-start@1.168.27` pins `start-plugin-core: 1.171.19` exactly, and upgrading the Lovable config to 2.9.1 does not help).
+- Without a shell the client throws `Invariant failed` and **every page renders blank on :8001**, because the shell is what defines `self.$_TSR.router`. A hand-written shell with only a stylesheet and the entry script is not enough — the `$tsr-stream-barrier` bootstrap is required.
+
+`build-desk.mjs` works around this: it builds nitro with `NITRO_PRESET=node-server`, boots that server once on `DESK_SHELL_PORT` (default 3199), fetches `/`, and keeps only the stylesheets, the `$tsr` bootstrap, and the entry module — dropping the rendered body so the shell is route-agnostic. It also patches `hydrateRoot` → `createRoot`, since there is no server HTML to hydrate against. `vite build` still exits non-zero (the prerender crash); that is expected and the script continues.
+
+Note this only affects the static bundle FastAPI serves. Deploys via Lovable/Cloudflare do not go through this script.
+
+> **Direct URL loads work only for SPA routes whose path does not collide with an API prefix.** `/gamma-density`, `/oi-var`, `/execution` etc. are also API prefixes, so a hard browser load of those returns a JSON 404 — they are reachable by clicking through the sidebar (client-side routing). Give any new SPA page a path that isn't an API prefix, or register the API side with a trailing slash (`"/equity/"`) as `/equity-report` does.
+
 ## Architecture
 
 ```
@@ -77,6 +94,12 @@ execution/      ~30 modules: 5 parallel runners (Rolling Straddle, Watchlist/Liv
                   additive and currently inert. Do not assume it is tracking live legs
                   until a runner is migrated to call order_router.submit_intent().
 options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG, etc.)
+                — analysis/equity_report/ (added 2026-08-07): the only module that calls an
+                  LLM. Runs the vendored `india-equity-report` prompt against the Anthropic
+                  API with the web_search/web_fetch server tools to produce NSE/BSE research
+                  reports. Its own daemon thread (runner.py), its own JSON stores, and no
+                  imports from broker/ execution/ risk/ — a slow model call must never be
+                  able to delay an order-placing tick.
 strategy_3st.py, backtest_engine.py   Core indicator + backtest engine
 tests/          40+ pytest files — good coverage of strategy parity, risk limits,
                 reconcile, bar-churn, exit-grace edge cases
@@ -99,6 +122,8 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | `paper_broker.json` | `broker/paper_broker.py` |
 | `kite_session.json` | `kite_auth.py` — gitignored |
 | `kite_instruments.json` | `instruments.py` cache |
+| `equity_reports.json` + `equity_reports/*.md` | `analysis/equity_report/store.py` |
+| `equity_pins.json` | `analysis/equity_report/pins.py` |
 
 There is no single source of truth across runners for "what legs are open" today — that's exactly the gap `position_ledger.py` exists to close, once runners migrate to it.
 
@@ -129,7 +154,7 @@ pytest tests/test_order_router.py::test_submit_intent_duplicate_tag_blocked -v
 
 CI runs this on every push/PR — `.github/workflows/ci.yml` (added 2026-07-25). The `test` job installs `requirements.txt` and runs the full suite; a `lint` job runs `ruff check .` but is `continue-on-error: true` for now (see Code Style) so pre-existing style debt doesn't block merges — flip it to blocking once that backlog is cleared.
 
-Some tests are date-sensitive (expiry/vol-surface fixtures assume a "today" relative to when they were written) and will start failing as real dates pass — a failure in `test_vol_surface.py` or `test_mcx_rolling_straddle.py` around expiry dates is often this, not a regression. Check the assumed date before assuming a real break. (These are the 5 known-stale failures as of 2026-07-25: `test_execution_queue.py::test_build_execution_queue_pending_confirm_mode`, `test_fpi_sectors.py::test_attach_fpi_overlay_uses_seed`, `test_mcx_rolling_straddle.py::test_save_config_corrects_stale_crudeoilm_expiry`, `test_vol_surface.py::test_term_structure_recovered`, `test_vol_surface.py::test_max_expiries_limit`.)
+Some tests are date-sensitive (expiry/vol-surface fixtures assume a "today" relative to when they were written) and will start failing as real dates pass — a failure in `test_vol_surface.py` or `test_mcx_rolling_straddle.py` around expiry dates is often this, not a regression. Check the assumed date before assuming a real break. (Known-stale failures as of **2026-08-07** — 6 of them: `test_fpi_sectors.py::test_attach_fpi_overlay_uses_seed`, `test_mcx_rolling_straddle.py::test_save_config_corrects_stale_crudeoilm_expiry`, and all four of `test_vol_surface.py` — `test_surface_shape`, `test_otm_convention`, `test_term_structure_recovered`, `test_max_expiries_limit`. The vol-surface fixtures pin `EXPIRIES = ["2026-07-16", "2026-07-23", "2026-07-30"]`, so every one of them now fails with `RuntimeError: No expiries available for NIFTY`; only two were failing on 2026-07-25 because the drift was partial then. `test_execution_queue.py::test_build_execution_queue_pending_confirm_mode`, listed as stale on 2026-07-25, now **passes** again. The honest fix is to make these fixtures relative to `date.today()` rather than re-dating the list each time it rots.)
 
 **A CI/lint gap already caught a live bug once** — `ruff check . --select F821` (undefined-name) surfaced `execution/watchlist_activation.py` referencing `patch` while the `patch` dict was still being constructed. That raised `UnboundLocalError` on *every* watchlist entry activation (manual live BUY/SELL, and the taskbar's ship/execute action) — after the broker order had already been placed. Fixed 2026-07-25 (`tests/test_watchlist_activation.py` is the regression test). Take this as the reason the `lint` job exists at all, even non-blocking.
 
@@ -163,7 +188,9 @@ As of 2026-07-25 there's a backlog of ~90 pre-existing findings (mostly unsorted
 - **Port confusion**: `.env` defaults to API port 8001; some UI config/docs reference 8000. Confirm `VITE_API_BASE_URL` matches wherever uvicorn is actually bound.
 - **"Waiting 09:20" / ticks not updating after underlying switch**: historically caused by stale `morning_bar_seen` / `last_spot` carried over from a different underlying — fixed in `rolling_straddle_store.py`, but worth checking first if a desk looks frozen after a config change.
 - **Orders rejected — IP not whitelisted**: check `GET /health` → `kite_egress_mode`, then confirm the *outgoing* IP (not your ISP IP) matches what's whitelisted on developers.kite.trade.
-- **API restart required after any `execution/` change** — don't trust `--reload` alone if behavior looks stale.
+- **API restart required after any `execution/` change** — don't trust `--reload` alone if behavior looks stale. The same applies to `analysis/equity_report/`: a running API will not pick up a new module there, and `GET /health` → `equity_report_runner_alive` is the quickest way to tell whether the restart took.
+- **Equity Report jobs stuck at "failed: API restarted while this report was in flight"** — expected. A report is a live model stream; a restart kills it and `store.load_persisted_jobs()` fails anything left `queued`/`running` rather than leaving the UI spinning. Just re-run it.
+- **New config not taking effect** — read settings through `settings.env()` (which loads `.env`), never `os.getenv` directly. A raw `os.getenv` depends on the environment of whichever shell launched uvicorn, which differs between `start_3st_dev.ps1`, a bare `uvicorn` call, and a service wrapper. This bit the `EQUITY_REPORT_STUB` flag during development.
 
 ## Claude Instructions
 

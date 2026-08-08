@@ -2315,3 +2315,74 @@ export interface ExpiryCalMonthBoard {
   expiry_row_count: number;
   month_days: number;
 }
+
+/* ------------------------------------------------------------------ */
+/* Equity Report desk (/equity-report)                                  */
+/* ------------------------------------------------------------------ */
+
+export interface InstrumentSearchResponse {
+  q: string;
+  segment: string;
+  items: InstrumentHit[];
+}
+
+export interface EquityPin {
+  symbol: string;
+  company: string;
+  exchange: string;
+  pinned_at: string;
+}
+
+export type EquityReportStatus =
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface EquityReportProgress {
+  iteration?: number;
+  tool_calls?: number;
+  note?: string;
+}
+
+export interface EquityReportCitation {
+  url: string;
+  title: string;
+}
+
+export interface EquityReportUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+export interface EquityReportJob {
+  id: string;
+  ticker: string;
+  company: string;
+  exchange: string;
+  status: EquityReportStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  progress: EquityReportProgress;
+  usage: EquityReportUsage;
+  cost_usd: number;
+  citations: EquityReportCitation[];
+  model: string;
+  error: string | null;
+  /** Only present on GET /equity/reports/{id}. */
+  markdown?: string;
+}
+
+export interface EquityReportListResponse {
+  jobs: EquityReportJob[];
+  anthropic_ready: boolean;
+  stub_mode: boolean;
+  daily_usd_cap: number;
+  spent_today_usd: number;
+  remaining_usd: number | null;
+  capped: boolean;
+}

@@ -108,6 +108,39 @@ def kite_ready() -> bool:
     return bool(c["api_key"] and c["api_secret"])
 
 
+def anthropic_api_key() -> str:
+    """Key for the Equity Report desk only — unrelated to any broker credential."""
+    return env("ANTHROPIC_API_KEY")
+
+
+def anthropic_ready() -> bool:
+    return bool(anthropic_api_key())
+
+
+_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
+
+
+def equity_report_config() -> dict:
+    """Model/effort/spend settings for the Equity Report desk."""
+    effort = env("EQUITY_REPORT_EFFORT", "high").lower()
+    if effort not in _EFFORT_LEVELS:
+        effort = "high"
+    try:
+        cap = float(env("EQUITY_REPORT_DAILY_USD_CAP", "10"))
+    except ValueError:
+        cap = 10.0
+    return {
+        "model": env("EQUITY_REPORT_MODEL", "claude-opus-5"),
+        "effort": effort,
+        "daily_usd_cap": max(cap, 0.0),
+        # Return canned reports instead of calling the API. Read through env()
+        # like every other setting so it comes from .env — an os.getenv read
+        # would depend on the launching shell's environment, which differs
+        # between start_3st_dev.ps1, a bare uvicorn call, and a service.
+        "stub": env("EQUITY_REPORT_STUB", "0").lower() in {"1", "true", "yes", "on"},
+    }
+
+
 def data_dir() -> Path:
     d = _ROOT / "data"
     d.mkdir(parents=True, exist_ok=True)
