@@ -484,6 +484,20 @@ export interface SessionPoc {
   path?: Array<{ t: string; close: number; ts_ms?: number }>;
 }
 
+/** Why `session_poc` is null, so a blank Fut POC can explain itself. */
+export type SessionPocReason =
+  | "unknown_underlying"
+  | "future_unresolved"
+  | "before_session_open"
+  | "fetch_failed"
+  | "no_session_bars"
+  | "no_session_volume";
+
+export interface SessionPocStatus {
+  ok: boolean;
+  reason?: SessionPocReason | "error" | null;
+}
+
 export interface OiMoversSnapshot {
   underlying: string;
   expiry: string;
@@ -1026,6 +1040,8 @@ export interface GammaSnapshot {
   oi_baseline_prev_close_count?: number;
   cas?: CasIndicative | null;
   session_poc?: SessionPoc | null;
+  /** Always present; explains a null `session_poc` rather than hiding the chip. */
+  session_poc_status?: SessionPocStatus | null;
 }
 
 export interface VannaConfig {

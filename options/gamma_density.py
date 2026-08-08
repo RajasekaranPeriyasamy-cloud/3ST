@@ -2113,13 +2113,30 @@ def build_gamma_snapshot(
     except Exception:
         cas_block = None
 
+    # session_poc stays dict-or-None (unchanged contract). session_poc_status is
+    # additive and always present, so the UI can say why Fut POC is blank instead
+    # of silently dropping the chip — a closed market and a broken fetch used to
+    # look identical.
     session_poc_block = None
+    session_poc_status: dict[str, Any] = {"ok": False, "reason": "error"}
     try:
-        from options.session_poc import compute_session_poc
+        from options.session_poc import compute_session_poc_detail
 
-        session_poc_block = compute_session_poc(underlying)
-    except Exception:
-        session_poc_block = None
+        detail = compute_session_poc_detail(underlying)
+        if detail.get("poc") is not None:
+            session_poc_block = detail
+        session_poc_status = {
+            "ok": detail.get("poc") is not None,
+            "reason": detail.get("reason"),
+        }
+    except Exception as exc:
+        log_event(
+            _log,
+            logging.WARNING,
+            "session_poc_failed",
+            underlying=underlying,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
     return {
         "underlying": underlying,
@@ -2186,6 +2203,7 @@ def build_gamma_snapshot(
         ),
         "cas": cas_block,
         "session_poc": session_poc_block,
+        "session_poc_status": session_poc_status,
     }
 
 

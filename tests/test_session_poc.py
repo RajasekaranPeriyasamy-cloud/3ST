@@ -212,6 +212,7 @@ def test_gamma_snapshot_includes_session_poc_without_changing_math(
 
     poc_payload = {
         "poc": 20000.0,
+        "reason": None,
         "fut_symbol": "NIFTY25AUGFUT",
         "fut_token": 123,
         "bin_step": 50,
@@ -220,7 +221,7 @@ def test_gamma_snapshot_includes_session_poc_without_changing_math(
         "path": [{"t": "2026-08-06T09:15:00+05:30", "close": 19980.0}],
     }
     monkeypatch.setattr(
-        "options.session_poc.compute_session_poc",
+        "options.session_poc.compute_session_poc_detail",
         lambda u: poc_payload,
     )
     monkeypatch.setattr("options.cas_indicative.cas_for_snapshot", lambda u: None)
@@ -232,12 +233,99 @@ def test_gamma_snapshot_includes_session_poc_without_changing_math(
         include_history=False,
     )
     assert snap["session_poc"] == poc_payload
+    assert snap["session_poc_status"] == {"ok": True, "reason": None}
     assert snap["spot"] == SPOT
     assert snap["atm_strike"] == SPOT
     # Fut POC must not replace spot used for ATM / GEX
     assert snap["atm_strike"] == SPOT
     assert isinstance(snap["strikes"], list) and snap["strikes"]
     assert snap["total_gex"] is not None
+
+
+def test_gamma_snapshot_reports_reason_when_no_poc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A blank Fut POC must say why — a closed market and a broken fetch
+    used to be indistinguishable (both rendered as no chip at all)."""
+    chain = _fake_chain("NIFTY", EXPIRY)
+    provider = StaticGammaDensityDataProvider(
+        chain=chain,
+        spot=SPOT,
+        quotes=_fake_chain.quotes,  # type: ignore[attr-defined]
+        expiries=[EXPIRY],
+    )
+    monkeypatch.setattr(gd, "time_to_expiry_years", lambda e: TTE)
+    monkeypatch.setattr(
+        "options.session_poc.compute_session_poc_detail",
+        lambda u: {"poc": None, "reason": "no_session_bars", "asof": "2026-08-08T20:00:00+05:30"},
+    )
+    monkeypatch.setattr("options.cas_indicative.cas_for_snapshot", lambda u: None)
+
+    snap = gd.build_gamma_snapshot(
+        "NIFTY",
+        provider=provider,
+        include_multi_expiry=False,
+        include_history=False,
+    )
+    assert snap["session_poc"] is None
+    assert snap["session_poc_status"] == {"ok": False, "reason": "no_session_bars"}
+    # GEX math is untouched by a missing reference level.
+    assert snap["atm_strike"] == SPOT
+    assert snap["total_gex"] is not None
+
+
+def test_gamma_snapshot_session_poc_exception_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception must surface as ok=False/reason=error, not a silent drop."""
+    chain = _fake_chain("NIFTY", EXPIRY)
+    provider = StaticGammaDensityDataProvider(
+        chain=chain,
+        spot=SPOT,
+        quotes=_fake_chain.quotes,  # type: ignore[attr-defined]
+        expiries=[EXPIRY],
+    )
+    monkeypatch.setattr(gd, "time_to_expiry_years", lambda e: TTE)
+
+    def _boom(_u: str):
+        raise RuntimeError("kite down")
+
+    monkeypatch.setattr("options.session_poc.compute_session_poc_detail", _boom)
+    monkeypatch.setattr("options.cas_indicative.cas_for_snapshot", lambda u: None)
+
+    snap = gd.build_gamma_snapshot(
+        "NIFTY",
+        provider=provider,
+        include_multi_expiry=False,
+        include_history=False,
+    )
+    assert snap["session_poc"] is None
+    assert snap["session_poc_status"] == {"ok": False, "reason": "error"}
+    assert snap["total_gex"] is not None
+
+
+@pytest.mark.parametrize(
+    "reason,setup",
+    [
+        ("unknown_underlying", lambda mp: None),
+        ("no_session_volume", lambda mp: None),
+    ],
+)
+def test_detail_reason_codes(monkeypatch: pytest.MonkeyPatch, reason: str, setup) -> None:
+    sp.clear_session_poc_cache()
+    if reason == "unknown_underlying":
+        assert sp.compute_session_poc_detail("NOT_AN_INDEX", use_cache=False)["reason"] == reason
+        return
+
+    monkeypatch.setattr(
+        sp,
+        "resolve_future",
+        lambda u: {"instrument_token": 123, "tradingsymbol": "NIFTY25AUGFUT"},
+    )
+    bars = [_bar("2026-08-06T09:15:00", high=24760, low=24740, close=24750, volume=0)]
+    detail = sp.compute_session_poc_detail("NIFTY", bars=bars, use_cache=False)
+    assert detail["poc"] is None
+    assert detail["reason"] == reason
+    # Legacy contract unchanged for every existing caller.
+    assert sp.compute_session_poc("NIFTY", bars=bars, use_cache=False) is None
 
 
 def test_oi_movers_snapshot_includes_session_poc(monkeypatch: pytest.MonkeyPatch) -> None:

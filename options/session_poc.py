@@ -154,38 +154,48 @@ def _session_fetch_window(
     return start_dt, fetch_end
 
 
+def _unavailable(reason: str, *, when: datetime | None = None) -> dict[str, Any]:
+    """A detail payload with no POC, carrying why.
+
+    Every ``poc is None`` outcome names its cause so the desks can say
+    "no session volume yet" instead of silently dropping the reference level.
+    """
+    return {"poc": None, "reason": reason, "asof": _asof_iso(when)}
+
+
 def _compute_uncached(
     underlying: str,
     *,
     when: datetime | None = None,
     bars: list[dict[str, Any]] | None = None,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     u = underlying.strip().upper()
     step = _strike_step(u)
     if step is None:
-        return None
+        return _unavailable("unknown_underlying", when=when)
 
     try:
         fut = resolve_future(u)
     except Exception:
-        return None
+        return _unavailable("future_unresolved", when=when)
 
     token = int(fut.get("instrument_token") or 0)
     symbol = str(fut.get("tradingsymbol") or "")
     if token <= 0 or not symbol:
-        return None
+        return _unavailable("future_unresolved", when=when)
 
     if bars is None:
         window = _session_fetch_window(u, when=when)
         if window is None:
-            return None
+            return _unavailable("before_session_open", when=when)
         start_dt, fetch_end = window
         try:
             df = fetch_historical_by_token(token, "1min", start_dt, fetch_end)
         except Exception:
-            return None
+            return _unavailable("fetch_failed", when=when)
         if df is None or getattr(df, "empty", True):
-            return None
+            # Weekend, exchange holiday, or a session that has not printed yet.
+            return _unavailable("no_session_bars", when=when)
         bars = []
         for ts, row in df.iterrows():
             bars.append(
@@ -200,10 +210,15 @@ def _compute_uncached(
 
     poc, total_volume, path = poc_from_bars(bars, bin_step=step)
     if poc is None or total_volume <= 0:
-        return None
+        # Bars exist but carry no traded volume (pre-open prints, stale feed).
+        detail = _unavailable("no_session_volume", when=when)
+        detail["fut_symbol"] = symbol
+        detail["fut_token"] = token
+        return detail
 
     return {
         "poc": float(poc),
+        "reason": None,
         "fut_symbol": symbol,
         "fut_token": token,
         "bin_step": int(step),
@@ -213,18 +228,27 @@ def _compute_uncached(
     }
 
 
-def compute_session_poc(
+def compute_session_poc_detail(
     underlying: str,
     *,
     when: datetime | None = None,
     bars: list[dict[str, Any]] | None = None,
     use_cache: bool = True,
-) -> dict[str, Any] | None:
-    """Session futures volume POC for ``underlying``, or ``None``.
+) -> dict[str, Any]:
+    """Like :func:`compute_session_poc` but **always** returns a dict.
 
-    Returns ``None`` when the future cannot be resolved, there are no bars,
-    or total session volume is zero. Results are cached ~45s in-process
-    (skipped when ``bars`` is injected or ``use_cache`` is False).
+    On success ``poc`` is a float and ``reason`` is ``None``. Otherwise ``poc``
+    is ``None`` and ``reason`` names the cause, one of::
+
+        unknown_underlying   no strike_step configured for this symbol
+        future_unresolved    front-month future missing / bad token
+        before_session_open  now is at or before the session start
+        fetch_failed         the Kite historical call raised
+        no_session_bars      no candles — weekend, holiday, or not printed yet
+        no_session_volume    candles exist but total traded volume is zero
+
+    Callers that only need the level should keep using
+    :func:`compute_session_poc`; this exists so a desk can explain a blank.
     """
     u = underlying.strip().upper()
     # Injected bars / explicit bypass skip the shared Kite cache.
@@ -243,3 +267,23 @@ def compute_session_poc(
     with _CACHE_LOCK:
         _CACHE[u] = (time.monotonic(), payload)
     return payload
+
+
+def compute_session_poc(
+    underlying: str,
+    *,
+    when: datetime | None = None,
+    bars: list[dict[str, Any]] | None = None,
+    use_cache: bool = True,
+) -> dict[str, Any] | None:
+    """Session futures volume POC for ``underlying``, or ``None``.
+
+    Returns ``None`` when the future cannot be resolved, there are no bars,
+    or total session volume is zero. Results are cached ~45s in-process
+    (skipped when ``bars`` is injected or ``use_cache`` is False).
+
+    Use :func:`compute_session_poc_detail` when you need to know *why* the
+    result was ``None``. Both share one cache entry.
+    """
+    detail = compute_session_poc_detail(underlying, when=when, bars=bars, use_cache=use_cache)
+    return detail if detail.get("poc") is not None else None
