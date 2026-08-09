@@ -246,7 +246,13 @@ def nearest_expiry(underlying: str) -> str | None:
 
 
 def resolve_expiry(underlying: str, expiry: str | None = None) -> str | None:
-    """Return a valid option expiry for underlying; fall back to nearest when missing/invalid."""
+    """Return a tradeable option expiry for underlying; fall back to nearest when missing/invalid.
+
+    An already-expired date is rejected even when it is still listed: the instruments
+    cache falls back to the last good copy whenever the daily refresh fails (e.g. the
+    Kite token lapsed overnight), so dead contracts linger in list_expiries() for days.
+    Without the date check a live desk can resolve onto one of them.
+    """
     available = list_expiries(underlying)
     if not available:
         return None
@@ -254,7 +260,7 @@ def resolve_expiry(underlying: str, expiry: str | None = None) -> str | None:
         exp_date = pd.to_datetime(expiry, errors="coerce")
         if pd.notna(exp_date):
             iso = exp_date.date().isoformat()
-            if iso in available:
+            if iso in available and exp_date.date() >= date.today():
                 return iso
     return nearest_expiry(underlying)
 

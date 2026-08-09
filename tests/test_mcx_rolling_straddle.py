@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from options.chain import atm_strike, list_expiries, nearest_expiry, resolve_expiry
+import json
+
+import pytest
+
 from execution.rolling_straddle_store import apply_underlying_defaults, lot_size_for, save_config
+from options.chain import atm_strike, list_expiries, nearest_expiry, resolve_expiry
 
 
 def test_crudeoil_expiries_from_instruments_cache():
@@ -56,19 +60,75 @@ def test_resolve_expiry_rejects_invalid_date():
     assert resolve_expiry("CRUDEOILM", valid) == valid
 
 
-def test_save_config_corrects_stale_crudeoilm_expiry(tmp_path, monkeypatch):
+def _rs_config(tmp_path, monkeypatch, body: str):
     from execution import rolling_straddle_store as store
 
     cfg_path = tmp_path / "rolling_straddle_config.json"
     monkeypatch.setattr(store, "CONFIG_FILE", cfg_path)
     monkeypatch.setattr(store, "LOG_FILE", tmp_path / "log.json")
-    cfg_path.write_text(
+    cfg_path.write_text(body, encoding="utf-8")
+    return store
+
+
+def test_resolve_expiry_rejects_listed_but_past_expiry(monkeypatch):
+    """Stale instruments cache keeps dead contracts listed — must not resolve onto one."""
+    from datetime import date, timedelta
+
+    from options import chain
+
+    today = date.today()
+    past = (today - timedelta(days=7)).isoformat()
+    future = (today + timedelta(days=7)).isoformat()
+    monkeypatch.setattr(chain, "list_expiries", lambda _u: [past, today.isoformat(), future])
+
+    assert chain.resolve_expiry("NIFTY", past) == today.isoformat()
+    # Expiry day itself is still tradeable.
+    assert chain.resolve_expiry("NIFTY", today.isoformat()) == today.isoformat()
+    assert chain.resolve_expiry("NIFTY", future) == future
+
+
+def test_save_config_corrects_stale_crudeoilm_expiry(tmp_path, monkeypatch):
+    _rs_config(
+        tmp_path,
+        monkeypatch,
         '{"underlying": "CRUDEOILM", "expiry": "2026-07-14", "size_mode": "lots", "size_value": 1}',
-        encoding="utf-8",
     )
     saved = save_config({})
     assert saved["expiry"] == nearest_expiry("CRUDEOILM")
     assert saved["expiry"] != "2026-07-14"
+
+
+def test_save_config_corrects_past_expiry_on_unrelated_patch(tmp_path, monkeypatch):
+    """A settings save that never mentions expiry must still drop an expired contract."""
+    _rs_config(
+        tmp_path,
+        monkeypatch,
+        '{"underlying": "CRUDEOILM", "expiry": "2026-07-14", "size_mode": "lots", "size_value": 1}',
+    )
+    saved = save_config({"size_value": 2})
+    assert saved["size_value"] == 2
+    assert saved["expiry"] == nearest_expiry("CRUDEOILM")
+
+
+def test_save_config_keeps_deliberate_far_month_on_unrelated_patch(tmp_path, monkeypatch):
+    """Always-resolving must not yank an operator off a valid far-month contract."""
+    expiries = list_expiries("CRUDEOILM")
+    far = [e for e in expiries if e != nearest_expiry("CRUDEOILM")]
+    if not far:
+        pytest.skip("only one CRUDEOILM expiry listed")
+
+    _rs_config(
+        tmp_path,
+        monkeypatch,
+        json.dumps({
+            "underlying": "CRUDEOILM",
+            "expiry": far[-1],
+            "size_mode": "lots",
+            "size_value": 1,
+        }),
+    )
+    saved = save_config({"size_value": 3})
+    assert saved["expiry"] == far[-1]
 
 
 def test_crude_symbols_do_not_cross_match():

@@ -228,7 +228,6 @@ def save_config(patch: dict[str, Any]) -> dict[str, Any]:
 
     current = get_config()
     old_underlying = str(current.get("underlying") or "NIFTY")
-    prev_expiry = str(current.get("expiry") or "")
     for k, v in patch.items():
         if v is not None:
             current[k] = v
@@ -241,25 +240,20 @@ def save_config(patch: dict[str, Any]) -> dict[str, Any]:
             reason=f"{old_underlying} -> {underlying}",
             old_underlying=old_underlying,
         )
+    # Resolve on every save, not just expiry/underlying patches: an expired contract must
+    # never survive an unrelated settings save. This is a no-op for any tradeable expiry —
+    # resolve_expiry() returns a listed, unexpired date unchanged, so a deliberately chosen
+    # far month is preserved. Matches premium_book_store.save_config().
     expiry_after = str(current.get("expiry") or "")
-    need_resolve = (
-        underlying != old_underlying
-        or "underlying" in patch
-        or "expiry" in patch
-        or not expiry_after
-    )
-    if need_resolve:
-        resolved = resolve_expiry(underlying, expiry_after or None)
-        if resolved:
-            if resolved != expiry_after:
-                append_log(
-                    "expiry_corrected",
-                    f"{expiry_after or '(empty)'} -> {resolved}",
-                    {"underlying": underlying},
-                )
-            current["expiry"] = resolved
-    elif prev_expiry:
-        current["expiry"] = prev_expiry
+    resolved = resolve_expiry(underlying, expiry_after or None)
+    if resolved:
+        if resolved != expiry_after:
+            append_log(
+                "expiry_corrected",
+                f"{expiry_after or '(empty)'} -> {resolved}",
+                {"underlying": underlying},
+            )
+        current["expiry"] = resolved
     validate_order_size(current)
     _write_json(CONFIG_FILE, current)
     # Underlying string may already match while cached spot is from another instrument.
