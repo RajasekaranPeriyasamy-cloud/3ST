@@ -25,3 +25,8 @@ known-first-party = [
     "instruments", "strategy_3st", "backtest_engine", "yahoo_client",
     "domain", "watchlist_store",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "live_kite: test may open a real Kite client (opts out of the offline guard in tests/conftest.py)",
+]

@@ -57,6 +57,20 @@ def test_attach_fpi_overlay_uses_seed(monkeypatch) -> None:
     def _fake_load(*, force_refresh: bool = False):
         return seed
 
+    def _seed_period2(rrg_sector_id: str) -> float:
+        """Expected value straight from the seed.
+
+        These were hardcoded (-733.0 / 14634.0) and broke the moment
+        data/fpi_sectors_seed.json was refreshed with newer NSDL numbers —
+        which is a routine data update, not a regression. What this test is
+        actually for is the overlay wiring: right sector matched, alias
+        resolved, stocks left alone.
+        """
+        row = next(
+            r for r in seed["sectors"].values() if r.get("rrg_sector_id") == rrg_sector_id
+        )
+        return row["net_equity_inr"]["period2"]
+
     monkeypatch.setattr("analysis.fpi_sectors.load_fpi_sectors", _fake_load)
     snapshot = {
         "symbols": [
@@ -67,12 +81,18 @@ def test_attach_fpi_overlay_uses_seed(monkeypatch) -> None:
     }
     out = attach_fpi_overlay(snapshot, period="period2")
     assert out["fpi"]["ok"] is True
+
     it_row = next(s for s in out["symbols"] if s["symbol"] == "NIFTY_IT")
-    assert it_row["fpi"]["net_equity_inr"] == -733.0
-    assert it_row["fpi"]["confluence"] == "aligned"
+    assert it_row["fpi"]["net_equity_inr"] == _seed_period2("NIFTY_IT")
+    # Overlay must apply the confluence rule with this row's quadrant + flow.
+    assert it_row["fpi"]["confluence"] == fpi_confluence("lagging", _seed_period2("NIFTY_IT"))
+
+    # NIFTY_BANK has no NSDL sector of its own — it proxies Financial Services.
     bank = next(s for s in out["symbols"] if s["symbol"] == "NIFTY_BANK")
-    assert bank["fpi"]["net_equity_inr"] == 14634.0
+    assert bank["fpi"]["net_equity_inr"] == _seed_period2("NIFTY_FIN_SERVICE")
     assert bank["fpi"]["alias_of"] == "NIFTY_FIN_SERVICE"
+
+    # A single stock is not an FPI sector.
     rel = next(s for s in out["symbols"] if s["symbol"] == "RELIANCE")
     assert rel["fpi"] is None
 

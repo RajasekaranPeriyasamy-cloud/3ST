@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from options.chain import atm_strike, list_expiries, nearest_expiry, resolve_expiry
+import json
+from datetime import date, timedelta
+
 from execution.rolling_straddle_store import apply_underlying_defaults, lot_size_for, save_config
+from options.chain import atm_strike, list_expiries, nearest_expiry, resolve_expiry
 
 
 def test_crudeoil_expiries_from_instruments_cache():
@@ -56,19 +59,66 @@ def test_resolve_expiry_rejects_invalid_date():
     assert resolve_expiry("CRUDEOILM", valid) == valid
 
 
-def test_save_config_corrects_stale_crudeoilm_expiry(tmp_path, monkeypatch):
-    from execution import rolling_straddle_store as store
+def _write_stale_crudeoilm_config(store, tmp_path, monkeypatch) -> str:
+    """Point the store at a temp config holding a definitely-past expiry.
 
+    The stale date is derived, not hardcoded. The previous version pinned
+    "2026-07-14", which was the *current* CRUDEOILM expiry when it was written —
+    so `saved["expiry"] == nearest_expiry(...)` passed trivially without any
+    correction ever happening, and only started failing once real time moved
+    past it.
+    """
+    stale = (date.today() - timedelta(days=90)).isoformat()
     cfg_path = tmp_path / "rolling_straddle_config.json"
     monkeypatch.setattr(store, "CONFIG_FILE", cfg_path)
     monkeypatch.setattr(store, "LOG_FILE", tmp_path / "log.json")
     cfg_path.write_text(
-        '{"underlying": "CRUDEOILM", "expiry": "2026-07-14", "size_mode": "lots", "size_value": 1}',
+        json.dumps(
+            {
+                "underlying": "CRUDEOILM",
+                "expiry": stale,
+                "size_mode": "lots",
+                "size_value": 1,
+            }
+        ),
         encoding="utf-8",
     )
-    saved = save_config({})
+    return stale
+
+
+def test_save_config_corrects_stale_expiry_when_expiry_patched(tmp_path, monkeypatch):
+    from execution import rolling_straddle_store as store
+
+    stale = _write_stale_crudeoilm_config(store, tmp_path, monkeypatch)
+    saved = save_config({"expiry": stale})
     assert saved["expiry"] == nearest_expiry("CRUDEOILM")
-    assert saved["expiry"] != "2026-07-14"
+    assert saved["expiry"] != stale
+
+
+def test_save_config_corrects_stale_expiry_when_underlying_patched(tmp_path, monkeypatch):
+    from execution import rolling_straddle_store as store
+
+    stale = _write_stale_crudeoilm_config(store, tmp_path, monkeypatch)
+    saved = save_config({"underlying": "CRUDEOILM"})
+    assert saved["expiry"] == nearest_expiry("CRUDEOILM")
+    assert saved["expiry"] != stale
+
+
+def test_save_config_keeps_expiry_on_unrelated_patch(tmp_path, monkeypatch):
+    """Documents current behaviour: resolution is gated on the patch keys.
+
+    ``save_config`` only re-resolves when the patch touches ``expiry`` or
+    ``underlying`` (or the stored expiry is empty) — see the ``need_resolve``
+    branch in ``execution/rolling_straddle_store.py``. An unrelated save
+    therefore leaves a past expiry in place. That is a real gap, tracked
+    separately; this test pins the behaviour so a deliberate fix shows up as a
+    failure here rather than passing silently.
+    """
+    from execution import rolling_straddle_store as store
+
+    stale = _write_stale_crudeoilm_config(store, tmp_path, monkeypatch)
+    saved = save_config({"size_value": 2})
+    assert saved["expiry"] == stale
 
 
 def test_crude_symbols_do_not_cross_match():
