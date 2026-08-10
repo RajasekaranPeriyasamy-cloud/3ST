@@ -71,8 +71,35 @@ YAHOO_MAX_DAYS = {
     "60min": 59,
 }
 
-# Kite Connect historical candle lookback (days from today, per interval group)
-KITE_MAX_DAYS = {
+# Kite Connect historical candle limits. These are two different things, and were
+# previously one dict (KITE_MAX_DAYS) doing both jobs — which silently truncated
+# any request reaching further back than the default range.
+#
+# How far back candles actually exist. Measured 2026-08-10 against a live session:
+# NIFTY index, BANKNIFTY index and RELIANCE cash each served 1-minute bars 1825
+# days back, and every coarser interval did too. The old values here (60/100/400)
+# match Kite's documented *per-request* caps, which is almost certainly where they
+# came from — but that limit is handled separately by chunking (see
+# kite_client._fetch_historical_chunks), not by refusing the range.
+#
+# Futures and options are bounded by their own listing date instead: a near-dated
+# future returns ~3 months of history however generous this ceiling is, and an
+# illiquid strike returns nothing at all. So this is a ceiling, not a promise.
+KITE_MAX_LOOKBACK_DAYS = {
+    "1min": 1825,
+    "3min": 1825,
+    "5min": 1825,
+    "15min": 1825,
+    "30min": 1825,
+    "60min": 1825,
+}
+
+# What "use max" asks for when the caller gives no explicit range. Deliberately
+# far short of the ceiling above: 1825 days of 1-minute bars is ~470k rows over
+# ~31 chunked requests. Raising the ceiling must not silently make every default
+# backtest 30x heavier, so these keep the values the old shared constant had.
+# Callers wanting older data now pass an explicit start and get it.
+KITE_DEFAULT_RANGE_DAYS = {
     "1min": 60,
     "3min": 100,
     "5min": 100,

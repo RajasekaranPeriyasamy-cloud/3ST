@@ -23,7 +23,6 @@ from config import (
     DEFAULT_ST_METHOD,
     INDEX_OPTIONS,
     INSTRUMENTS,
-    KITE_MAX_DAYS,
     OI_PROFILE_DEFAULTS,
     TIMEFRAMES,
     YAHOO_MAX_DAYS,
@@ -99,6 +98,7 @@ from kite_auth import (
 from kite_client import (
     default_kite_date_range,
     fetch_historical_for_selection,
+    kite_default_range_days,
     kite_max_lookback_days,
     margins,
     preview_order_margins,
@@ -1920,9 +1920,15 @@ def backtest_limits(
             "source": "kite",
             "timeframe": timeframe,
             "max_days": kite_max_lookback_days(timeframe),
+            "default_range_days": kite_default_range_days(timeframe),
             "default_start": start.isoformat(),
             "default_end": end.isoformat(),
-            "note": "Kite intraday history (up to ~400 days for 15/30/60min). Login required.",
+            "note": (
+                "Kite intraday history reaches ~5 years for index and cash; futures "
+                "and options are limited by their listing date. default_start reflects "
+                "the shorter default span, not the ceiling — pass an explicit start to "
+                "reach further back. Login required."
+            ),
         }
     start, end = default_date_range(timeframe)
     return {
@@ -1957,8 +1963,9 @@ def backtest_run(body: BacktestIn) -> dict[str, Any]:
                 start, end = default_kite_date_range(timeframe)
             else:
                 start, end = body.start, body.end
-                max_days = kite_max_lookback_days(timeframe)
-                earliest = date.today() - timedelta(days=max_days)
+                # Clamp to the furthest back Kite serves — NOT to the default
+                # range. An explicit start older than the default is honoured.
+                earliest = date.today() - timedelta(days=kite_max_lookback_days(timeframe))
                 if start < earliest:
                     start = earliest
                 if end > date.today():
@@ -2708,8 +2715,9 @@ def backtest_rolling_atm(body: RollingAtmBacktestIn) -> dict[str, Any]:
                 start, end = default_kite_date_range(timeframe)
             else:
                 start, end = body.start, body.end
-                max_days = kite_max_lookback_days(timeframe)
-                earliest = date.today() - timedelta(days=max_days)
+                # Clamp to the furthest back Kite serves — NOT to the default
+                # range. An explicit start older than the default is honoured.
+                earliest = date.today() - timedelta(days=kite_max_lookback_days(timeframe))
                 if start < earliest:
                     start = earliest
             if target["instrument_token"]:
