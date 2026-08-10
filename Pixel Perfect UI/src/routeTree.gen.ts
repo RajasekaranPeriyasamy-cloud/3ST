@@ -32,6 +32,7 @@ import { Route as IvSmileRouteImport } from './routes/iv-smile'
 import { Route as GammaDensityRouteImport } from './routes/gamma-density'
 import { Route as ExecutionRouteImport } from './routes/execution'
 import { Route as EquityReportRouteImport } from './routes/equity-report'
+import { Route as DeltaVelocityRouteImport } from './routes/delta-velocity'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CasIndicativeRouteImport } from './routes/cas-indicative'
 import { Route as BacktestRouteImport } from './routes/backtest'
@@ -154,6 +155,11 @@ const EquityReportRoute = EquityReportRouteImport.update({
   path: '/equity-report',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DeltaVelocityRoute = DeltaVelocityRouteImport.update({
+  id: '/delta-velocity',
+  path: '/delta-velocity',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
@@ -192,6 +198,7 @@ export interface FileRoutesByFullPath {
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
   '/dashboard': typeof DashboardRoute
+  '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
@@ -223,6 +230,7 @@ export interface FileRoutesByTo {
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
   '/dashboard': typeof DashboardRoute
+  '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
@@ -255,6 +263,7 @@ export interface FileRoutesById {
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
   '/dashboard': typeof DashboardRoute
+  '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
@@ -288,6 +297,7 @@ export interface FileRouteTypes {
     | '/backtest'
     | '/cas-indicative'
     | '/dashboard'
+    | '/delta-velocity'
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
@@ -319,6 +329,7 @@ export interface FileRouteTypes {
     | '/backtest'
     | '/cas-indicative'
     | '/dashboard'
+    | '/delta-velocity'
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
@@ -350,6 +361,7 @@ export interface FileRouteTypes {
     | '/backtest'
     | '/cas-indicative'
     | '/dashboard'
+    | '/delta-velocity'
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
@@ -382,6 +394,7 @@ export interface RootRouteChildren {
   BacktestRoute: typeof BacktestRoute
   CasIndicativeRoute: typeof CasIndicativeRoute
   DashboardRoute: typeof DashboardRoute
+  DeltaVelocityRoute: typeof DeltaVelocityRoute
   EquityReportRoute: typeof EquityReportRoute
   ExecutionRoute: typeof ExecutionRoute
   GammaDensityRoute: typeof GammaDensityRoute
@@ -570,6 +583,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EquityReportRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/delta-velocity': {
+      id: '/delta-velocity'
+      path: '/delta-velocity'
+      fullPath: '/delta-velocity'
+      preLoaderRoute: typeof DeltaVelocityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dashboard': {
       id: '/dashboard'
       path: '/dashboard'
@@ -622,6 +642,7 @@ const rootRouteChildren: RootRouteChildren = {
   BacktestRoute: BacktestRoute,
   CasIndicativeRoute: CasIndicativeRoute,
   DashboardRoute: DashboardRoute,
+  DeltaVelocityRoute: DeltaVelocityRoute,
   EquityReportRoute: EquityReportRoute,
   ExecutionRoute: ExecutionRoute,
   GammaDensityRoute: GammaDensityRoute,

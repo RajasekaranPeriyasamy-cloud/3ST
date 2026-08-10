@@ -2402,3 +2402,85 @@ export interface EquityReportListResponse {
   remaining_usd: number | null;
   capped: boolean;
 }
+
+export interface VelocityStatus {
+  alive: boolean;
+  underlyings: string[];
+  strike_width: number;
+  expiries_tracked: number;
+  last_report: {
+    ok?: boolean;
+    ts?: string;
+    error?: string;
+    underlyings?: Record<
+      string,
+      { spot?: number; legs?: number; legs_valid?: number; error?: string }
+    >;
+  };
+  state: Record<string, unknown>;
+}
+
+export interface VelocityCoverageDay {
+  date: string;
+  minutes: number;
+  legs: number;
+}
+
+export interface VelocityCoverage {
+  underlying: string;
+  sessions: number;
+  first: string | null;
+  last: string | null;
+  days: VelocityCoverageDay[];
+}
+
+export interface VelocityPoint {
+  ts: string;
+  expiry: string;
+  strike: number;
+  option_type: string;
+  v_t: number;
+}
+
+export interface VelocitySeries {
+  underlying: string;
+  session_date: string | null;
+  minutes: number;
+  observations?: number;
+  blanks?: string;
+  points: VelocityPoint[];
+}
+
+export interface VelocityChartMinute {
+  ts: string;
+  clock: string;
+  spot: number;
+  v_max: number | null;
+  v_med: number | null;
+  v_atm_ce: number | null;
+  v_atm_pe: number | null;
+}
+
+export interface VelocityLagPoint {
+  lag_min: number;
+  corr: number | null;
+  n: number;
+}
+
+export interface VelocityChart {
+  underlying: string;
+  session_date: string | null;
+  atm_strike: number | null;
+  nearest_expiry?: string;
+  contracts: number;
+  minutes: VelocityChartMinute[];
+  thresholds: { p95?: number | null; p99?: number | null };
+  correlation: {
+    n: number;
+    lag_profile: VelocityLagPoint[];
+    best_lag: number | null;
+    best_corr?: number | null;
+    contemporaneous: number | null;
+    interpretation: string;
+  };
+}

@@ -35,6 +35,12 @@ from analysis.equity_report.runner import (
     start_report_runner,
     stop_report_runner,
 )
+from analysis.delta_velocity import collector as dv_collector
+from analysis.delta_velocity import store as delta_velocity_store
+from analysis.delta_velocity.runner import is_alive as delta_velocity_alive
+from analysis.delta_velocity.runner import last_report as delta_velocity_last_report
+from analysis.delta_velocity.runner import start as start_delta_velocity_runner
+from analysis.delta_velocity.runner import stop as stop_delta_velocity_runner
 from execution.arming import arm, disarm, get_arm_state, set_mode
 from execution.rolling_straddle import close_all, close_leg, adopt_leg, unlink_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
 from execution.rolling_straddle_store import get_config as rs_get_config
@@ -176,6 +182,7 @@ async def _lifespan(app: FastAPI):
     start_scheduler()
     start_analytics_scheduler()
     start_report_runner()
+    start_delta_velocity_runner()
     threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
     await start_ltp_feed()
     try:
@@ -210,6 +217,7 @@ async def _lifespan(app: FastAPI):
     stop_scheduler()
     stop_analytics_scheduler()
     stop_report_runner()
+    stop_delta_velocity_runner()
 
 
 app = FastAPI(title="3ST Kite Algo API", version="0.2.0", lifespan=_lifespan)
@@ -829,6 +837,7 @@ def health() -> dict[str, Any]:
         "timeframes": list(TIMEFRAMES.keys()),
         "spread_templates": list(SPREAD_TEMPLATES.keys()),
         "st_methods": ["heikin_ashi", "regular", "hybrid"],
+        "delta_velocity_runner_alive": delta_velocity_alive(),
         **analytics_scheduler_status(),
         **report_runner_status(),
         "anthropic_ready": anthropic_ready(),
@@ -2794,6 +2803,102 @@ def backtest_rolling_atm(body: RollingAtmBacktestIn) -> dict[str, Any]:
         }
     except Exception as e:
         raise _err(e) from e
+
+
+@app.get("/velocity/status")
+def velocity_status() -> dict[str, Any]:
+    """Delta-velocity engine health and last sample.
+
+    Prefix is ``/velocity`` rather than ``/delta-velocity`` so a future SPA page
+    at ``/delta-velocity`` does not collide with an API prefix — a hard browser
+    load of a colliding path returns a JSON 404 (see CLAUDE.md).
+    """
+    return {
+        "alive": delta_velocity_alive(),
+        "underlyings": list(dv_collector.UNDERLYINGS),
+        "strike_width": dv_collector.STRIKE_WIDTH,
+        "expiries_tracked": dv_collector.EXPIRIES,
+        "last_report": delta_velocity_last_report(),
+        "state": delta_velocity_store.load_state(),
+    }
+
+
+@app.get("/velocity/coverage")
+def velocity_coverage(underlying: str = "NIFTY") -> dict[str, Any]:
+    """What the archive holds — the Phase 1 exit criterion is gap-free sessions."""
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    return delta_velocity_store.coverage(u)
+
+
+@app.get("/velocity/series")
+def velocity_series(underlying: str = "NIFTY", session_date: str | None = None) -> dict[str, Any]:
+    """Computed v_t for one archived session.
+
+    Read-only over the archive: never fetches, so it cannot be slowed by Kite
+    and returns nothing for a session that was not collected.
+    """
+    import pandas as pd
+
+    from analysis.delta_velocity.features import blank_summary, compute_delta_velocity
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+
+    snapshots = delta_velocity_store.load_session(u, day)
+    if not snapshots:
+        return {"underlying": u, "session_date": session_date, "minutes": 0, "points": []}
+
+    rows = pd.DataFrame(delta_velocity_store.to_rows(snapshots))
+    rows["ts"] = pd.to_datetime(rows["ts"], format="mixed", utc=True)
+    velocity, blanks = compute_delta_velocity(rows)
+    return {
+        "underlying": u,
+        "session_date": session_date or snapshots[0].get("session_date"),
+        "minutes": len(snapshots),
+        "observations": int(len(velocity)),
+        "blanks": blank_summary(blanks),
+        "points": [
+            {
+                "ts": str(r.ts),
+                "expiry": r.expiry,
+                "strike": r.strike,
+                "option_type": r.option_type,
+                "v_t": round(float(r.v_t), 8),
+            }
+            for r in velocity.itertuples()
+        ],
+    }
+
+
+@app.get("/velocity/chart")
+def velocity_chart(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+) -> dict[str, Any]:
+    """Per-minute spot + aggregated v_t + lag correlation for one session.
+
+    Aggregation and correlation run here rather than in the browser: a session
+    is ~25k (minute, contract) points, and keeping the statistics in one place
+    means they are testable instead of reimplemented in TypeScript.
+    """
+    from analysis.delta_velocity import chart as dv_chart
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+    return dv_chart.session_chart(u, day, expiry=expiry)
 
 
 @app.get("/api/meta")
