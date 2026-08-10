@@ -7,7 +7,10 @@ spot math — callers must keep using continuous LTP (`get_index_spot` /
 **Objective 1:** desk ``estimate`` is a pre-15:15 close forecast (Synth F +
 Fut LTP + VWAP proxy) — available outside the CAS window, not official
 equilibrium. Official Kite index ``indicative_*`` is accepted only when within
-3% of continuous spot (see ``sanitize_official_indicative``).
+3% of continuous spot (see ``classify_official_indicative``); when it is not,
+``official_raw`` carries what Kite actually sent and ``official_reject_reason``
+says why it was dropped (``outside_window`` / ``no_quote`` / ``missing_field`` /
+``no_spot_anchor`` / ``out_of_band``, ``null`` when accepted).
 
 Batch API shape: ``{"items": [<CasIndicative>, ...]}``.
 Single item shape (frontend contract)::
@@ -18,6 +21,8 @@ Single item shape (frontend contract)::
       "spot": 24750.0,
       "indicative": 24772.0,
       "official_indicative": 24772.0,
+      "official_raw": 24772.0,
+      "official_reject_reason": null,
       "estimate": 24765.0,
       "estimate_components": { "synth_f": ..., "fut_ltp": ..., "ref_vwap": ..., "ref_vwap_window": "running_1500" },
       "estimate_method": "proxy_v1",
@@ -43,7 +48,7 @@ from zoneinfo import ZoneInfo
 from config import INDEX_OPTIONS
 from instruments import resolve_instrument
 from kite_client import fetch_quote_batch
-from options.cas_estimate import sanitize_official_indicative
+from options.cas_estimate import classify_official_indicative
 from options.chain import get_index_spot
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -51,6 +56,10 @@ IST = ZoneInfo("Asia/Kolkata")
 CAS_UNDERLYINGS = ("NIFTY", "BANKNIFTY", "SENSEX")
 CAS_WINDOW_START = time(15, 15)
 CAS_WINDOW_END = time(15, 35)
+
+# Reject reasons owned here (the value-level ones live in ``cas_estimate``).
+OFFICIAL_REJECT_OUTSIDE_WINDOW = "outside_window"
+OFFICIAL_REJECT_NO_QUOTE = "no_quote"
 
 # In-process last good in-window tick (for outside-window display on /cas-indicative).
 _LAST_TICK: dict[str, dict[str, Any]] = {}
@@ -166,6 +175,7 @@ def _empty_payload(
     spot: float | None,
     source: str,
     when: datetime | None = None,
+    reject_reason: str = OFFICIAL_REJECT_NO_QUOTE,
 ) -> dict[str, Any]:
     return {
         "underlying": underlying,
@@ -173,6 +183,8 @@ def _empty_payload(
         "spot": spot,
         "indicative": None,
         "official_indicative": None,
+        "official_raw": None,
+        "official_reject_reason": reject_reason,
         "estimate": None,
         "estimate_components": None,
         "estimate_method": None,
@@ -367,17 +379,22 @@ def fetch_cas_indicative(
         )
     else:
         fields = parse_cas_fields(q)
-        raw_indicative = fields["indicative"] if in_window else None
+        # Keep the raw read regardless of window — an operator needs to see whether
+        # Kite carries the field at all, separately from whether we accepted it.
+        raw_indicative = fields["indicative"]
         # Sanitize before storing / exposing — garbage must not poison Δ / basis.
-        indicative = (
-            sanitize_official_indicative(raw_indicative, spot_f) if in_window else None
-        )
+        if in_window:
+            indicative, reject_reason = classify_official_indicative(raw_indicative, spot_f)
+        else:
+            indicative, reject_reason = None, OFFICIAL_REJECT_OUTSIDE_WINDOW
         payload = {
             "underlying": u,
             "in_cas_window": in_window,
             "spot": spot_f,
             "indicative": indicative,
             "official_indicative": indicative,
+            "official_raw": raw_indicative,
+            "official_reject_reason": reject_reason,
             "estimate": None,
             "estimate_components": None,
             "estimate_method": None,
@@ -481,6 +498,7 @@ def cas_for_snapshot(underlying: str) -> dict[str, Any] | None:
                 spot=None,
                 source="unavailable",
                 when=when,
+                reject_reason=OFFICIAL_REJECT_OUTSIDE_WINDOW,
             )
         # No Fut POC / synth here — Gamma/OI attach session_poc at snapshot top-level.
         return fetch_cas_indicative(u, now=when, include_reference_levels=False)

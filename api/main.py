@@ -96,6 +96,11 @@ from options.oi_tracker import build_snapshot, tracker_config
 from options.oi_tracker_store import append_log, get_log as oi_get_log
 from options.oi_movers import build_movers_snapshot, movers_config
 from options.oi_var import build_var_snapshot, var_config
+from options.cas_history import (
+    append_snapshot as cas_append_history,
+    read_session as cas_read_history,
+    sessions as cas_history_sessions,
+)
 from options.cas_indicative import (
     CAS_UNDERLYINGS,
     debug_quote_dump,
@@ -1980,11 +1985,48 @@ def cas_indicative(
     try:
         _require_kite_session()
         if underlying is None or str(underlying).strip() == "":
-            return fetch_cas_indicative_batch()
+            batch = fetch_cas_indicative_batch()
+            for item in batch.get("items", []):
+                cas_append_history(item)
+            return batch
         u = underlying.upper()
         if u not in CAS_UNDERLYINGS:
             raise RuntimeError(f"CAS indicative supports {list(CAS_UNDERLYINGS)}; got '{underlying}'")
-        return fetch_cas_indicative(u)
+        payload = fetch_cas_indicative(u)
+        cas_append_history(payload)
+        return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/cas/history")
+def cas_history(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX"),
+    session: str | None = Query(
+        None,
+        description="IST session date YYYY-MM-DD, or 'today'; omit for the latest on disk",
+    ),
+    limit: int = Query(5000, ge=1, le=20000),
+) -> dict[str, Any]:
+    """Recorded CAS series for the intraday chart (display-only).
+
+    Reads ``data/cas_history.jsonl`` only — deliberately not gated on a Kite
+    session, so the chart still renders after the daily ~6 AM token expiry.
+    """
+    try:
+        u = underlying.upper()
+        if u not in CAS_UNDERLYINGS:
+            raise RuntimeError(f"CAS history supports {list(CAS_UNDERLYINGS)}; got '{underlying}'")
+        series = cas_read_history(u, session, limit=limit)
+        return {
+            "underlying": u,
+            "session": (series[-1].get("session") if series else (session or None)),
+            "count": len(series),
+            "sessions": cas_history_sessions(),
+            "series": series,
+        }
     except HTTPException:
         raise
     except Exception as e:

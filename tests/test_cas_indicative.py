@@ -114,6 +114,8 @@ def test_fetch_cas_indicative_in_window(monkeypatch: pytest.MonkeyPatch) -> None
     assert out["spot"] == 24750.0
     assert out["indicative"] == 24772.0
     assert out["official_indicative"] == 24772.0
+    assert out["official_raw"] == 24772.0
+    assert out["official_reject_reason"] is None
     assert out["reference_limit_price"] == 24700.0
     assert out["upper_circuit_limit"] is None
     assert out["lower_circuit_limit"] is None
@@ -138,6 +140,31 @@ def test_fetch_rejects_garbage_official_indicative(monkeypatch: pytest.MonkeyPat
         assert out["official_indicative"] is None
         assert out["reference_limit_price"] == 24500.0
         assert out["last"] is None  # sanitized null must not become last tick
+        # The rejected value is still reported so the desk can see what Kite sent.
+        assert out["official_raw"] == garbage
+        assert out["official_reject_reason"] == "out_of_band"
+
+
+def test_reject_reason_missing_field_vs_no_quote(monkeypatch: pytest.MonkeyPatch) -> None:
+    """"Kite sent no indicative" and "no quote at all" must not look identical."""
+    monkeypatch.setattr(cas, "get_index_spot", lambda u: 24550.0)
+    out = cas.fetch_cas_indicative(
+        "NIFTY", now=_dt(15, 20), quote={"reference_limit_price": 24500.0}
+    )
+    assert out["official_raw"] is None
+    assert out["official_reject_reason"] == "missing_field"
+
+    empty = cas._empty_payload("NIFTY", in_window=True, spot=24550.0, source="unavailable")
+    assert empty["official_reject_reason"] == "no_quote"
+
+
+def test_reject_reason_outside_window_keeps_raw(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cas, "get_index_spot", lambda u: 24750.0)
+    quote = {"indicative_close_price": 24772.0}
+    out = cas.fetch_cas_indicative("NIFTY", now=_dt(14, 30), quote=quote)
+    assert out["official_indicative"] is None
+    assert out["official_raw"] == 24772.0
+    assert out["official_reject_reason"] == "outside_window"
 
 
 def test_fetch_cas_indicative_outside_window_nulls_indicative(

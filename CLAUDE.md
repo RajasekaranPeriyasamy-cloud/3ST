@@ -96,6 +96,7 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | `survivor_{config,state,log}.json` | `execution/survivor_store.py` |
 | `wave_config.json` | `execution/wave_store.py` |
 | `watchlist.json`, `selection.json` | `watchlist_store.py` |
+| `cas_history.jsonl` | `options/cas_history.py` (append-only; written from the `/cas/*` routes, not the payload builders) |
 | `paper_broker.json` | `broker/paper_broker.py` |
 | `kite_session.json` | `kite_auth.py` — gitignored |
 | `kite_instruments.json` | `instruments.py` cache |
