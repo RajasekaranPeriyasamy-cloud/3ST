@@ -111,6 +111,10 @@ def to_rows(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "delta": leg.get("delta"),
                     "iv": leg.get("iv"),
                     "ltp": leg.get("ltp"),
+                    # Collected since the first snapshot but not previously
+                    # surfaced here; PCR and the OI tiles read them.
+                    "oi": leg.get("oi"),
+                    "volume": leg.get("volume"),
                     "spot": snap.get("spot"),
                 }
             )

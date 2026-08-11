@@ -416,3 +416,176 @@ def test_chart_thresholds_present_once_velocity_exists(tmp_path, monkeypatch):
     out = chart.session_chart("NIFTY", date(2026, 8, 10))
     assert out["thresholds"]["p95"] is not None
     assert out["thresholds"]["p99"] >= out["thresholds"]["p95"]
+
+
+# --------------------------------------------------------------------------
+# premium ladder + context tiles
+# --------------------------------------------------------------------------
+
+
+def test_to_rows_still_returns_every_prior_field(tmp_path, monkeypatch):
+    """Regression on the oi/volume extension — nothing may be dropped."""
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    store.append_snapshot("NIFTY", {
+        "ts": "2026-08-10T09:20:00+05:30", "session_date": "2026-08-10",
+        "underlying": "NIFTY", "spot": 24500.0,
+        "legs": [{"expiry": "2026-08-11", "strike": 24500.0, "option_type": "CE",
+                  "delta": 0.51, "iv": 0.12, "ltp": 80.0, "oi": 1234.0, "volume": 99.0}],
+    })
+    row = store.to_rows(store.load_session("NIFTY", date(2026, 8, 10)))[0]
+    for field in ("ts", "session_date", "underlying", "expiry", "strike",
+                  "option_type", "delta", "iv", "ltp", "spot"):
+        assert field in row, f"to_rows dropped {field}"
+    assert row["oi"] == 1234.0
+    assert row["volume"] == 99.0
+
+
+def _ladder_rows(*, minutes=30, spot_fn=None, drop_after=None):
+    """ATM+/-5 CE/PE on one expiry, one row per minute per leg."""
+    base = datetime(2026, 8, 10, 9, 15, tzinfo=store.IST)
+    out = []
+    for i in range(minutes):
+        ts = base + timedelta(minutes=i)
+        spot = spot_fn(i) if spot_fn else 24500.0
+        for k in range(-5, 6):
+            strike = 24500.0 + k * 50
+            for opt in ("CE", "PE"):
+                if drop_after is not None and strike == 24750.0 and i > drop_after:
+                    continue
+                out.append({
+                    "ts": ts, "session_date": "2026-08-10", "underlying": "NIFTY",
+                    "expiry": "2026-08-11", "strike": strike, "option_type": opt,
+                    "delta": 0.5, "iv": 0.12, "ltp": 100.0 + i, "oi": 1000.0 if opt == "CE" else 800.0,
+                    "volume": 10.0, "spot": spot,
+                })
+    return pd.DataFrame(out)
+
+
+def test_ladder_has_twelve_series_atm_and_otm_only():
+    from analysis.delta_velocity import chart
+
+    out = chart.session_ladder(_ladder_rows(), "NIFTY")
+    labels = [s["label"] for s in out["series"]]
+    assert len(labels) == 12
+    assert "ATM CE" in labels and "ATM PE" in labels
+    assert "OTM CE 5" in labels and "OTM PE 5" in labels
+    ce = [s for s in out["series"] if s["option_type"] == "CE" and s["offset"] > 0]
+    pe = [s for s in out["series"] if s["option_type"] == "PE" and s["offset"] < 0]
+    assert all(s["strike"] > out["atm_at_open"] for s in ce), "OTM calls must sit above ATM"
+    assert all(s["strike"] < out["atm_at_open"] for s in pe), "OTM puts must sit below ATM"
+
+
+def test_ladder_change_is_zero_at_baseline():
+    from analysis.delta_velocity import chart
+
+    out = chart.session_ladder(_ladder_rows(), "NIFTY")
+    for s in out["series"]:
+        assert s["points"][0]["change"] == 0.0
+    assert out["series"][0]["points"][-1]["change"] == pytest.approx(29.0)
+
+
+def test_ladder_pins_to_open_atm_when_spot_drifts():
+    """Spot moving two strikes must not re-strike the ladder mid-session.
+
+    Re-striking would make a series jump contracts and display a premium change
+    nobody traded.
+    """
+    from analysis.delta_velocity import chart
+
+    drifting = _ladder_rows(minutes=30, spot_fn=lambda i: 24500.0 + i * 5)
+    out = chart.session_ladder(drifting, "NIFTY")
+    assert out["atm_at_open"] == 24500.0
+    assert next(s for s in out["series"] if s["label"] == "ATM CE")["strike"] == 24500.0
+
+
+def test_ladder_returns_partial_series_rather_than_dropping():
+    """A strike that leaves the tracked window keeps the points it had."""
+    from analysis.delta_velocity import chart
+
+    out = chart.session_ladder(_ladder_rows(minutes=30, drop_after=10), "NIFTY")
+    partial = next(s for s in out["series"] if s["strike"] == 24750.0)
+    assert 0 < len(partial["points"]) < 30
+
+
+def test_ladder_marks_series_that_missed_the_baseline():
+    from analysis.delta_velocity import chart
+
+    rows = _ladder_rows(minutes=30)
+    late = rows[~((rows["strike"] == 24750.0) & (rows["ts"] == rows["ts"].min()))]
+    out = chart.session_ladder(late, "NIFTY")
+    series = next(s for s in out["series"] if s["strike"] == 24750.0)
+    assert series["baseline_at_open"] is False
+
+
+def test_baseline_at_open_is_not_coverage():
+    """A strike can be baselined at the open and still leave the window.
+
+    Observed live 2026-08-11: OTM CE 5 was present at 09:15 and held only 2 of
+    161 minutes as spot fell away from it. Conflating the two would report that
+    series as fully covered.
+    """
+    from analysis.delta_velocity import chart
+
+    out = chart.session_ladder(_ladder_rows(minutes=30, drop_after=10), "NIFTY")
+    series = next(s for s in out["series"] if s["strike"] == 24750.0)
+    assert series["baseline_at_open"] is True
+    assert series["coverage"] < 30
+
+
+def test_ladder_empty_input_is_not_an_error():
+    from analysis.delta_velocity import chart
+
+    out = chart.session_ladder(pd.DataFrame(), "NIFTY")
+    assert out["series"] == []
+    assert out["step"] == 50
+
+
+def test_context_reports_spot_move_straddle_and_pcr():
+    from analysis.delta_velocity import chart
+
+    rows = _ladder_rows(minutes=30, spot_fn=lambda i: 24500.0 + i)
+    ctx = chart.session_context(rows, "NIFTY")
+    assert ctx["spot"] == pytest.approx(24529.0)
+    assert ctx["spot_change"] == pytest.approx(29.0)
+    assert ctx["straddle"] == pytest.approx(258.0)
+    assert ctx["pcr"] == pytest.approx(0.8)
+
+
+def test_context_labels_its_scope():
+    """PCR here is over the tracked window, not the chain — it must say so."""
+    from analysis.delta_velocity import chart
+
+    ctx = chart.session_context(_ladder_rows(), "NIFTY", expiry="2026-08-11")
+    assert "ATM+/-5" in ctx["scope"]
+    assert "2026-08-11" in ctx["scope"]
+
+
+def test_chart_payload_carries_ladder_and_context(tmp_path, monkeypatch):
+    from analysis.delta_velocity import chart
+
+    _write_session(tmp_path, monkeypatch, minutes=90)
+    out = chart.session_chart("NIFTY", date(2026, 8, 10))
+    assert "ladder" in out and "context" in out
+    assert out["context"]["scope"] is not None
+
+
+def test_chart_ladder_uses_one_expiry_only(tmp_path, monkeypatch):
+    """Three tracked expiries must not turn 12 series into 36."""
+    from analysis.delta_velocity import chart
+
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    base = datetime(2026, 8, 10, 9, 15, tzinfo=store.IST)
+    for i in range(40):
+        legs = []
+        for exp in ("2026-08-11", "2026-08-18", "2026-08-25"):
+            for k in range(-5, 6):
+                for opt in ("CE", "PE"):
+                    legs.append({"expiry": exp, "strike": 24500.0 + k * 50, "option_type": opt,
+                                 "delta": 0.5 + 0.001 * i, "iv": 0.12, "ltp": 100.0 + i,
+                                 "oi": 1000.0, "volume": 1.0})
+        store.append_snapshot("NIFTY", {
+            "ts": (base + timedelta(minutes=i)).isoformat(), "session_date": "2026-08-10",
+            "underlying": "NIFTY", "spot": 24500.0, "legs": legs,
+        })
+    out = chart.session_chart("NIFTY", date(2026, 8, 10))
+    assert len(out["ladder"]["series"]) == 12

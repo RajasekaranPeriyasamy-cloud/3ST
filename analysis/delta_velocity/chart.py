@@ -37,6 +37,10 @@ from config import INDEX_OPTIONS
 
 MAX_LAG_MINUTES = 10
 
+# Strikes each side of ATM carried on the premium ladder. Matches the collector's
+# STRIKE_WIDTH so the ladder never asks for a strike that was not archived.
+LADDER_OFFSETS = 5
+
 # Correlation over a handful of minutes is noise dressed as a finding. A single
 # session is 375 minutes; refusing below 60 keeps an early-morning page from
 # showing a confident number built on nothing.
@@ -81,6 +85,161 @@ def _atm_strike(underlying: str, spot: float) -> float:
     return float(round(float(spot) / step) * step)
 
 
+def _step(underlying: str) -> int:
+    return int((INDEX_OPTIONS.get(str(underlying).upper()) or {}).get("strike_step") or 50)
+
+
+def ladder_series_spec(atm: float, step: int, *, offsets: int = LADDER_OFFSETS) -> list[dict[str, Any]]:
+    """The 12 series: ATM on both sides, then OTM calls up and OTM puts down.
+
+    Only the out-of-the-money side of each type is carried. Plotting all 22
+    tracked strikes doubles the ink for the ITM legs, whose premium change is
+    dominated by intrinsic value and therefore just restates spot.
+    """
+    spec: list[dict[str, Any]] = [
+        {"label": "ATM CE", "strike": atm, "option_type": "CE", "offset": 0},
+        {"label": "ATM PE", "strike": atm, "option_type": "PE", "offset": 0},
+    ]
+    for i in range(1, offsets + 1):
+        spec.append({"label": f"OTM CE {i}", "strike": atm + i * step, "option_type": "CE", "offset": i})
+        spec.append({"label": f"OTM PE {i}", "strike": atm - i * step, "option_type": "PE", "offset": -i})
+    return spec
+
+
+def session_ladder(
+    rows: pd.DataFrame,
+    underlying: str,
+    *,
+    expiry: str | None = None,
+    offsets: int = LADDER_OFFSETS,
+) -> dict[str, Any]:
+    """Premium change since the session's first snapshot, pinned to the open ATM.
+
+    Pinned deliberately. ``collector.tracked_legs`` recomputes ATM every minute,
+    so the tracked strike set slides as spot moves — measured 2026-08-10, a
+    71-point NIFTY move produced 13 distinct strikes of which only 9 spanned the
+    full session. Re-striking the ladder mid-session would make a series jump
+    between contracts and show a premium change that nobody traded. Pinning
+    instead leaves edge strikes with partial coverage, which is returned as a
+    short series rather than dropped, and each series carries its own baseline
+    timestamp so a late-arriving strike is not silently rebased to 09:15.
+    """
+    empty = {"baseline_ts": None, "atm_at_open": None, "step": _step(underlying), "series": []}
+    if rows is None or rows.empty:
+        return empty
+
+    frame = rows.dropna(subset=["ts"]).sort_values("ts")
+    if expiry:
+        frame = frame[frame["expiry"].astype(str) == str(expiry)]
+    if frame.empty:
+        return empty
+
+    first_ts = frame["ts"].iloc[0]
+    open_spot = frame[frame["ts"] == first_ts]["spot"].dropna()
+    if open_spot.empty:
+        return empty
+
+    step = _step(underlying)
+    atm = _atm_strike(underlying, float(open_spot.iloc[0]))
+
+    out: list[dict[str, Any]] = []
+    for spec in ladder_series_spec(atm, step, offsets=offsets):
+        leg = frame[
+            (frame["strike"].astype(float) == float(spec["strike"]))
+            & (frame["option_type"].astype(str).str.upper() == spec["option_type"])
+        ].dropna(subset=["ltp"])
+        if leg.empty:
+            continue
+        baseline = float(leg["ltp"].iloc[0])
+        out.append(
+            {
+                **spec,
+                "baseline_ts": leg["ts"].iloc[0].isoformat(),
+                "baseline_ltp": round(baseline, 4),
+                # Whether this series is rebased to the session open or to a
+                # later first appearance. Distinct from coverage: a strike can
+                # be present at the open and still leave the tracked window
+                # minutes later, giving a short series with a valid baseline.
+                "baseline_at_open": bool(leg["ts"].iloc[0] == first_ts),
+                "coverage": int(len(leg)),
+                "points": [
+                    {
+                        "clock": ts.tz_convert(store.IST).strftime("%H:%M"),
+                        "change": round(float(px) - baseline, 4),
+                    }
+                    for ts, px in zip(leg["ts"], leg["ltp"], strict=True)
+                ],
+            }
+        )
+
+    return {
+        "baseline_ts": first_ts.isoformat(),
+        "atm_at_open": atm,
+        "step": step,
+        "series": out,
+    }
+
+
+def session_context(rows: pd.DataFrame, underlying: str, *, expiry: str | None = None) -> dict[str, Any]:
+    """Spot, ATM straddle, PCR and OI over the tracked strikes.
+
+    PCR and the OI totals are computed over the collected window only — ATM+/-5
+    on the nearest expiry — not the full chain. That is a materially different
+    number from the OI desks and is labelled ``scope`` so it cannot be read as
+    a chain-wide PCR.
+    """
+    empty = {"spot": None, "spot_change": None, "spot_change_pct": None, "atm": None,
+             "straddle": None, "straddle_pct": None, "pcr": None, "ce_oi": None,
+             "pe_oi": None, "scope": None}
+    if rows is None or rows.empty:
+        return empty
+
+    frame = rows.dropna(subset=["ts"]).sort_values("ts")
+    if expiry:
+        frame = frame[frame["expiry"].astype(str) == str(expiry)]
+    if frame.empty:
+        return empty
+
+    first_ts, last_ts = frame["ts"].iloc[0], frame["ts"].iloc[-1]
+    open_spot = frame[frame["ts"] == first_ts]["spot"].dropna()
+    last = frame[frame["ts"] == last_ts]
+    last_spot = last["spot"].dropna()
+    if open_spot.empty or last_spot.empty:
+        return empty
+
+    spot0, spot1 = float(open_spot.iloc[0]), float(last_spot.iloc[0])
+    atm = _atm_strike(underlying, spot1)
+
+    def _leg_ltp(opt: str) -> float | None:
+        hit = last[
+            (last["strike"].astype(float) == atm)
+            & (last["option_type"].astype(str).str.upper() == opt)
+        ]["ltp"].dropna()
+        return float(hit.iloc[0]) if not hit.empty else None
+
+    ce, pe = _leg_ltp("CE"), _leg_ltp("PE")
+    straddle = round(ce + pe, 2) if ce is not None and pe is not None else None
+
+    oi = last.dropna(subset=["oi"]) if "oi" in last.columns else last.iloc[0:0]
+    ce_oi = float(oi[oi["option_type"].astype(str).str.upper() == "CE"]["oi"].sum()) if not oi.empty else None
+    pe_oi = float(oi[oi["option_type"].astype(str).str.upper() == "PE"]["oi"].sum()) if not oi.empty else None
+    pcr = round(pe_oi / ce_oi, 4) if ce_oi else None
+
+    return {
+        "spot": round(spot1, 2),
+        "spot_change": round(spot1 - spot0, 2),
+        "spot_change_pct": round((spot1 - spot0) / spot0 * 100.0, 3) if spot0 else None,
+        "atm": atm,
+        "straddle": straddle,
+        "straddle_pct": round(straddle / spot1 * 100.0, 3) if straddle and spot1 else None,
+        "pcr": pcr,
+        "ce_oi": ce_oi,
+        "pe_oi": pe_oi,
+        "scope": f"ATM+/-{LADDER_OFFSETS} strikes"
+        + (f", expiry {expiry}" if expiry else ", all tracked expiries"),
+    }
+
+
 def session_chart(
     underlying: str,
     session_date: date | None = None,
@@ -99,6 +258,8 @@ def session_chart(
         "thresholds": {},
         "correlation": {"n": 0, "lag_profile": [], "best_lag": None,
                         "contemporaneous": None, "interpretation": "no data"},
+        "ladder": {"baseline_ts": None, "atm_at_open": None, "step": _step(u), "series": []},
+        "context": session_context(None, u),
     }
     if not snapshots:
         return empty
@@ -113,6 +274,12 @@ def session_chart(
         if rows.empty:
             return {**empty, "session_date": snapshots[0].get("session_date")}
 
+    # Ladder and context are per-expiry: without this the same strike appears
+    # once per tracked expiry and the 12 series become 36.
+    ladder_expiry = expiry or str(sorted(rows["expiry"].astype(str).unique())[0])
+    ladder = session_ladder(rows, u, expiry=ladder_expiry)
+    context = session_context(rows, u, expiry=ladder_expiry)
+
     spot = rows.groupby("ts")["spot"].first().sort_index()
     atm = _atm_strike(u, float(spot.median()))
 
@@ -122,6 +289,8 @@ def session_chart(
             **empty,
             "session_date": snapshots[0].get("session_date"),
             "atm_strike": atm,
+            "ladder": ladder,
+            "context": context,
             "contracts": int(rows.groupby(["expiry", "strike", "option_type"]).ngroups),
             "minutes": [
                 {"ts": ts.isoformat(), "clock": ts.tz_convert(store.IST).strftime("%H:%M"),
@@ -158,6 +327,8 @@ def session_chart(
         "session_date": snapshots[0].get("session_date"),
         "atm_strike": atm,
         "nearest_expiry": nearest_expiry,
+        "ladder": ladder,
+        "context": context,
         "contracts": int(velocity.groupby(["expiry", "strike", "option_type"]).ngroups),
         "minutes": [
             {
