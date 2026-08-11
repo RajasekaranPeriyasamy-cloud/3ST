@@ -2569,12 +2569,54 @@ export interface VelocityLagPoint {
   n: number;
 }
 
+export interface VelocityLadderPoint {
+  clock: string;
+  change: number;
+}
+
+export interface VelocityLadderSeries {
+  label: string;
+  strike: number;
+  option_type: string;
+  offset: number;
+  baseline_ts: string;
+  baseline_ltp: number;
+  /** Rebased to the session open (vs a later first appearance). Not coverage. */
+  baseline_at_open: boolean;
+  /** Minutes actually present; a strike can leave the tracked window mid-session. */
+  coverage: number;
+  points: VelocityLadderPoint[];
+}
+
+export interface VelocityLadder {
+  baseline_ts: string | null;
+  atm_at_open: number | null;
+  step: number;
+  series: VelocityLadderSeries[];
+}
+
+export interface VelocityContext {
+  spot: number | null;
+  spot_change: number | null;
+  spot_change_pct: number | null;
+  atm: number | null;
+  straddle: number | null;
+  straddle_pct: number | null;
+  pcr: number | null;
+  ce_oi: number | null;
+  pe_oi: number | null;
+  /** PCR/OI are over the tracked window, not the full chain. Always show this. */
+  scope: string | null;
+}
+
 export interface VelocityChart {
   underlying: string;
   session_date: string | null;
   atm_strike: number | null;
   nearest_expiry?: string;
   contracts: number;
+  ladder: VelocityLadder;
+  context: VelocityContext;
   minutes: VelocityChartMinute[];
   thresholds: { p95?: number | null; p99?: number | null };
   correlation: {

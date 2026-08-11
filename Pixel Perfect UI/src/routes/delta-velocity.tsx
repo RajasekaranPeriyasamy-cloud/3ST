@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import {
@@ -15,6 +15,7 @@ import {
 } from "recharts";
 
 import { api } from "@/lib/api";
+import { PremiumLadder } from "@/components/velocity/PremiumLadder";
 import type {
   VelocityChart,
   VelocityCoverage,
@@ -60,6 +61,24 @@ function Stat({
 function fmtV(v: number | null | undefined): string {
   if (v == null) return "—";
   return v.toFixed(5);
+}
+
+function fmtNum(v: number | null | undefined, digits = 2): string {
+  if (v == null) return "—";
+  return v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+/** Open interest runs to eight figures; full digits crowd the tile and read no better. */
+function fmtOi(v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (Math.abs(v) >= 1e7) return `${(v / 1e7).toFixed(2)}Cr`;
+  if (Math.abs(v) >= 1e5) return `${(v / 1e5).toFixed(2)}L`;
+  return v.toLocaleString();
+}
+
+function changeTone(v: number | null | undefined): string {
+  if (v == null || v === 0) return "text-foreground";
+  return v > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400";
 }
 
 function DeltaVelocityPage() {
@@ -114,6 +133,7 @@ function DeltaVelocityPage() {
     }));
   }, [chart, p95]);
 
+  const ctx = chart?.context ?? null;
   const withVelocity = rows.filter((r) => r.v_max != null).length;
   const corr = chart?.correlation;
   const lagRows = (corr?.lag_profile ?? []).filter((p) => p.corr != null);
@@ -159,6 +179,40 @@ function DeltaVelocityPage() {
           <CardContent className="py-3 text-sm text-red-600 dark:text-red-400">{error}</CardContent>
         </Card>
       ) : null}
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <Stat
+          label="Spot"
+          value={fmtNum(ctx?.spot)}
+          hint={
+            ctx?.spot_change != null
+              ? `${ctx.spot_change > 0 ? "+" : ""}${fmtNum(ctx.spot_change)} (${fmtNum(ctx.spot_change_pct, 2)}%)`
+              : "since session open"
+          }
+          tone={changeTone(ctx?.spot_change)}
+        />
+        <Stat
+          label="ATM"
+          value={ctx?.atm != null ? String(ctx.atm) : "—"}
+          hint={
+            ctx?.straddle != null
+              ? `straddle ${fmtNum(ctx.straddle)} (${fmtNum(ctx.straddle_pct, 2)}%)`
+              : "no straddle"
+          }
+        />
+        <Stat label="PCR" value={ctx?.pcr != null ? fmtNum(ctx.pcr, 3) : "—"} hint="PE OI / CE OI" />
+        <Stat label="CE OI" value={fmtOi(ctx?.ce_oi)} hint="tracked window" />
+        <Stat label="PE OI" value={fmtOi(ctx?.pe_oi)} hint="tracked window" />
+      </div>
+
+      <p className="-mt-2 text-[11px] text-muted-foreground">
+        PCR and OI cover {ctx?.scope ?? "the tracked window"} — not the full chain, so they
+        will differ from the OI desks. Net GEX and the gamma-flip regime live on{" "}
+        <Link to="/gamma-density" className="underline underline-offset-2">
+          Gamma Density
+        </Link>
+        .
+      </p>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat
@@ -213,6 +267,32 @@ function DeltaVelocityPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">
+            Option prices — change since session open
+            {chart?.ladder?.atm_at_open != null ? (
+              <Badge variant="outline" className="ml-2 font-mono text-[10px]">
+                pinned to open ATM {chart.ladder.atm_at_open}
+              </Badge>
+            ) : null}
+            {chart?.nearest_expiry ? (
+              <Badge variant="outline" className="ml-2 font-mono text-[10px]">
+                {chart.nearest_expiry}
+              </Badge>
+            ) : null}
+          </CardTitle>
+          <p className="text-[11px] text-muted-foreground">
+            ATM both sides, then OTM calls up and OTM puts down. Pinned to the opening ATM —
+            re-striking mid-session would show a premium change nobody traded. Hover a legend
+            entry to isolate it.
+          </p>
+        </CardHeader>
+        <CardContent className="p-0">
+          <PremiumLadder ladder={chart?.ladder ?? null} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-2">
