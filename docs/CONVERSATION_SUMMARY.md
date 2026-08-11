@@ -1,12 +1,102 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-10  
+**Last updated:** 2026-08-11  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** CAS reject reasons · intraday history store + chart
+**Session focus:** Gamma Concentration tab rebuild · HHI measurement basis
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-11 — Gamma Concentration tab rebuild · HHI measurement basis
+
+Redesign of the `/gamma-density` → **Concentration** tab against supplied mockups, plus an
+audit of the HHI maths behind it. Analysis desk only — nothing under `broker/` /
+`execution/` / `risk/` touched.
+
+### The finding that drove the change
+
+`_strike_mass()` measured concentration on `|net_gex|`, where `net_gex = ce_gex + pe_gex`.
+Under the `naive` sign mode CE is dealer-long (+1) and PE dealer-short (−1), so **a strike
+with a balanced CE/PE book cancels to ~zero mass and drops out of the index entirely**,
+while a one-sided strike takes the whole share. That is concentration of the *net dealer
+imbalance*, not of dealer gamma — and it was never the same basis as the `call_hhi` /
+`put_hhi` printed beside it, which have always been gross.
+
+Empirically it showed: persisted day-end NIFTY HHI ran `0.073, 0.321, 0.059, 0.054, 0.054,
+0.066, 0.094` — only 2026-08-04 (0-DTE expiry) ever cleared the `concentrated ≥ 0.25` cut, so
+the desk read "dispersed" on essentially every non-expiry day and the band carried no
+information.
+
+### Shipped — backend
+
+1. **Gross mass basis is now the default** (`mass_basis`, `gross` | `net`). Both are always
+   reported as `hhi_gross` / `hhi_net`; `?mass_basis=net` on `/gamma-density/snapshot`
+   restores the old measure. Headline and Call/Put HHI finally share one basis.
+2. **Band cuts are per-basis and config-overridable.** Gross defaults 0.18 / 0.08, calibrated
+   against BSM gamma × index-scale OI at NIFTY (±20 strikes): 0-DTE 0.18–0.32, 1–2 DTE
+   0.08–0.13, weekly/monthly 0.02–0.07. Net keeps the legacy 0.25 / 0.12. Desk vocabulary is
+   now **compressed / balanced / dispersed** (`band_label`; Ávila quadrant suffix follows).
+3. **Density fallback moved to the aggregate level.** It used to fire *per row* when a strike's
+   `net_gex` rounded to 0, contributing a mass in density units — density and GEX differ by
+   `S²·0.01` (~6e6 at index scale). `_side_masses` already did this correctly.
+4. **Day-end HHI rows carry their measurement basis** — `basis`, `strike_window`, `sign_mode`,
+   `updated_at`, plus **both** measures (`hhi_gross` / `hhi_net`). HHI's floor is `1/N`, so a day
+   recorded at window 10 was silently being ranked against window-20 history;
+   `filter_daily_hhi_basis()` now restricts the 5-/30-session sample to like-for-like rows and
+   resolves a row recorded on one basis to the other when it carries it — so switching
+   `mass_basis` keeps the cross-session history instead of restarting it. The multi-index strip
+   (window 8) was the worst offender and is fixed the same way.
+5. **Legacy rows are migrated, not discarded.** `normalize_legacy_daily_hhi_row()` reads any
+   untagged row as net-basis at the config default window, flagged `strike_window_assumed` /
+   `legacy`; `upsert_daily_hhi()` persists that interpretation on its next locked write
+   (idempotent, no new write path, and an unmigrated store behaves identically to a migrated
+   one). The assumption is sound: only two paths ever wrote a day-end HHI, and the background
+   GEX recorder — which passes no `strike_window`, so always the default — samples continuously
+   and therefore almost always owns the last write of the day. Legacy rows carry no gross
+   measure, so they serve **net-basis comparisons only**; the gross series builds from the first
+   tagged session. `hhi_session_assumed_count` reports how many sample rows are inferred and the
+   30-session chart states it. Dry-run against a copy of the live store: all 8 underlyings
+   (NIFTY 7 rows, CRUDEOIL 9, NATURALGAS 6, SENSEX 6, BANKNIFTY/GOLD/SILVER 4, CRUDEOILM 2)
+   migrate cleanly and become net-usable in full.
+6. **New payload fields** for the redesign: `daily_hhi[]`, `hhi_prev_session(_date)`,
+   `hhi_dod_pct`, `hhi_mean_5(_band)`, `hhi_mean_30`, `hhi_vs_mean_pct`, `hhi_low_30`/
+   `hhi_high_30`, `top5_share`, `pos_/neg_gamma_peak_strike`, `call_band`/`put_band`, snapshot
+   `dte`. Prior-session and rolling-mean stats **exclude today** — a mean that moves with
+   today's own polls is not a baseline. `top_contributors` now covers the whole window (was
+   capped at 25) and carries `share_sq`, since the ladder tooltips read HHI contribution off
+   the tail.
+
+### Shipped — UI
+
+`ConcentrationBoard.tsx` split into `components/gamma/concentration/`: hero (giant HHI, band,
+D/D, 0→1 gauge with 5-session-mean tick and band-cut ticks — the old gauge divided by 0.5 and
+would peg any compressed reading at 100%), cumulative-Γ strike ladder (inline SVG: signed net-γ
+bars, running gross-γ curve, spot/pin/cliff/peak markers, per-strike tooltip with HHI
+contribution and distance from spot), 30-session bar chart, top-N builders, Call/Put γ HHI, and
+an OI-change panel (ATM / put-call / day ΔOI / top movers). Retained by request: multi-index
+strip, intraday HHI spark with mean-cross flips, Gini / Ávila quadrant, Pin / Cliff.
+
+A **γ mass** selector in the tab header switches `mass_basis` and refetches. Without it the
+net-basis path — and therefore the whole legacy-row migration — would have had no consumer in
+the UI, since the board only ever requested the gross default.
+
+### Test status
+
+122 gamma tests pass. Full suite **480 passed, 6 failed** — the same 6 date-drifted fixtures as
+the 2026-08-10 session (verified identical on a stashed tree). Band-threshold assertions in
+`test_gamma_density.py` were re-pointed at the gross cuts; new coverage in `test_gamma_hhi.py`
+(gross-vs-net cancellation, aggregate density fallback, γ peaks, today-excluded session stats,
+full contributor list) and `test_gamma_density_history.py` (basis tagging, filtering, legacy
+normalization, dual-basis resolution, in-place migration).
+
+Verified end-to-end against a synthetic 0-DTE NIFTY chain via `StaticGammaDensityDataProvider`
+(no Kite session was available): HHI 0.186 gross / 0.142 net, top-5 = 91%, peaks, D/D, 29-session
+sample, ΔOI movers all render; no console errors, no horizontal overflow at 375px.
+`npx vite build` fails at the TanStack **prerender** step on a clean tree too — pre-existing,
+unrelated.
 
 ---
 

@@ -2140,6 +2140,10 @@ def gamma_density_snapshot(
         description="live (provisional pivots while gated) | research (relax when sparse)",
     ),
     reversal_oi_gate: bool = Query(False, description="Require supportive OI on reversals"),
+    mass_basis: str | None = Query(
+        None,
+        description="gross (|CE γ|+|PE γ|, default) | net (|CE γ+PE γ|) — HHI mass basis",
+    ),
 ) -> dict[str, Any]:
     try:
         u = underlying.upper()
@@ -2159,6 +2163,7 @@ def gamma_density_snapshot(
             reversal_gex_gate=reversal_gex_gate,
             reversal_gex_mode=reversal_gex_mode,
             reversal_oi_gate=reversal_oi_gate,
+            mass_basis=mass_basis,
         )
     except HTTPException:
         raise

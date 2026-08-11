@@ -489,8 +489,8 @@ def test_compute_gamma_concentration_call_put_hhi_and_contributors():
     assert contribs[1]["side_bias"] == "put"
 
 
-def test_top_contributors_returns_up_to_25():
-    """API returns up to 25 contributors so the UI can slice without refetch."""
+def test_top_contributors_covers_the_whole_window():
+    """Every strike is returned so the UI can slice / look up shares without refetch."""
     strikes = [
         {
             "strike": float(20000 + i * 100),
@@ -511,7 +511,7 @@ def test_top_contributors_returns_up_to_25():
         flip_level=None,
     )
     contribs = out["top_contributors"]
-    assert len(contribs) == 25
+    assert len(contribs) == 30
     shares = [c["share"] for c in contribs]
     assert shares == sorted(shares, reverse=True)
     assert contribs[0]["strike"] == 20000.0
@@ -653,16 +653,16 @@ def test_gini_case_a_equal_masses():
     assert out4["hhi"] == pytest.approx(0.25, abs=1e-3)
     assert out4["gini"] == pytest.approx(0.0, abs=1e-3)
     assert out4["band"] == "concentrated"
-    assert out4["shape_quadrant"] == "equal-concentrated"
+    assert out4["shape_quadrant"] == "equal-compressed"
 
-    # 5 equal → HHI = 0.2 (mixed) → equal-balanced
-    out5 = gd.compute_gamma_concentration(
-        _mass_strikes([1, 1, 1, 1, 1]), **_conc_kwargs()
+    # 8 equal → HHI = 0.125 (mixed on the gross cuts) → equal-balanced
+    out8 = gd.compute_gamma_concentration(
+        _mass_strikes([1] * 8), **_conc_kwargs()
     )
-    assert out5["hhi"] == pytest.approx(0.2, abs=1e-3)
-    assert out5["gini"] == pytest.approx(0.0, abs=1e-3)
-    assert out5["band"] == "mixed"
-    assert out5["shape_quadrant"] == "equal-balanced"
+    assert out8["hhi"] == pytest.approx(0.125, abs=1e-3)
+    assert out8["gini"] == pytest.approx(0.0, abs=1e-3)
+    assert out8["band"] == "mixed"
+    assert out8["shape_quadrant"] == "equal-balanced"
 
 
 def test_gini_case_b_one_dominates():
@@ -674,17 +674,17 @@ def test_gini_case_b_one_dominates():
     assert out["hhi"] == pytest.approx(0.8138, abs=1e-3)
     assert out["gini"] == pytest.approx(0.665, abs=1e-3)
     assert out["band"] == "concentrated"
-    assert out["shape_quadrant"] == "unequal-concentrated"
+    assert out["shape_quadrant"] == "unequal-compressed"
 
 
 def test_gini_case_c_unequal_balanced():
     """Case C — mixed HHI + high Gini (Ávila group 1) → unequal-balanced."""
-    # Two fat + eight thin: HHI alone looks "balanced"; Gini flags inequality.
-    masses = [450, 350, 50, 50, 50, 50, 50, 50, 50, 50]
+    # Two fat + fourteen thin: HHI alone looks "balanced"; Gini flags inequality.
+    masses = [450, 350] + [50] * 14
     out = gd.compute_gamma_concentration(_mass_strikes(masses), **_conc_kwargs())
-    assert out["hhi"] == pytest.approx(0.240, abs=1e-3)
+    assert out["hhi"] == pytest.approx(0.160, abs=1e-3)
     assert out["gini"] is not None and out["gini"] >= 0.40
-    assert out["gini"] == pytest.approx(0.475, abs=1e-3)
+    assert out["gini"] == pytest.approx(0.4125, abs=1e-3)
     assert out["band"] == "mixed"
     assert out["shape_quadrant"] == "unequal-balanced"
 

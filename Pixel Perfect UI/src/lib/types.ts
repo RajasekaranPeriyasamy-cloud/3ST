@@ -790,6 +790,8 @@ export interface GammaConcentrationSummaryItem {
   spot: number | null;
   hhi: number | null;
   band: GammaConcentrationBand | null;
+  band_label?: string | null;
+  mass_basis?: GammaMassBasis | string | null;
   pin_strike: number | null;
   cliff_strike: number | null;
   gini?: number | null;
@@ -924,16 +926,41 @@ export type GammaConcentrationBand = "concentrated" | "mixed" | "diffuse";
 export interface GammaTopContributor {
   strike: number;
   share: number;
+  /** share² — this strike's own contribution to the HHI. */
+  share_sq?: number;
   net_gex: number;
+  /** |CE γ| + |PE γ| at this strike (gross dealer gamma). */
+  gross_gex?: number;
   side_bias: "call" | "put" | "mixed" | string;
+}
+
+/** Per-strike mass used by the concentration index. */
+export type GammaMassBasis = "gross" | "net";
+
+export interface GammaDailyHhiPoint {
+  date: string;
+  hhi: number;
+  band: GammaConcentrationBand;
 }
 
 export interface GammaConcentration {
   hhi: number | null;
+  /** HHI of |CE γ| + |PE γ| shares — "where dealer gamma clusters". */
+  hhi_gross?: number | null;
+  /** HHI of |CE γ + PE γ| shares — concentration of the net dealer imbalance. */
+  hhi_net?: number | null;
+  /** Which of the two `hhi` echoes. */
+  mass_basis?: GammaMassBasis | string | null;
+  /** Band cut points for the active basis (gross defaults: 0.18 / 0.08). */
+  band_cut_compressed?: number | null;
+  band_cut_balanced?: number | null;
   top1_share: number | null;
   top3_share: number | null;
+  top5_share?: number | null;
   effective_strikes: number | null;
   band: GammaConcentrationBand | null;
+  /** Desk vocabulary for `band`: compressed / balanced / dispersed. */
+  band_label?: string | null;
   dominant_strike: number | null;
   dominant_share: number | null;
   pin_strike: number | null;
@@ -942,6 +969,12 @@ export interface GammaConcentration {
   pin_stability_pct: number | null;
   call_hhi?: number | null;
   put_hhi?: number | null;
+  call_band?: GammaConcentrationBand | null;
+  put_band?: GammaConcentrationBand | null;
+  /** Strike holding the most dealer long gamma (max +net_gex). */
+  pos_gamma_peak_strike?: number | null;
+  /** Strike holding the most dealer short gamma (min −net_gex). */
+  neg_gamma_peak_strike?: number | null;
   /** Strike-level Gini of |GEX| shares (inequality; not concentration). */
   gini?: number | null;
   call_gini?: number | null;
@@ -956,6 +989,29 @@ export interface GammaConcentration {
   hhi_percentile_30d?: number | null;
   /** Number of trading days in the 30d percentile sample. */
   hhi_session_count?: number | null;
+  /**
+   * Day-end HHI per trading session (oldest → newest, ≤30), filtered to the
+   * current measurement basis. Today's value is the last row.
+   */
+  daily_hhi?: GammaDailyHhiPoint[];
+  /** Previous session's day-end HHI (excludes today). */
+  hhi_prev_session?: number | null;
+  hhi_prev_session_date?: string | null;
+  /** Percent change vs the previous session. */
+  hhi_dod_pct?: number | null;
+  /** Mean of the last 5 *prior* sessions (today excluded). */
+  hhi_mean_5?: number | null;
+  hhi_mean_5_band?: GammaConcentrationBand | null;
+  hhi_mean_30?: number | null;
+  /** Percent change vs the 5-session mean. */
+  hhi_vs_mean_pct?: number | null;
+  hhi_low_30?: number | null;
+  hhi_high_30?: number | null;
+  /**
+   * Sessions in the sample whose strike window was inferred, not recorded —
+   * rows written before basis tagging existed.
+   */
+  hhi_session_assumed_count?: number | null;
 }
 
 export interface GammaConviction {
@@ -999,6 +1055,8 @@ export interface GammaReferenceLevels {
 export interface GammaSnapshot {
   underlying: OiUnderlying;
   expiry: string;
+  /** Calendar days to expiry; 0 on expiry day. */
+  dte?: number | null;
   spot: number;
   updated_at: string;
   tte_years: number;

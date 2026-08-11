@@ -301,14 +301,76 @@ def get_history(underlying: str, expiry: str) -> list[dict[str, Any]]:
         return list(data.get("series", {}).get(_key(underlying, expiry)) or [])
 
 
+# Measurement basis carried on each day-end HHI row. Rows also carry both basis
+# values (``hhi_gross`` / ``hhi_net``) so switching basis does not restart the
+# cross-session comparison from zero.
+_DAILY_HHI_BASIS_FIELDS = (
+    "basis",
+    "strike_window",
+    "sign_mode",
+    "updated_at",
+    "hhi_gross",
+    "hhi_net",
+    "strike_window_assumed",
+    "legacy",
+)
+
+# Rows written before basis tagging existed. Only two paths ever persisted a
+# day-end HHI: the snapshot route (window from the UI) and the background GEX
+# recorder, which passes no window and so always used the config default. The
+# recorder samples continuously through the session, so the last write of a day —
+# the one ``upsert_daily_hhi`` keeps — was almost always the recorder's. Hence a
+# defensible default rather than a guess, still flagged ``strike_window_assumed``.
+LEGACY_DAILY_HHI_BASIS = "net"
+LEGACY_DAILY_HHI_SIGN_MODE = "naive"
+
+
+def legacy_daily_hhi_window() -> int:
+    """Strike window assumed for day-end rows written before basis tagging."""
+    try:
+        from config import GAMMA_DENSITY_DEFAULTS
+
+        return int(GAMMA_DENSITY_DEFAULTS.get("strike_window") or 20)
+    except Exception:
+        return 20
+
+
+def normalize_legacy_daily_hhi_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Interpret an untagged day-end row as net-basis at the assumed window.
+
+    Applied on read as well as on write, so a store that has not been migrated
+    yet behaves identically to one that has. Already-tagged rows pass through.
+    """
+    if row.get("basis"):
+        return row
+    out = dict(row)
+    out["basis"] = LEGACY_DAILY_HHI_BASIS
+    out["sign_mode"] = LEGACY_DAILY_HHI_SIGN_MODE
+    out["strike_window"] = legacy_daily_hhi_window()
+    out["strike_window_assumed"] = True
+    out["legacy"] = True
+    if out.get("hhi") is not None and out.get("hhi_net") is None:
+        out["hhi_net"] = out["hhi"]
+    return out
+
+
+def _daily_hhi_row(date_str: str, hhi: float, src: dict[str, Any] | None = None) -> dict[str, Any]:
+    row: dict[str, Any] = {"date": str(date_str)[:10], "hhi": round(float(hhi), 4)}
+    for field in _DAILY_HHI_BASIS_FIELDS:
+        val = (src or {}).get(field)
+        if val is not None:
+            row[field] = val
+    return row
+
+
 def _normalize_daily_hhi_entries(raw: Any) -> list[dict[str, Any]]:
-    """Return ``[{date, hhi}, ...]`` sorted ascending by date."""
+    """Return ``[{date, hhi, ...basis}, ...]`` sorted ascending by date."""
     out: list[dict[str, Any]] = []
     if isinstance(raw, dict):
         # Allow { "YYYY-MM-DD": hhi } map form
         for d, h in raw.items():
             try:
-                out.append({"date": str(d)[:10], "hhi": round(float(h), 4)})
+                out.append(_daily_hhi_row(str(d), float(h)))
             except (TypeError, ValueError):
                 continue
     elif isinstance(raw, list):
@@ -320,7 +382,7 @@ def _normalize_daily_hhi_entries(raw: Any) -> list[dict[str, Any]]:
             if d is None or h is None:
                 continue
             try:
-                out.append({"date": str(d)[:10], "hhi": round(float(h), 4)})
+                out.append(_daily_hhi_row(str(d), float(h), row))
             except (TypeError, ValueError):
                 continue
     out.sort(key=lambda r: r["date"])
@@ -339,6 +401,77 @@ def get_daily_hhi_series(underlying: str) -> list[dict[str, Any]]:
         return _normalize_daily_hhi_entries(store.get(_daily_hhi_key(underlying)))
 
 
+def _row_hhi_for_basis(row: dict[str, Any], basis: str) -> float | None:
+    """This row's HHI on ``basis``, or None when it does not carry that basis.
+
+    Rows written since dual-basis persistence carry both ``hhi_gross`` and
+    ``hhi_net``, so a day recorded on one basis can still serve a comparison on
+    the other. Legacy rows carry net only.
+    """
+    if str(row.get("basis") or LEGACY_DAILY_HHI_BASIS) == str(basis):
+        raw = row.get("hhi")
+    else:
+        raw = row.get(f"hhi_{basis}")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def filter_daily_hhi_basis(
+    series: list[dict[str, Any]] | None,
+    *,
+    basis: str | None = None,
+    strike_window: int | None = None,
+    sign_mode: str | None = None,
+) -> list[dict[str, Any]]:
+    """Keep day-end rows comparable with the current snapshot, on ``basis``.
+
+    HHI is computed over the ATM-trimmed window, so its floor is 1/N — a day
+    recorded at ``strike_window=10`` is not comparable with one at 20, and a gross
+    reading is not comparable with a net one. Rows that carry the requested basis
+    under a different recorded basis are resolved to it and their ``hhi`` rewritten
+    accordingly. Untagged legacy rows are read as net-basis at the assumed window
+    (see :func:`normalize_legacy_daily_hhi_row`). Pass all filters as ``None`` to
+    keep everything untouched.
+    """
+    rows = list(series or [])
+    if basis is None and strike_window is None and sign_mode is None:
+        return rows
+    out: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = normalize_legacy_daily_hhi_row(raw_row)
+        if strike_window is not None:
+            row_window = row.get("strike_window")
+            if row_window is None or int(row_window) != int(strike_window):
+                continue
+        if sign_mode is not None:
+            row_mode = row.get("sign_mode")
+            if row_mode is None or str(row_mode) != str(sign_mode):
+                continue
+        if basis is None:
+            out.append(row)
+            continue
+        resolved = _row_hhi_for_basis(row, str(basis))
+        if resolved is None:
+            continue
+        if str(row.get("basis")) == str(basis):
+            out.append(row)
+        else:
+            promoted = dict(row)
+            promoted["hhi"] = round(resolved, 4)
+            promoted["basis"] = str(basis)
+            out.append(promoted)
+    return out
+
+
+def count_assumed_window_rows(series: list[dict[str, Any]] | None) -> int:
+    """Rows in ``series`` whose strike window was inferred, not recorded."""
+    return sum(1 for r in (series or []) if r.get("strike_window_assumed"))
+
+
 def upsert_daily_hhi(
     underlying: str,
     hhi: float,
@@ -346,12 +479,25 @@ def upsert_daily_hhi(
     when: datetime | None = None,
     max_days: int = DAILY_HHI_MAX_DAYS,
     force: bool = False,
+    basis: str | None = None,
+    strike_window: int | None = None,
+    sign_mode: str | None = None,
+    hhi_gross: float | None = None,
+    hhi_net: float | None = None,
 ) -> list[dict[str, Any]]:
     """Update today's daily HHI while in session; prune to ``max_days``.
 
     Last in-session write ≈ session-close value. Returns the pruned series.
     Outside session (unless ``force``), returns the existing series unchanged.
     Only touches ``daily_hhi[UNDERLYING]`` — never clears series/reversals.
+
+    ``basis`` / ``strike_window`` / ``sign_mode`` record how the value was
+    measured so later sessions are only compared like-for-like. ``hhi_gross`` /
+    ``hhi_net`` persist both measures, so switching basis keeps the cross-session
+    comparison instead of restarting it.
+
+    Also migrates any untagged legacy rows in the same locked write — see
+    :func:`normalize_legacy_daily_hhi_row`.
     """
     now = when or datetime.now(tz=IST)
     if now.tzinfo is None:
@@ -364,18 +510,38 @@ def upsert_daily_hhi(
 
     day = now.date().isoformat()
     key = _daily_hhi_key(underlying)
+    stamp: dict[str, Any] = {"updated_at": now.isoformat(timespec="seconds")}
+    if basis is not None:
+        stamp["basis"] = str(basis)
+    if strike_window is not None:
+        stamp["strike_window"] = int(strike_window)
+    if sign_mode is not None:
+        stamp["sign_mode"] = str(sign_mode)
+    if hhi_gross is not None:
+        stamp["hhi_gross"] = round(float(hhi_gross), 4)
+    if hhi_net is not None:
+        stamp["hhi_net"] = round(float(hhi_net), 4)
+    # A freshly measured row is never an inferred one.
+    stamp["strike_window_assumed"] = False
+    stamp["legacy"] = False
 
     def _mutate(data: dict[str, Any]) -> list[dict[str, Any]]:
         store = data.setdefault("daily_hhi", {})
-        series = _normalize_daily_hhi_entries(store.get(key))
+        # Migrate untagged rows in the same locked write — idempotent, and it keeps
+        # a not-yet-migrated store behaving identically to a migrated one.
+        series = [
+            normalize_legacy_daily_hhi_row(r)
+            for r in _normalize_daily_hhi_entries(store.get(key))
+        ]
         updated = False
         for row in series:
             if row["date"] == day:
                 row["hhi"] = round(float(hhi), 4)
+                row.update(stamp)
                 updated = True
                 break
         if not updated:
-            series.append({"date": day, "hhi": round(float(hhi), 4)})
+            series.append(_daily_hhi_row(day, hhi, stamp))
             series.sort(key=lambda r: r["date"])
         if max_days > 0 and len(series) > max_days:
             series = series[-max_days:]

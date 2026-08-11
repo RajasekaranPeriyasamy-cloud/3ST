@@ -35,11 +35,29 @@ CRORE = 1e7
 IST = ZoneInfo("Asia/Kolkata")
 SignMode = Literal["naive", "customer", "oi_delta"]
 ConcentrationBand = Literal["concentrated", "mixed", "diffuse"]
+MassBasis = Literal["gross", "net"]
 _log = get_logger("gamma_density")
 
-# HHI bands + pin clarity (tunable; also overridable via GAMMA_DENSITY_DEFAULTS)
-HHI_CONCENTRATED = 0.25
-HHI_MIXED = 0.12
+# Concentration mass basis.
+#   gross — |CE γ| + |PE γ| at each strike: "where is dealer gamma clustered".
+#   net   — |CE γ + PE γ|: concentration of the *net* dealer imbalance. Under the
+#           naive sign mode CE is dealer-long and PE dealer-short, so a balanced
+#           strike cancels to ~0 mass and drops out of the index entirely.
+# Gross is the default: it answers the question the desk actually asks, and it is
+# the same basis as call_hhi / put_hhi (which have always been gross).
+DEFAULT_MASS_BASIS: MassBasis = "gross"
+
+# Band cuts are basis-dependent — gross and net masses do not live on the same
+# scale. Gross cuts are calibrated against BSM gamma × index-scale OI at NIFTY
+# (spot ~24.6k, step 50, ±20 strikes): 0-DTE pinning lands at 0.18–0.32,
+# 1–2 DTE at 0.08–0.13, weekly/monthly at 0.02–0.07. Net cuts are the legacy
+# 0.25/0.12 pair. Both are overridable via GAMMA_DENSITY_DEFAULTS.
+HHI_BAND_CUTS: dict[str, tuple[float, float]] = {
+    "gross": (0.18, 0.08),
+    "net": (0.25, 0.12),
+}
+# Legacy names — the net-basis pair, kept for callers/tests that import them.
+HHI_CONCENTRATED, HHI_MIXED = HHI_BAND_CUTS["net"]
 GINI_EQUAL_CUT = 0.40  # Ávila-style equal vs unequal (fixed; not rolling median)
 PIN_SHARE_THRESHOLD = 0.18
 PIN_STABILITY_LOOKBACK = 12
@@ -48,7 +66,14 @@ PIN_STABILITY_LOOKBACK = 12
 _QUADRANT_SUFFIX: dict[ConcentrationBand, str] = {
     "diffuse": "dispersed",
     "mixed": "balanced",
-    "concentrated": "concentrated",
+    "concentrated": "compressed",
+}
+
+# Internal band key → desk vocabulary shown on the concentration board.
+BAND_LABELS: dict[ConcentrationBand, str] = {
+    "diffuse": "dispersed",
+    "mixed": "balanced",
+    "concentrated": "compressed",
 }
 
 
@@ -65,6 +90,15 @@ def _empty_reference_levels() -> dict[str, float | None]:
 
 def _today_ist() -> date:
     return datetime.now(IST).date()
+
+
+def _days_to_expiry(expiry: str | None) -> int | None:
+    """Calendar days from today (IST) to ``expiry``; 0 on expiry day."""
+    try:
+        exp_d = date.fromisoformat(str(expiry)[:10])
+    except (TypeError, ValueError):
+        return None
+    return (exp_d - _today_ist()).days
 
 
 def _bar_date(raw: Any) -> date | None:
@@ -231,8 +265,13 @@ def _hedge_moves_for_underlying(underlying: str, d: dict[str, Any] | None = None
 def gamma_config() -> dict[str, Any]:
     d = _cfg()
     prov = get_gamma_density_provider()
+    basis = normalize_mass_basis(d.get("mass_basis"))
+    compressed_cut, balanced_cut = hhi_band_cuts(basis)
     return {
         "underlyings": list(INDEX_OPTIONS.keys()),
+        "mass_basis": basis,
+        "mass_bases": ["gross", "net"],
+        "hhi_band_cuts": {"compressed": compressed_cut, "balanced": balanced_cut},
         "refresh_seconds": d["refresh_seconds"],
         "strike_window": d["strike_window"],
         "risk_free_rate": d["risk_free_rate"],
@@ -717,20 +756,83 @@ def _hedge_flow(
     return out
 
 
-def _strike_mass(row: dict[str, Any]) -> float:
-    """Absolute GEX mass; fall back to density when GEX is sparse/zero."""
-    gex = abs(float(row.get("net_gex") or 0.0))
-    if gex > 0:
-        return gex
-    return abs(float(row.get("total_density") or 0.0))
+def _f(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def _hhi_band(hhi: float) -> ConcentrationBand:
-    if hhi >= HHI_CONCENTRATED:
+def normalize_mass_basis(basis: str | None) -> MassBasis:
+    b = str(basis or DEFAULT_MASS_BASIS).strip().lower()
+    return "net" if b == "net" else "gross"
+
+
+def _strike_mass(row: dict[str, Any], basis: MassBasis = DEFAULT_MASS_BASIS) -> float:
+    """Absolute GEX mass at one strike, on ``basis``.
+
+    Gross uses |CE γ| + |PE γ| and only falls back to |net_gex| when neither side
+    is populated (synthetic rows / older callers). Net uses |CE γ + PE γ|.
+    Density fallback is applied by the caller at the *aggregate* level so a single
+    cancelling strike cannot contribute a mass in the wrong unit — density and GEX
+    differ by S²·0.01 (~6e6 at NIFTY scale).
+    """
+    if basis == "gross":
+        gross = abs(_f(row.get("ce_gex"))) + abs(_f(row.get("pe_gex")))
+        if gross > 0:
+            return gross
+    return abs(_f(row.get("net_gex")))
+
+
+def _strike_masses(
+    strikes: list[dict[str, Any]],
+    basis: MassBasis = DEFAULT_MASS_BASIS,
+) -> list[tuple[float, float, dict[str, Any]]]:
+    """``[(strike, mass, row), ...]`` with an aggregate density fallback."""
+    rows: list[tuple[float, float, dict[str, Any]]] = []
+    for row in strikes:
+        try:
+            k = float(row["strike"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append((k, _strike_mass(row, basis), row))
+    if rows and sum(m for _, m, _ in rows) <= 0:
+        rows = [(k, abs(_f(row.get("total_density"))), row) for k, _, row in rows]
+    return rows
+
+
+def hhi_band_cuts(basis: str | None = None) -> tuple[float, float]:
+    """``(compressed_cut, balanced_cut)`` for ``basis``, honouring config overrides."""
+    b = normalize_mass_basis(basis)
+    default_hi, default_lo = HHI_BAND_CUTS[b]
+    cfg = _cfg()
+    hi = cfg.get(f"hhi_compressed_cut_{b}")
+    lo = cfg.get(f"hhi_balanced_cut_{b}")
+    try:
+        hi_f = float(hi) if hi is not None else default_hi
+    except (TypeError, ValueError):
+        hi_f = default_hi
+    try:
+        lo_f = float(lo) if lo is not None else default_lo
+    except (TypeError, ValueError):
+        lo_f = default_lo
+    return hi_f, lo_f
+
+
+def _hhi_band(hhi: float, basis: str | None = None) -> ConcentrationBand:
+    hi, lo = hhi_band_cuts(basis)
+    if hhi >= hi:
         return "concentrated"
-    if hhi >= HHI_MIXED:
+    if hhi >= lo:
         return "mixed"
     return "diffuse"
+
+
+def _hhi_from_masses(masses: list[float]) -> float | None:
+    total = sum(masses)
+    if total <= 0:
+        return None
+    return sum((m / total) ** 2 for m in masses)
 
 
 def _gini_from_masses(masses: list[float]) -> float | None:
@@ -755,12 +857,12 @@ def _gini_from_masses(masses: list[float]) -> float | None:
     return max(0.0, min(1.0, g))
 
 
-def _shape_quadrant(hhi: float, gini: float | None) -> str | None:
+def _shape_quadrant(hhi: float, gini: float | None, basis: str | None = None) -> str | None:
     """Ávila HHI×Gini quadrant label (e.g. unequal-dispersed)."""
     if gini is None:
         return None
     prefix = "unequal" if gini >= GINI_EQUAL_CUT else "equal"
-    return f"{prefix}-{_QUADRANT_SUFFIX[_hhi_band(hhi)]}"
+    return f"{prefix}-{_QUADRANT_SUFFIX[_hhi_band(hhi, basis)]}"
 
 
 def _pin_stability(
@@ -916,6 +1018,97 @@ def _cliff_strike(
     return max(candidates, key=lambda w: abs(w - float(spot)))
 
 
+def _gamma_peaks(strikes: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    """``(+γ peak, −γ peak)`` — strikes holding the most dealer long / short gamma.
+
+    Peaks are read off signed ``net_gex`` regardless of the HHI mass basis: the
+    board labels them "most dealer long/short gamma", which is a net statement.
+    Returns ``None`` for a side with no mass on that sign.
+    """
+    pos: tuple[float, float] | None = None
+    neg: tuple[float, float] | None = None
+    for row in strikes:
+        try:
+            k = float(row["strike"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        net = _f(row.get("net_gex"))
+        if net > 0 and (pos is None or net > pos[0]):
+            pos = (net, k)
+        elif net < 0 and (neg is None or net < neg[0]):
+            neg = (net, k)
+    return (pos[1] if pos else None), (neg[1] if neg else None)
+
+
+def _daily_hhi_stats(
+    series: list[dict[str, Any]] | None,
+    current_hhi: float,
+    *,
+    basis: str | None = None,
+    mean_window: int = 5,
+) -> dict[str, Any]:
+    """Prior-session / rolling-mean / range stats over the day-end HHI series.
+
+    ``series`` must already be filtered to the current measurement basis (see
+    :func:`gamma_density_history.filter_daily_hhi_basis`) and sorted oldest →
+    newest, with today's value present as the last row. Prior-session comparisons
+    exclude today so a mid-session refresh cannot compare today against itself.
+    """
+    out: dict[str, Any] = {
+        "hhi_prev_session": None,
+        "hhi_prev_session_date": None,
+        "hhi_dod_pct": None,
+        "hhi_mean_5": None,
+        "hhi_mean_5_band": None,
+        "hhi_mean_30": None,
+        "hhi_vs_mean_pct": None,
+        "hhi_low_30": None,
+        "hhi_high_30": None,
+        "hhi_session_assumed_count": 0,
+    }
+    try:
+        from options.gamma_density_history import count_assumed_window_rows
+
+        out["hhi_session_assumed_count"] = count_assumed_window_rows(series)
+    except Exception:
+        pass
+    rows: list[dict[str, Any]] = []
+    for row in series or []:
+        if row.get("hhi") is None:
+            continue
+        try:
+            rows.append({"date": str(row.get("date"))[:10], "hhi": float(row["hhi"])})
+        except (TypeError, ValueError):
+            continue
+    if not rows:
+        return out
+
+    today = _today_ist().isoformat()
+    prior = [r for r in rows if r["date"] != today]
+    if prior:
+        prev = prior[-1]
+        out["hhi_prev_session"] = round(prev["hhi"], 4)
+        out["hhi_prev_session_date"] = prev["date"]
+        if prev["hhi"] > 0:
+            out["hhi_dod_pct"] = round(100.0 * (current_hhi - prev["hhi"]) / prev["hhi"], 1)
+
+    # Rolling mean over the last N *prior* sessions — a mean that moves with today's
+    # own polls is not a baseline you can compare today against.
+    window = prior[-int(mean_window):] if prior else []
+    if window:
+        mean_n = sum(r["hhi"] for r in window) / len(window)
+        out["hhi_mean_5"] = round(mean_n, 4)
+        out["hhi_mean_5_band"] = _hhi_band(mean_n, basis)
+        if mean_n > 0:
+            out["hhi_vs_mean_pct"] = round(100.0 * (current_hhi - mean_n) / mean_n, 1)
+
+    vals = [r["hhi"] for r in rows]
+    out["hhi_mean_30"] = round(sum(vals) / len(vals), 4)
+    out["hhi_low_30"] = round(min(vals), 4)
+    out["hhi_high_30"] = round(max(vals), 4)
+    return out
+
+
 def _hhi_intraday_stats(
     history: list[dict[str, Any]] | None,
     current_hhi: float,
@@ -965,14 +1158,29 @@ def compute_gamma_concentration(
     pin_threshold: float | None = None,
     flip_level: float | None = None,
     daily_hhi_history: list[dict[str, Any]] | None = None,
+    mass_basis: str | None = None,
 ) -> dict[str, Any]:
-    """Herfindahl-Hirschman concentration of |net_gex| across strikes."""
+    """Herfindahl-Hirschman concentration of dealer gamma across strikes.
+
+    ``mass_basis`` selects the per-strike mass: ``gross`` (default) uses
+    |CE γ| + |PE γ|, ``net`` uses |CE γ + PE γ|. Both are always reported as
+    ``hhi_gross`` / ``hhi_net``; ``hhi`` echoes the selected basis.
+    """
+    basis = normalize_mass_basis(mass_basis)
+    compressed_cut, balanced_cut = hhi_band_cuts(basis)
     empty = {
         "hhi": None,
+        "hhi_gross": None,
+        "hhi_net": None,
+        "mass_basis": basis,
+        "band_cut_compressed": compressed_cut,
+        "band_cut_balanced": balanced_cut,
         "top1_share": None,
         "top3_share": None,
+        "top5_share": None,
         "effective_strikes": None,
         "band": None,
+        "band_label": None,
         "dominant_strike": None,
         "dominant_share": None,
         "pin_strike": None,
@@ -981,6 +1189,10 @@ def compute_gamma_concentration(
         "pin_stability_pct": None,
         "call_hhi": None,
         "put_hhi": None,
+        "call_band": None,
+        "put_band": None,
+        "pos_gamma_peak_strike": None,
+        "neg_gamma_peak_strike": None,
         "gini": None,
         "call_gini": None,
         "put_gini": None,
@@ -991,17 +1203,25 @@ def compute_gamma_concentration(
         "hhi_percentile_intraday": None,
         "hhi_percentile_30d": None,
         "hhi_session_count": None,
+        "daily_hhi": [],
+        "hhi_prev_session": None,
+        "hhi_prev_session_date": None,
+        "hhi_dod_pct": None,
+        "hhi_mean_5": None,
+        "hhi_mean_5_band": None,
+        "hhi_mean_30": None,
+        "hhi_vs_mean_pct": None,
+        "hhi_low_30": None,
+        "hhi_high_30": None,
+        "hhi_session_assumed_count": 0,
     }
     if not strikes:
         return empty
 
-    masses: list[tuple[float, float, dict[str, Any]]] = []
-    for row in strikes:
-        try:
-            k = float(row["strike"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        masses.append((k, _strike_mass(row), row))
+    masses = _strike_masses(strikes, basis)
+    pos_peak, neg_peak = _gamma_peaks(strikes)
+    empty["pos_gamma_peak_strike"] = pos_peak
+    empty["neg_gamma_peak_strike"] = neg_peak
 
     total = sum(m for _, m, _ in masses)
     if total <= 0:
@@ -1010,6 +1230,12 @@ def compute_gamma_concentration(
         )
         empty["call_hhi"] = _side_hhi(strikes, "ce_gex")
         empty["put_hhi"] = _side_hhi(strikes, "pe_gex")
+        empty["call_band"] = (
+            _hhi_band(empty["call_hhi"], basis) if empty["call_hhi"] is not None else None
+        )
+        empty["put_band"] = (
+            _hhi_band(empty["put_hhi"], basis) if empty["put_hhi"] is not None else None
+        )
         empty["call_gini"] = _side_gini(strikes, "ce_gex")
         empty["put_gini"] = _side_gini(strikes, "pe_gex")
         return empty
@@ -1019,6 +1245,7 @@ def compute_gamma_concentration(
     ranked = sorted(shares, key=lambda x: x[1], reverse=True)
     top1_share = ranked[0][1]
     top3_share = sum(s for _, s, _ in ranked[:3])
+    top5_share = sum(s for _, s, _ in ranked[:5])
     dominant_strike = ranked[0][0]
     dominant_share = ranked[0][1]
     threshold = float(pin_threshold if pin_threshold is not None else PIN_SHARE_THRESHOLD)
@@ -1041,17 +1268,20 @@ def compute_gamma_concentration(
     pin_stable, pin_stability_pct = _pin_stability(history, pin_strike, strike_step)
     eff = (1.0 / hhi) if hhi > 0 else None
 
+    # Every strike in the window, ranked — the board's contributor bars slice the
+    # head of this list, and the cumulative-Γ ladder tooltips read HHI contribution
+    # (share²) off the tail, so a 25-row cap would blank most of the ladder.
     top_contributors: list[dict[str, Any]] = []
-    for k, share, row in ranked[:25]:
-        try:
-            net_gex = float(row.get("net_gex") or 0.0)
-        except (TypeError, ValueError):
-            net_gex = 0.0
+    for k, share, row in ranked:
         top_contributors.append(
             {
                 "strike": k,
                 "share": round(share, 4),
-                "net_gex": round(net_gex, 2),
+                "share_sq": round(share * share, 6),
+                "net_gex": round(_f(row.get("net_gex")), 2),
+                "gross_gex": round(
+                    abs(_f(row.get("ce_gex"))) + abs(_f(row.get("pe_gex"))), 2
+                ),
                 "side_bias": _contributor_side_bias(row),
             }
         )
@@ -1061,7 +1291,7 @@ def compute_gamma_concentration(
     gini = _gini_from_masses([m for _, m, _ in masses])
     call_gini = _side_gini(strikes, "ce_gex")
     put_gini = _side_gini(strikes, "pe_gex")
-    shape_quadrant = _shape_quadrant(hhi, gini)
+    shape_quadrant = _shape_quadrant(hhi, gini, basis)
     cliff = _cliff_strike(
         strikes, spot=spot, flip_level=flip_level, call_wall=call_wall, put_wall=put_wall
     )
@@ -1071,12 +1301,26 @@ def compute_gamma_concentration(
     if daily_hhi_history is not None:
         hhi_30d, hhi_session_count = _hhi_sessions_stats(daily_hhi_history, hhi)
 
-    return {
+    # The other basis, for the board's secondary readout. Cheap (pure arithmetic
+    # over rows already in hand) and it keeps the two numbers from drifting apart.
+    other: MassBasis = "net" if basis == "gross" else "gross"
+    other_hhi = _hhi_from_masses([m for _, m, _ in _strike_masses(strikes, other)])
+    hhi_gross, hhi_net = (hhi, other_hhi) if basis == "gross" else (other_hhi, hhi)
+    band = _hhi_band(hhi, basis)
+
+    out = {
         "hhi": round(hhi, 4),
+        "hhi_gross": round(hhi_gross, 4) if hhi_gross is not None else None,
+        "hhi_net": round(hhi_net, 4) if hhi_net is not None else None,
+        "mass_basis": basis,
+        "band_cut_compressed": compressed_cut,
+        "band_cut_balanced": balanced_cut,
         "top1_share": round(top1_share, 4),
         "top3_share": round(top3_share, 4),
+        "top5_share": round(top5_share, 4),
         "effective_strikes": round(eff, 2) if eff is not None else None,
-        "band": _hhi_band(hhi),
+        "band": band,
+        "band_label": BAND_LABELS[band],
         "dominant_strike": dominant_strike,
         "dominant_share": round(dominant_share, 4),
         "pin_strike": pin_strike,
@@ -1085,6 +1329,10 @@ def compute_gamma_concentration(
         "pin_stability_pct": pin_stability_pct,
         "call_hhi": call_hhi,
         "put_hhi": put_hhi,
+        "call_band": _hhi_band(call_hhi, basis) if call_hhi is not None else None,
+        "put_band": _hhi_band(put_hhi, basis) if put_hhi is not None else None,
+        "pos_gamma_peak_strike": pos_peak,
+        "neg_gamma_peak_strike": neg_peak,
         "gini": round(gini, 4) if gini is not None else None,
         "call_gini": call_gini,
         "put_gini": put_gini,
@@ -1095,7 +1343,18 @@ def compute_gamma_concentration(
         "hhi_percentile_intraday": hhi_pct,
         "hhi_percentile_30d": hhi_30d,
         "hhi_session_count": hhi_session_count,
+        "daily_hhi": [
+            {
+                "date": str(r.get("date"))[:10],
+                "hhi": round(float(r["hhi"]), 4),
+                "band": _hhi_band(float(r["hhi"]), basis),
+            }
+            for r in (daily_hhi_history or [])
+            if r.get("hhi") is not None
+        ],
     }
+    out.update(_daily_hhi_stats(daily_hhi_history, hhi, basis=basis))
+    return out
 
 
 def compute_gamma_conviction(
@@ -1513,6 +1772,7 @@ def build_gamma_snapshot(
     reversal_gex_gate: bool = True,
     reversal_gex_mode: str | None = "live",
     reversal_oi_gate: bool = False,
+    mass_basis: str | None = None,
 ) -> dict[str, Any]:
     if underlying not in INDEX_OPTIONS:
         raise ValueError(f"Unknown underlying '{underlying}'. Use {list(INDEX_OPTIONS)}")
@@ -1526,6 +1786,7 @@ def build_gamma_snapshot(
     baseline_mode = (oi_baseline_mode or "session_open").lower()
     if baseline_mode not in ("session_open", "prev_close"):
         baseline_mode = "session_open"
+    basis = normalize_mass_basis(mass_basis or d.get("mass_basis"))
     r = float(d["risk_free_rate"])
     q = float(d["dividend_yield"])
     max_spread = float(d.get("max_mid_spread_pct") or 0.12)
@@ -1831,17 +2092,28 @@ def build_gamma_snapshot(
     prior_daily_hhi: list[dict[str, Any]] = []
     if include_history:
         try:
-            from options.gamma_density_history import get_daily_hhi_series, get_history
+            from options.gamma_density_history import (
+                filter_daily_hhi_basis,
+                get_daily_hhi_series,
+                get_history,
+            )
 
             prior_history = get_history(underlying, exp)
-            prior_daily_hhi = get_daily_hhi_series(underlying)
+            # Like-for-like only: HHI's floor is 1/N, so a day recorded at a
+            # different strike window (or mass basis) is a different measurement.
+            prior_daily_hhi = filter_daily_hhi_basis(
+                get_daily_hhi_series(underlying),
+                basis=basis,
+                strike_window=window,
+                sign_mode=mode,
+            )
         except Exception:
             prior_history = []
             prior_daily_hhi = []
 
     pin_threshold = float(d.get("pin_share_threshold") or PIN_SHARE_THRESHOLD)
-    # Provisional concentration (intraday stats); 30d percentile refreshed after
-    # upserting today's session HHI so the sample includes the latest day-end value.
+    # Provisional concentration (intraday stats); session stats are refreshed after
+    # upserting today's HHI so the sample includes the latest day-end value.
     concentration = compute_gamma_concentration(
         strikes,
         spot=spot,
@@ -1853,23 +2125,50 @@ def build_gamma_snapshot(
         pin_threshold=pin_threshold,
         flip_level=scan["flip"],
         daily_hhi_history=prior_daily_hhi or None,
+        mass_basis=basis,
     )
     if include_history and concentration.get("hhi") is not None:
         try:
             from options.gamma_density_history import (
                 DAILY_HHI_PERCENTILE_N,
+                filter_daily_hhi_basis,
                 hhi_percentile_sessions,
                 upsert_daily_hhi,
             )
 
-            daily_series = upsert_daily_hhi(underlying, float(concentration["hhi"]))
+            hhi_now = float(concentration["hhi"])
+            daily_series = filter_daily_hhi_basis(
+                upsert_daily_hhi(
+                    underlying,
+                    hhi_now,
+                    basis=basis,
+                    strike_window=window,
+                    sign_mode=mode,
+                    # Persist both measures so switching basis keeps the
+                    # cross-session comparison instead of restarting it.
+                    hhi_gross=concentration.get("hhi_gross"),
+                    hhi_net=concentration.get("hhi_net"),
+                ),
+                basis=basis,
+                strike_window=window,
+                sign_mode=mode,
+            )
             pct_30d, sess_n = hhi_percentile_sessions(
-                daily_series,
-                float(concentration["hhi"]),
-                n=DAILY_HHI_PERCENTILE_N,
+                daily_series, hhi_now, n=DAILY_HHI_PERCENTILE_N
             )
             concentration["hhi_percentile_30d"] = pct_30d
             concentration["hhi_session_count"] = sess_n
+            recent = daily_series[-DAILY_HHI_PERCENTILE_N:]
+            concentration["daily_hhi"] = [
+                {
+                    "date": str(row.get("date"))[:10],
+                    "hhi": round(float(row["hhi"]), 4),
+                    "band": _hhi_band(float(row["hhi"]), basis),
+                }
+                for row in recent
+                if row.get("hhi") is not None
+            ]
+            concentration.update(_daily_hhi_stats(recent, hhi_now, basis=basis))
         except Exception:
             pass
     conviction = compute_gamma_conviction(
@@ -2124,6 +2423,7 @@ def build_gamma_snapshot(
     return {
         "underlying": underlying,
         "expiry": exp,
+        "dte": _days_to_expiry(exp),
         "provider": prov.name,
         "spot": spot,
         "updated_at": datetime.now().astimezone().isoformat(),
@@ -2201,6 +2501,8 @@ def _empty_concentration_summary_row(
         "spot": None,
         "hhi": None,
         "band": None,
+        "band_label": None,
+        "mass_basis": None,
         "pin_strike": None,
         "cliff_strike": None,
         "gini": None,
@@ -2212,18 +2514,36 @@ def _empty_concentration_summary_row(
     }
 
 
-def _enrich_summary_daily_hhi(row: dict[str, Any], underlying: str) -> None:
-    """Fill 30d HHI percentile from the daily store (read-only; no upsert)."""
+def _enrich_summary_daily_hhi(
+    row: dict[str, Any],
+    underlying: str,
+    *,
+    basis: str | None = None,
+    strike_window: int | None = None,
+    sign_mode: str | None = None,
+) -> None:
+    """Fill 30d HHI percentile from the daily store (read-only; no upsert).
+
+    The sample is restricted to days measured the same way as ``row`` — the strip
+    runs a narrower window than the main board, so an unfiltered percentile would
+    rank a window-8 HHI against window-20 history.
+    """
     if row.get("hhi") is None:
         return
     try:
         from options.gamma_density_history import (
             DAILY_HHI_PERCENTILE_N,
+            filter_daily_hhi_basis,
             get_daily_hhi_series,
             hhi_percentile_sessions,
         )
 
-        daily = get_daily_hhi_series(underlying)
+        daily = filter_daily_hhi_basis(
+            get_daily_hhi_series(underlying),
+            basis=basis,
+            strike_window=strike_window,
+            sign_mode=sign_mode,
+        )
         pct, n = hhi_percentile_sessions(
             daily, float(row["hhi"]), n=DAILY_HHI_PERCENTILE_N
         )
@@ -2244,6 +2564,8 @@ def _summary_row_from_snapshot(snap: dict[str, Any]) -> dict[str, Any]:
         "spot": snap.get("spot"),
         "hhi": conc.get("hhi"),
         "band": conc.get("band"),
+        "band_label": conc.get("band_label"),
+        "mass_basis": conc.get("mass_basis"),
         "pin_strike": conc.get("pin_strike"),
         "cliff_strike": cliff,
         "gini": conc.get("gini"),
@@ -2255,7 +2577,13 @@ def _summary_row_from_snapshot(snap: dict[str, Any]) -> dict[str, Any]:
     }
     und = str(row.get("underlying") or "")
     if und and (row.get("hhi_percentile_30d") is None or row.get("hhi_session_count") is None):
-        _enrich_summary_daily_hhi(row, und)
+        _enrich_summary_daily_hhi(
+            row,
+            und,
+            basis=conc.get("mass_basis"),
+            strike_window=snap.get("strike_window"),
+            sign_mode=snap.get("sign_mode"),
+        )
     return row
 
 
@@ -2286,16 +2614,37 @@ def _fallback_concentration_row(
         pass
 
     try:
-        from options.gamma_density_history import get_daily_hhi_series, get_history
+        from options.gamma_density_history import (
+            LEGACY_DAILY_HHI_BASIS,
+            filter_daily_hhi_basis,
+            get_daily_hhi_series,
+            get_history,
+        )
 
         daily = get_daily_hhi_series(underlying)
-        if daily:
-            last_hhi = daily[-1].get("hhi")
+        # Prefer a day measured on the current basis; otherwise show the newest
+        # cached value labelled with *its own* basis rather than mislabelling it.
+        want_basis = normalize_mass_basis(_cfg().get("mass_basis"))
+        matched = filter_daily_hhi_basis(daily, basis=want_basis)
+        source_rows = matched or daily
+        if source_rows:
+            last = source_rows[-1]
+            last_hhi = last.get("hhi")
             if last_hhi is not None:
                 hhi = float(last_hhi)
+                row_basis = str(last.get("basis") or LEGACY_DAILY_HHI_BASIS)
+                band = _hhi_band(hhi, row_basis)
                 row["hhi"] = round(hhi, 4)
-                row["band"] = _hhi_band(hhi)
-                _enrich_summary_daily_hhi(row, underlying)
+                row["band"] = band
+                row["band_label"] = BAND_LABELS[band]
+                row["mass_basis"] = row_basis
+                _enrich_summary_daily_hhi(
+                    row,
+                    underlying,
+                    basis=row_basis,
+                    strike_window=last.get("strike_window"),
+                    sign_mode=last.get("sign_mode"),
+                )
 
         hist: list[dict[str, Any]] = []
         if expiry:

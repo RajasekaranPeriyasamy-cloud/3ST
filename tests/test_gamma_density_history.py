@@ -1326,7 +1326,169 @@ def test_upsert_daily_hhi_persists_and_updates_same_day(tmp_path, monkeypatch) -
     assert s2[0]["hhi"] == 0.35  # last in-session write wins
 
     loaded = gdh.get_daily_hhi_series("NIFTY")
-    assert loaded == [{"date": "2026-07-30", "hhi": 0.35}]
+    assert len(loaded) == 1
+    assert loaded[0]["date"] == "2026-07-30"
+    assert loaded[0]["hhi"] == 0.35
+    # Every write stamps when it happened — a day-end value that is really an
+    # 11:00 value should be identifiable as such.
+    assert loaded[0]["updated_at"].startswith("2026-07-30T15:00")
+
+
+def test_daily_hhi_rows_carry_measurement_basis(tmp_path, monkeypatch) -> None:
+    """HHI's floor is 1/N, so the window it was measured at must travel with it."""
+    import options.gamma_density_history as gdh
+
+    monkeypatch.setattr(gdh, "HISTORY_FILE", tmp_path / "gamma_density_history.json")
+    during = datetime(2026, 7, 30, 11, 0, tzinfo=IST)
+    gdh.upsert_daily_hhi(
+        "NIFTY", 0.22, when=during, basis="gross", strike_window=20, sign_mode="naive"
+    )
+    row = gdh.get_daily_hhi_series("NIFTY")[0]
+    assert row["basis"] == "gross"
+    assert row["strike_window"] == 20
+    assert row["sign_mode"] == "naive"
+
+    # A later same-day write on a different window replaces the stamp too.
+    gdh.upsert_daily_hhi(
+        "NIFTY",
+        0.31,
+        when=datetime(2026, 7, 30, 14, 0, tzinfo=IST),
+        basis="gross",
+        strike_window=10,
+        sign_mode="naive",
+    )
+    row2 = gdh.get_daily_hhi_series("NIFTY")[0]
+    assert row2["hhi"] == 0.31
+    assert row2["strike_window"] == 10
+
+
+def test_filter_daily_hhi_basis_drops_mismatched_and_legacy_rows() -> None:
+    from options.gamma_density_history import filter_daily_hhi_basis
+
+    series = [
+        {"date": "2026-07-27", "hhi": 0.11},  # legacy: untagged → net, unknown window
+        {"date": "2026-07-28", "hhi": 0.12, "basis": "net", "strike_window": 20},
+        {"date": "2026-07-29", "hhi": 0.13, "basis": "gross", "strike_window": 10},
+        {"date": "2026-07-30", "hhi": 0.14, "basis": "gross", "strike_window": 20},
+    ]
+    kept = filter_daily_hhi_basis(series, basis="gross", strike_window=20)
+    assert [r["date"] for r in kept] == ["2026-07-30"]
+
+    # Legacy rows count as net basis.
+    net_rows = filter_daily_hhi_basis(series, basis="net")
+    assert [r["date"] for r in net_rows] == ["2026-07-27", "2026-07-28"]
+
+    # No filters requested → everything passes through untouched.
+    assert filter_daily_hhi_basis(series) == series
+
+
+def test_legacy_rows_resolve_as_net_at_the_assumed_window() -> None:
+    """Untagged rows are readable as net-basis even before the store is migrated."""
+    from options.gamma_density_history import (
+        filter_daily_hhi_basis,
+        legacy_daily_hhi_window,
+        normalize_legacy_daily_hhi_row,
+    )
+
+    legacy = {"date": "2026-07-27", "hhi": 0.11}
+    norm = normalize_legacy_daily_hhi_row(legacy)
+    assert norm["basis"] == "net"
+    assert norm["hhi_net"] == 0.11
+    assert norm["sign_mode"] == "naive"
+    assert norm["strike_window"] == legacy_daily_hhi_window()
+    assert norm["strike_window_assumed"] is True
+    assert norm["legacy"] is True
+    # Idempotent — a second pass must not re-stamp an already tagged row.
+    assert normalize_legacy_daily_hhi_row(norm) == norm
+    # The input is never mutated in place.
+    assert legacy == {"date": "2026-07-27", "hhi": 0.11}
+
+    kept = filter_daily_hhi_basis(
+        [legacy], basis="net", strike_window=legacy_daily_hhi_window(), sign_mode="naive"
+    )
+    assert [r["date"] for r in kept] == ["2026-07-27"]
+    # Legacy rows carry no gross measure, so a gross board cannot use them.
+    assert filter_daily_hhi_basis([legacy], basis="gross") == []
+
+
+def test_dual_basis_rows_serve_either_comparison() -> None:
+    """A day recorded on gross still answers a net-basis comparison."""
+    from options.gamma_density_history import filter_daily_hhi_basis
+
+    row = {
+        "date": "2026-08-11", "hhi": 0.186, "basis": "gross",
+        "hhi_gross": 0.186, "hhi_net": 0.142,
+        "strike_window": 20, "sign_mode": "naive",
+    }
+    as_gross = filter_daily_hhi_basis([row], basis="gross", strike_window=20)
+    assert as_gross[0]["hhi"] == 0.186
+    assert as_gross[0]["basis"] == "gross"
+
+    as_net = filter_daily_hhi_basis([row], basis="net", strike_window=20)
+    assert as_net[0]["hhi"] == 0.142
+    assert as_net[0]["basis"] == "net"
+    # Resolution copies — the caller's row is untouched.
+    assert row["hhi"] == 0.186 and row["basis"] == "gross"
+
+
+def test_upsert_migrates_legacy_rows_in_place(tmp_path, monkeypatch) -> None:
+    """The first tagged write also persists the legacy interpretation."""
+    import json
+
+    import options.gamma_density_history as gdh
+
+    hist = tmp_path / "gamma_density_history.json"
+    monkeypatch.setattr(gdh, "HISTORY_FILE", hist)
+    hist.write_text(
+        json.dumps(
+            {
+                "series": {},
+                "reversals": {},
+                "daily_hhi": {
+                    "NIFTY": [
+                        {"date": "2026-07-28", "hhi": 0.073},
+                        {"date": "2026-07-29", "hhi": 0.321},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out = gdh.upsert_daily_hhi(
+        "NIFTY", 0.186,
+        when=datetime(2026, 7, 30, 11, 0, tzinfo=IST),
+        basis="gross", strike_window=20, sign_mode="naive",
+        hhi_gross=0.186, hhi_net=0.142,
+    )
+    by_date = {r["date"]: r for r in out}
+    assert len(by_date) == 3
+
+    for legacy_date in ("2026-07-28", "2026-07-29"):
+        row = by_date[legacy_date]
+        assert row["basis"] == "net"
+        assert row["hhi_net"] == row["hhi"]
+        assert row["strike_window_assumed"] is True
+
+    fresh = by_date["2026-07-30"]
+    assert fresh["basis"] == "gross"
+    assert fresh["hhi_gross"] == 0.186
+    assert fresh["hhi_net"] == 0.142
+    assert fresh["strike_window_assumed"] is False
+    assert fresh["legacy"] is False
+
+    # Migration is persisted, not just returned.
+    on_disk = json.loads(hist.read_text(encoding="utf-8"))["daily_hhi"]["NIFTY"]
+    assert all(r.get("basis") for r in on_disk)
+
+    # The legacy days now serve a net-basis comparison; only today serves gross.
+    net_rows = gdh.filter_daily_hhi_basis(out, basis="net", strike_window=20, sign_mode="naive")
+    assert [r["date"] for r in net_rows] == ["2026-07-28", "2026-07-29", "2026-07-30"]
+    assert net_rows[-1]["hhi"] == 0.142
+    gross_rows = gdh.filter_daily_hhi_basis(out, basis="gross", strike_window=20, sign_mode="naive")
+    assert [r["date"] for r in gross_rows] == ["2026-07-30"]
+    assert gdh.count_assumed_window_rows(net_rows) == 2
+    assert gdh.count_assumed_window_rows(gross_rows) == 0
 
 
 def test_upsert_daily_hhi_skips_outside_session(tmp_path, monkeypatch) -> None:

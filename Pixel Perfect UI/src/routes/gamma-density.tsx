@@ -17,6 +17,7 @@ import { pickNearestExpiry, useOptionExpiries } from "@/hooks/useOptionExpiries"
 import type {
   GammaConfig,
   GammaMomentum,
+  GammaMassBasis,
   GammaSnapshot,
   OiUnderlying,
 } from "@/lib/types";
@@ -435,6 +436,9 @@ function GammaDensityPage() {
   const [signMode, setSignMode] = useState<SignMode>("naive");
   const [multiExpiry, setMultiExpiry] = useState(true);
   const [strikeWindow, setStrikeWindow] = useState(20);
+  // HHI mass basis for the Concentration tab: gross = |CE γ| + |PE γ| (default),
+  // net = |CE γ + PE γ| (legacy — cancels balanced strikes out of the index).
+  const [massBasis, setMassBasis] = useState<GammaMassBasis>("gross");
   const [snapshot, setSnapshot] = useState<GammaSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [authError, setAuthError] = useState(false);
@@ -520,6 +524,7 @@ function GammaDensityPage() {
       q.set("reversal_gex_gate", reversalGexGate ? "true" : "false");
       q.set("reversal_gex_mode", reversalGexMode);
       q.set("reversal_oi_gate", reversalOiGate ? "true" : "false");
+      q.set("mass_basis", massBasis);
       const data = await api.get<GammaSnapshot>(`/gamma-density/snapshot?${q}`);
       // Drop late responses so a slow Crude poll cannot overwrite Nifty (or vice versa).
       if (reqId !== snapshotReqId.current) return;
@@ -542,6 +547,7 @@ function GammaDensityPage() {
     reversalGexGate,
     reversalGexMode,
     reversalOiGate,
+    massBasis,
   ]);
 
   useEffect(() => {
@@ -1373,6 +1379,8 @@ function GammaDensityPage() {
               selectedUnderlying={underlying}
               onSelectUnderlying={selectUnderlying}
               summaryRefreshToken={summaryRefreshToken}
+              massBasis={massBasis}
+              onMassBasisChange={setMassBasis}
             />
           </TabsContent>
         </Tabs>
