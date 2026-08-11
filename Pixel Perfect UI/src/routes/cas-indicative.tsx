@@ -2,11 +2,12 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Gavel, Loader2, Pause, Play } from "lucide-react";
 
+import { CasHistoryChart } from "@/components/cas/CasHistoryChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import type { CasIndicative } from "@/lib/types";
+import type { CasHistoryResponse, CasIndicative } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/cas-indicative")({
@@ -24,6 +25,15 @@ const INDEXES: Array<{ id: CasIndex; label: string; enabled: boolean }> = [
 const POLL_IN_WINDOW_MS = 8_000;
 /** Outside CAS: still useful for pre-15:15 close forecast — poll faster than once/min. */
 const POLL_OUTSIDE_MS = 15_000;
+
+/** Human labels for `official_reject_reason` — a blank KPI should say why. */
+const REJECT_LABEL: Record<string, string> = {
+  outside_window: "Outside CAS window — not read",
+  no_quote: "No quote from Kite",
+  missing_field: "Kite sent no indicative field",
+  no_spot_anchor: "No spot anchor to validate against",
+  out_of_band: "Rejected — more than 3% from spot",
+};
 
 function fmt(v: number | null | undefined, digits = 2): string {
   if (v == null || !Number.isFinite(Number(v))) return "—";
@@ -86,10 +96,24 @@ function CasIndicativePage() {
   const [index, setIndex] = useState<CasIndex>("NIFTY");
   const [data, setData] = useState<CasIndicative | null>(null);
   const [clientLast, setClientLast] = useState<CasIndicative | null>(null);
+  const [history, setHistory] = useState<CasHistoryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authError, setAuthError] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+
+  /** Reads a local JSONL file — no Kite session, so it survives token expiry. */
+  async function loadHistory() {
+    try {
+      const res = await api.get<CasHistoryResponse>(
+        `/cas/history?underlying=${encodeURIComponent(index)}`,
+        { silent: true },
+      );
+      setHistory(res);
+    } catch {
+      // Chart is supplementary — a history read failure must not blank the desk.
+    }
+  }
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -113,11 +137,14 @@ function CasIndicativePage() {
     } finally {
       if (!silent) setLoading(false);
     }
+    // Poll after /cas/indicative — that call is what appends the newest row.
+    await loadHistory();
   }
 
   useEffect(() => {
     setData(null);
     setClientLast(null);
+    setHistory(null);
     void load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on index change only
   }, [index]);
@@ -212,6 +239,23 @@ function CasIndicativePage() {
   }
 
   const enabledIndex = INDEXES.find((i) => i.id === index)?.enabled ?? false;
+
+  // Official KPI: distinguish "live and accepted" / "stale last tick" / "rejected, here's why".
+  const officialShown = liveOfficial ?? (inWindow ? null : lastOfficial);
+  const officialIsFallback = liveOfficial == null && officialShown != null;
+  const rejectReason = data?.official_reject_reason ?? null;
+  const officialRaw =
+    data?.official_raw != null && Number.isFinite(data.official_raw) ? data.official_raw : null;
+  const lastAsof = data?.last?.asof ?? clientLast?.asof ?? null;
+  const rejectLabel = rejectReason ? (REJECT_LABEL[rejectReason] ?? rejectReason) : null;
+  const officialSub =
+    liveOfficial != null
+      ? "Sanitized Kite field"
+      : officialIsFallback
+        ? `Last in-window tick${lastAsof ? ` · ${formatAsOf(lastAsof)}` : ""}`
+        : rejectLabel
+          ? `${rejectLabel}${officialRaw != null ? ` · raw ${fmt(officialRaw)}` : ""}`
+          : "Unavailable";
 
   const heroLabel = heroIsEstimate
     ? "Pre-close forecast"
@@ -360,8 +404,15 @@ function CasIndicativePage() {
             ) : null}
             {inWindow && liveOfficial == null ? (
               <div className="rounded-sm border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                Official Kite index indicative unavailable or rejected (must be within 3% of
-                spot). Hero shows the desk{" "}
+                Official Kite index indicative unavailable
+                {rejectLabel ? (
+                  <>
+                    {" "}
+                    — <span className="font-medium">{rejectLabel.toLowerCase()}</span>
+                    {officialRaw != null ? ` (Kite sent ${fmt(officialRaw)})` : ""}
+                  </>
+                ) : null}
+                . Hero shows the desk{" "}
                 <span className="font-medium">pre-close forecast</span>
                 {estimateMethod ? ` (${estimateMethod})` : ""} — not official CAS equilibrium.
               </div>
@@ -404,13 +455,9 @@ function CasIndicativePage() {
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <KpiCard
                 label="Official indicative"
-                value={fmt(liveOfficial ?? (inWindow ? null : lastOfficial))}
-                sub={
-                  liveOfficial != null
-                    ? "Sanitized Kite field"
-                    : "Unavailable / rejected vs spot"
-                }
-                tone={(liveOfficial ?? (inWindow ? null : lastOfficial)) == null ? "muted" : "default"}
+                value={fmt(officialShown)}
+                sub={officialSub}
+                tone={officialShown == null ? "muted" : "default"}
               />
               <KpiCard
                 label="Fut POC"
@@ -456,10 +503,17 @@ function CasIndicativePage() {
               />
             </div>
 
+            <CasHistoryChart series={history?.series ?? []} loading={loading} fromHHMM="15:00" />
+
             <div className="rounded-sm border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
               Display-only pre-close forecast — not official CAS. GEX / OI Movers / spot math
               continue to use continuous LTP. Compact chips on those desks link here during the
               CAS window.
+              {history?.count
+                ? ` Chart: ${history.count} recorded polls${
+                    history.session ? ` for ${history.session}` : ""
+                  } (data/cas_history.jsonl, last 14 sessions).`
+                : ""}
             </div>
           </TabsContent>
 

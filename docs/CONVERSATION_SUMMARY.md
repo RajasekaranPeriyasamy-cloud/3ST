@@ -1,12 +1,50 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-06 (late evening IST)  
+**Last updated:** 2026-08-10  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Straddle Watch plan · reviews · sign-off gaps
+**Session focus:** CAS reject reasons · intraday history store + chart
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-10 — CAS reject reasons · intraday history + chart
+
+Steps 1–2 of a 5-step plan to close the gap between the desk pre-close forecast and the official CAS indicative. Display-only; nothing under `broker/` / `execution/` / `risk/` touched.
+
+### Why the forecast misses official (the finding that drove the plan)
+
+`proxy_v1` is built entirely from **derivatives and continuous-session cash** (synth F, fut LTP, VWAP). The official CAS indicative is the **equilibrium of the cash auction book** — mechanically a free-float-weighted function of the 50 constituents' own auction prices. Those are driven by different order flow (index-fund / rebalance orders arrive *only* in the auction book). **Reweighting the blend cannot converge** — Phase B constituent rebuild is the only real path.
+
+Recommended form for Phase B, in **return space**, which avoids needing the divisor or free-float share counts at all:
+
+```text
+index_cas ≈ index_anchor × (1 + Σ_covered wᵢ·rᵢ / Σ_covered wᵢ)     rᵢ = pᵢ_cas / pᵢ_anchor − 1
+```
+
+Only needs NSE's published percentage index weights; the divisor cancels; coverage renormalization beats the scaffold's implicit "uncovered stocks contribute zero." Contribution attribution falls straight out: `contribution_i = index_anchor × wᵢ × rᵢ`, and the contributions sum to the full predicted move exactly.
+
+### Shipped
+
+1. **Reject reasons** — `classify_official_indicative()` in `options/cas_estimate.py` returns `(value, reason)`; `sanitize_official_indicative()` is now a thin wrapper (unchanged behaviour). Payload gains `official_raw` + `official_reject_reason` (`outside_window` / `no_quote` / `missing_field` / `no_spot_anchor` / `out_of_band`, null when accepted). A blank official KPI was previously undiagnosable — absent field and rejected value both produced a bare `null`.
+2. **UI bug fix** — the *Official indicative* card printed a stale `last.indicative` value while captioning it "Unavailable / rejected vs spot" (visible in the user's screenshot: 24,583.80 with a contradictory caption). Value and caption now derive from the same state, and the caption names the reject reason plus the raw Kite value.
+3. **`options/cas_history.py`** — append-only `data/cas_history.jsonl`, one flat row per poll. Written from the **API route layer** so payload builders stay pure and tests stay off the filesystem. 5s per-underlying throttle, 14-session retention, best-effort (never raises). Schema already carries `constituent_est` / `coverage` for Phase B.
+4. **`GET /cas/history`** — not Kite-gated (reads the local file), so the chart survives the daily ~6 AM token expiry.
+5. **`CasHistoryChart`** — Highcharts Stock, same pattern as Straddle Watch. Forecast / official (dotted, `connectNulls: false` — gaps are real) / spot / synth F on one absolute axis from 15:00 IST. The page re-reads `/cas/history` on each poll tick instead of rebuilding rows client-side, so chart and KPIs cannot drift.
+
+**One artifact, two consumers:** the same JSONL is the chart series *and* the training set for the later calibration fit (`official_close − estimate_t`). Recording it now is what makes step 5 possible later.
+
+### Open — next steps in the plan
+
+- **Verify the CAS window constants.** `CAS_WINDOW_START/END = 15:15–15:35` does not match commit `b20fe89` ("extend cash session end to 15:40"), and the user's screenshot shows CAS already *Closed* at 15:29:36. If the real order-collection window is 15:30–15:40, the desk polls 15 minutes of dead time and misses where the equilibrium actually settles — **a window offset would masquerade as model error**, so settle this before tuning anything.
+- **Equity-quote spike** (step 3) — point `debug_quote_dump()` at ~10 NSE equities during a live auction and check for `indicative_close_price` / `total_imbalance` / `reference_limit_price`. Decides whether Phase B gets true auction prices, imbalance-skewed estimates, or just 15:30 last prints.
+- Steps 4–5 (constituent rebuild + contributor endpoint; calibration fit) follow from that spike.
+
+### Test status
+
+54 CAS tests pass (`test_cas_history.py` is new). Full suite: **470 passed, 6 failed** — all 6 are the documented date-sensitive class, not regressions. `tests/test_vol_surface.py` hardcodes expiries `2026-07-16/23/30`, now all in the past, so `_select_expiries` returns empty. Two *more* vol-surface tests (`test_surface_shape`, `test_otm_convention`) have rotted into this since the 5 listed in CLAUDE.md; `test_execution_queue.py::test_build_execution_queue_pending_confirm_mode` now passes.
 
 ---
 

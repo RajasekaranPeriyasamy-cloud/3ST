@@ -448,6 +448,46 @@ export interface CasEstimateComponents {
   constituent?: Record<string, unknown> | null;
 }
 
+/** Why `official_indicative` came back null (null itself means "accepted"). */
+export type CasOfficialRejectReason =
+  | "outside_window"
+  | "no_quote"
+  | "missing_field"
+  | "no_spot_anchor"
+  | "out_of_band";
+
+/** One recorded CAS poll — the chart series and the future calibration set. */
+export interface CasHistoryPoint {
+  ts: string;
+  session: string;
+  underlying: string;
+  in_cas_window: boolean;
+  spot: number | null;
+  official_indicative: number | null;
+  official_raw: number | null;
+  official_reject_reason: CasOfficialRejectReason | null;
+  estimate: number | null;
+  estimate_method: string | null;
+  synth_f: number | null;
+  fut_ltp: number | null;
+  ref_vwap: number | null;
+  ref_vwap_window: string | null;
+  fut_poc: number | null;
+  total_imbalance: number | null;
+  /** Null until the Phase B constituent rebuild lands. */
+  constituent_est: number | null;
+  coverage: number | null;
+  source: string | null;
+}
+
+export interface CasHistoryResponse {
+  underlying: string;
+  session: string | null;
+  count: number;
+  sessions: string[];
+  series: CasHistoryPoint[];
+}
+
 export interface CasIndicative {
   underlying: string;
   in_cas_window: boolean;
@@ -456,6 +496,10 @@ export interface CasIndicative {
   indicative: number | null;
   /** Same as indicative — sanitized official only. */
   official_indicative?: number | null;
+  /** What Kite actually sent, before sanitization — for diagnosing a blank official. */
+  official_raw?: number | null;
+  /** Null when accepted; else why the official value was dropped. */
+  official_reject_reason?: CasOfficialRejectReason | null;
   /** Desk pre-close forecast / proxy (primary hero when official is null). Not official CAS. */
   estimate?: number | null;
   estimate_components?: CasEstimateComponents | null;

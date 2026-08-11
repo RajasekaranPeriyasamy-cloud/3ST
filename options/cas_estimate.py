@@ -35,6 +35,12 @@ PROXY_WEIGHT_REF_VWAP = 0.25
 # Aligns with CAS ±3% band spirit (also used to sanity-check official index indicative).
 CAS_BAND_PCT = 0.03
 
+# Why an official indicative came back null — surfaced on the payload so a blank
+# KPI can be diagnosed without re-reading the raw quote.
+OFFICIAL_REJECT_MISSING = "missing_field"
+OFFICIAL_REJECT_NO_SPOT = "no_spot_anchor"
+OFFICIAL_REJECT_OUT_OF_BAND = "out_of_band"
+
 # Phase B: promote constituent rebuild only when enough weight has valid CAS px.
 CONSTITUENT_COVERAGE_THRESHOLD = 0.90
 
@@ -66,6 +72,30 @@ def _finite(value: Any) -> float | None:
     return f
 
 
+def classify_official_indicative(
+    indicative: float | None,
+    spot: float | None,
+    *,
+    max_rel_diff: float = CAS_BAND_PCT,
+) -> tuple[float | None, str | None]:
+    """``(accepted_value, reject_reason)`` for a raw Kite index indicative.
+
+    ``reject_reason`` is ``None`` only when the value is accepted. Splitting the
+    reasons out lets the desk tell "Kite never sent the field" apart from "Kite
+    sent something we refused", which a bare ``None`` cannot express.
+    """
+    ind = _finite(indicative)
+    if ind is None:
+        return None, OFFICIAL_REJECT_MISSING
+    sp = _finite(spot)
+    if sp is None or sp == 0:
+        # Without a spot anchor, refuse to trust index-level indicative.
+        return None, OFFICIAL_REJECT_NO_SPOT
+    if abs(ind - sp) / abs(sp) > float(max_rel_diff):
+        return None, OFFICIAL_REJECT_OUT_OF_BAND
+    return ind, None
+
+
 def sanitize_official_indicative(
     indicative: float | None,
     spot: float | None,
@@ -75,18 +105,10 @@ def sanitize_official_indicative(
     """Reject Kite index indicative unless within ``max_rel_diff`` of continuous spot.
 
     Garbage values (e.g. 15 / 1866 vs ~24,550) return ``None`` so they cannot
-    poison Δ / basis-vs-CAS.
+    poison Δ / basis-vs-CAS. Use :func:`classify_official_indicative` when the
+    caller also needs to know *why* a value was dropped.
     """
-    ind = _finite(indicative)
-    sp = _finite(spot)
-    if ind is None:
-        return None
-    if sp is None or sp == 0:
-        # Without a spot anchor, refuse to trust index-level indicative.
-        return None
-    if abs(ind - sp) / abs(sp) > float(max_rel_diff):
-        return None
-    return ind
+    return classify_official_indicative(indicative, spot, max_rel_diff=max_rel_diff)[0]
 
 
 def resolve_ref_vwap_window(when: datetime | None = None) -> tuple[time, time, str]:

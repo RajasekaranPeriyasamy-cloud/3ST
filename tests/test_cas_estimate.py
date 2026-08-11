@@ -6,7 +6,11 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from options.cas_estimate import (
+    OFFICIAL_REJECT_MISSING,
+    OFFICIAL_REJECT_NO_SPOT,
+    OFFICIAL_REJECT_OUT_OF_BAND,
     blend_proxy_estimate,
+    classify_official_indicative,
     compute_cas_estimate,
     constituent_coverage,
     rebuild_index_from_constituents,
@@ -37,6 +41,23 @@ def test_sanitize_accepts_within_band() -> None:
     # Just outside
     assert sanitize_official_indicative(spot * 1.0301, spot) is None
     assert sanitize_official_indicative(spot * 0.969, spot) is None
+
+
+def test_classify_distinguishes_reject_reasons() -> None:
+    """A blank KPI must be diagnosable: absent field vs rejected value vs no anchor."""
+    spot = 24550.0
+    assert classify_official_indicative(24572.0, spot) == (24572.0, None)
+    assert classify_official_indicative(None, spot) == (None, OFFICIAL_REJECT_MISSING)
+    assert classify_official_indicative(24550.0, None) == (None, OFFICIAL_REJECT_NO_SPOT)
+    assert classify_official_indicative(24550.0, 0.0) == (None, OFFICIAL_REJECT_NO_SPOT)
+    assert classify_official_indicative(1866.0, spot) == (None, OFFICIAL_REJECT_OUT_OF_BAND)
+    assert classify_official_indicative(15.0, spot) == (None, OFFICIAL_REJECT_OUT_OF_BAND)
+
+
+def test_classify_and_sanitize_agree() -> None:
+    spot = 24550.0
+    for value in (None, 15.0, 1866.0, 24572.0, spot * 1.03, spot * 1.0301):
+        assert classify_official_indicative(value, spot)[0] == sanitize_official_indicative(value, spot)
 
 
 def test_blend_proxy_full_weights() -> None:
