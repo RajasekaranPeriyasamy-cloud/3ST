@@ -528,6 +528,20 @@ export interface SessionPoc {
   path?: Array<{ t: string; close: number; ts_ms?: number }>;
 }
 
+/** Why `session_poc` is null, so a blank Fut POC can explain itself. */
+export type SessionPocReason =
+  | "unknown_underlying"
+  | "future_unresolved"
+  | "before_session_open"
+  | "fetch_failed"
+  | "no_session_bars"
+  | "no_session_volume";
+
+export interface SessionPocStatus {
+  ok: boolean;
+  reason?: SessionPocReason | "error" | null;
+}
+
 export interface OiMoversSnapshot {
   underlying: string;
   expiry: string;
@@ -1128,6 +1142,8 @@ export interface GammaSnapshot {
   oi_baseline_prev_close_count?: number;
   cas?: CasIndicative | null;
   session_poc?: SessionPoc | null;
+  /** Always present; explains a null `session_poc` rather than hiding the chip. */
+  session_poc_status?: SessionPocStatus | null;
 }
 
 export interface VannaConfig {
@@ -2416,4 +2432,157 @@ export interface ExpiryCalMonthBoard {
   day_count: number;
   expiry_row_count: number;
   month_days: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Equity Report desk (/equity-report)                                  */
+/* ------------------------------------------------------------------ */
+
+export interface InstrumentSearchResponse {
+  q: string;
+  segment: string;
+  items: InstrumentHit[];
+}
+
+export interface EquityPin {
+  symbol: string;
+  company: string;
+  exchange: string;
+  pinned_at: string;
+}
+
+export type EquityReportStatus =
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface EquityReportProgress {
+  iteration?: number;
+  tool_calls?: number;
+  note?: string;
+}
+
+export interface EquityReportCitation {
+  url: string;
+  title: string;
+}
+
+export interface EquityReportUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+export interface EquityReportJob {
+  id: string;
+  ticker: string;
+  company: string;
+  exchange: string;
+  status: EquityReportStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  progress: EquityReportProgress;
+  usage: EquityReportUsage;
+  cost_usd: number;
+  citations: EquityReportCitation[];
+  model: string;
+  error: string | null;
+  /** Only present on GET /equity/reports/{id}. */
+  markdown?: string;
+}
+
+export interface EquityReportListResponse {
+  jobs: EquityReportJob[];
+  anthropic_ready: boolean;
+  stub_mode: boolean;
+  daily_usd_cap: number;
+  spent_today_usd: number;
+  remaining_usd: number | null;
+  capped: boolean;
+}
+
+export interface VelocityStatus {
+  alive: boolean;
+  underlyings: string[];
+  strike_width: number;
+  expiries_tracked: number;
+  last_report: {
+    ok?: boolean;
+    ts?: string;
+    error?: string;
+    underlyings?: Record<
+      string,
+      { spot?: number; legs?: number; legs_valid?: number; error?: string }
+    >;
+  };
+  state: Record<string, unknown>;
+}
+
+export interface VelocityCoverageDay {
+  date: string;
+  minutes: number;
+  legs: number;
+}
+
+export interface VelocityCoverage {
+  underlying: string;
+  sessions: number;
+  first: string | null;
+  last: string | null;
+  days: VelocityCoverageDay[];
+}
+
+export interface VelocityPoint {
+  ts: string;
+  expiry: string;
+  strike: number;
+  option_type: string;
+  v_t: number;
+}
+
+export interface VelocitySeries {
+  underlying: string;
+  session_date: string | null;
+  minutes: number;
+  observations?: number;
+  blanks?: string;
+  points: VelocityPoint[];
+}
+
+export interface VelocityChartMinute {
+  ts: string;
+  clock: string;
+  spot: number;
+  v_max: number | null;
+  v_med: number | null;
+  v_atm_ce: number | null;
+  v_atm_pe: number | null;
+}
+
+export interface VelocityLagPoint {
+  lag_min: number;
+  corr: number | null;
+  n: number;
+}
+
+export interface VelocityChart {
+  underlying: string;
+  session_date: string | null;
+  atm_strike: number | null;
+  nearest_expiry?: string;
+  contracts: number;
+  minutes: VelocityChartMinute[];
+  thresholds: { p95?: number | null; p99?: number | null };
+  correlation: {
+    n: number;
+    lag_profile: VelocityLagPoint[];
+    best_lag: number | null;
+    best_corr?: number | null;
+    contemporaneous: number | null;
+    interpretation: string;
+  };
 }

@@ -27,6 +27,7 @@ _API_PREFIXES = (
     "/oi-var",
     "/gamma-density",
     "/cas/",  # trailing slash so SPA /cas-indicative is not treated as API
+    "/equity/",  # trailing slash so SPA /equity-report is not treated as API
     "/vanna-exposure",
     "/greeks",
     "/trade-suggestions",

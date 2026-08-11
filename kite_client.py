@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from config import KITE_INTERVALS, KITE_MAX_DAYS
+from config import KITE_DEFAULT_RANGE_DAYS, KITE_INTERVALS, KITE_MAX_LOOKBACK_DAYS
 from instruments import resolve_instrument
 from kite_auth import get_kite_client, session_status
 
@@ -55,12 +55,21 @@ def _candles_to_df(rows: list[list[Any]]) -> pd.DataFrame:
 
 
 def kite_max_lookback_days(timeframe: str) -> int:
-    return int(KITE_MAX_DAYS.get(timeframe, 400))
+    """Furthest back a request may reach — a clamp ceiling, not a default span.
+
+    Do not use this to build a default date range; see kite_default_range_days().
+    """
+    return int(KITE_MAX_LOOKBACK_DAYS.get(timeframe, 1825))
+
+
+def kite_default_range_days(timeframe: str) -> int:
+    """Span that "use max" requests when the caller gives no explicit range."""
+    return int(KITE_DEFAULT_RANGE_DAYS.get(timeframe, 400))
 
 
 def default_kite_date_range(timeframe: str) -> tuple[date, date]:
     end = date.today()
-    start = end - timedelta(days=kite_max_lookback_days(timeframe))
+    start = end - timedelta(days=kite_default_range_days(timeframe))
     return start, end
 
 

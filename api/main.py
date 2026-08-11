@@ -1,4 +1,4 @@
-"""FastAPI backend for Lovable UI + Kite Connect algo platform."""
+"""FastAPI backend for the Pixel Perfect UI + Kite Connect algo platform."""
 
 from __future__ import annotations
 
@@ -23,11 +23,24 @@ from config import (
     DEFAULT_ST_METHOD,
     INDEX_OPTIONS,
     INSTRUMENTS,
-    KITE_MAX_DAYS,
     OI_PROFILE_DEFAULTS,
     TIMEFRAMES,
     YAHOO_MAX_DAYS,
 )
+from analysis.equity_report import pins as equity_pins
+from analysis.equity_report import store as equity_store
+from analysis.equity_report.runner import (
+    notify_job_queued,
+    report_runner_status,
+    start_report_runner,
+    stop_report_runner,
+)
+from analysis.delta_velocity import collector as dv_collector
+from analysis.delta_velocity import store as delta_velocity_store
+from analysis.delta_velocity.runner import is_alive as delta_velocity_alive
+from analysis.delta_velocity.runner import last_report as delta_velocity_last_report
+from analysis.delta_velocity.runner import start as start_delta_velocity_runner
+from analysis.delta_velocity.runner import stop as stop_delta_velocity_runner
 from execution.arming import arm, disarm, get_arm_state, set_mode
 from execution.rolling_straddle import close_all, close_leg, adopt_leg, unlink_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
 from execution.rolling_straddle_store import get_config as rs_get_config
@@ -60,6 +73,11 @@ from execution.premium_book_store import get_config as premium_book_get_config
 from execution.premium_book_store import get_log as premium_book_get_log
 from execution.premium_book_store import save_config as premium_book_save_config
 from execution.scheduler import scheduler_status, start_scheduler, stop_scheduler
+from options.analytics_scheduler import (
+    analytics_scheduler_status,
+    start_analytics_scheduler,
+    stop_analytics_scheduler,
+)
 from execution.desk_trades import adopt_open_positions, build_active_trades_view, sync_active_trade_entry
 from execution.execution_queue import build_execution_queue, queue_action
 from execution.positions_view import build_positions_view
@@ -86,6 +104,7 @@ from kite_auth import (
 from kite_client import (
     default_kite_date_range,
     fetch_historical_for_selection,
+    kite_default_range_days,
     kite_max_lookback_days,
     margins,
     preview_order_margins,
@@ -166,6 +185,9 @@ async def _lifespan(app: FastAPI):
 
     load_persisted_state()
     start_scheduler()
+    start_analytics_scheduler()
+    start_report_runner()
+    start_delta_velocity_runner()
     threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
     await start_ltp_feed()
     try:
@@ -198,6 +220,9 @@ async def _lifespan(app: FastAPI):
     yield
     await stop_ltp_feed()
     stop_scheduler()
+    stop_analytics_scheduler()
+    stop_report_runner()
+    stop_delta_velocity_runner()
 
 
 app = FastAPI(title="3ST Kite Algo API", version="0.2.0", lifespan=_lifespan)
@@ -211,8 +236,10 @@ app.add_middleware(
         "http://127.0.0.1:8080",
         "http://localhost:8081",
         "http://127.0.0.1:8081",
-        "https://*.lovable.app",
-        "https://*.lovable.dev",
+        # NOTE: the trailing "*" makes every entry above redundant — Starlette
+        # echoes any Origin back once a wildcard is present, so this is effectively
+        # "allow all", including with credentials. Left as-is to avoid changing
+        # request behaviour during the UI build migration; tighten separately.
         "*",
     ],
     allow_credentials=True,
@@ -621,6 +648,18 @@ class PricingCalculateIn(BaseModel):
     heston_overrides: dict[str, float] | None = None
 
 
+class EquityReportIn(BaseModel):
+    ticker: str
+    company: str = ""
+    exchange: str = "NSE"
+
+
+class EquityPinIn(BaseModel):
+    symbol: str
+    company: str = ""
+    exchange: str = "NSE"
+
+
 def _err(e: Exception, status: int = 400) -> HTTPException:
     return HTTPException(status_code=status, detail=friendly_kite_message(str(e)))
 
@@ -760,7 +799,15 @@ def health() -> dict[str, Any]:
 
     from instruments import cache_status
     from kite_auth import kite_egress_status
-    from settings import env, kite_allowed_egress_ip, kite_use_staticip_proxy, proxy_ready
+    from settings import (
+        anthropic_ready,
+        env,
+        equity_report_config,
+        equity_report_ready,
+        kite_allowed_egress_ip,
+        kite_use_staticip_proxy,
+        proxy_ready,
+    )
 
     egress = kite_egress_status()
     proxy_on = egress["mode"] == "staticip_proxy"
@@ -795,6 +842,12 @@ def health() -> dict[str, Any]:
         "timeframes": list(TIMEFRAMES.keys()),
         "spread_templates": list(SPREAD_TEMPLATES.keys()),
         "st_methods": ["heikin_ashi", "regular", "hybrid"],
+        "delta_velocity_runner_alive": delta_velocity_alive(),
+        **analytics_scheduler_status(),
+        **report_runner_status(),
+        "anthropic_ready": anthropic_ready(),
+        "equity_report_provider": equity_report_config()["provider"],
+        "equity_report_ready": equity_report_ready(),
     }
 
 
@@ -1032,6 +1085,101 @@ def options_spread_preview_directions(body: SpreadConfigIn) -> dict[str, Any]:
         )
     except HTTPException:
         raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+# --------------------------------------------------------------------------- #
+# Equity Report desk (/equity-report)
+#
+# Research only — these endpoints never place, cancel, or read orders. Report
+# generation is handed to the background runner because it takes minutes.
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/equity/reports")
+def equity_reports_list(limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
+    from analysis.equity_report.agent import stub_mode
+    from settings import equity_report_config, equity_report_ready
+
+    cfg = equity_report_config()
+    return {
+        "jobs": equity_store.list_jobs(limit=limit),
+        # anthropic_ready is kept as the "provider is configured" flag the UI
+        # already reads; provider says which backend that refers to.
+        "anthropic_ready": equity_report_ready(),
+        "provider": cfg["provider"],
+        "stub_mode": stub_mode(),
+        **equity_store.cap_status(),
+    }
+
+
+@app.post("/equity/reports")
+def equity_reports_create(body: EquityReportIn) -> dict[str, Any]:
+    try:
+        job = equity_store.create_job(
+            ticker=body.ticker, company=body.company, exchange=body.exchange
+        )
+    except ValueError as e:
+        raise _err(e, 400) from e
+    except RuntimeError as e:
+        # Daily spend cap, or a report for this ticker already queued/running.
+        status = 429 if "cap" in str(e).lower() else 409
+        raise HTTPException(status_code=status, detail=str(e)) from e
+    notify_job_queued()
+    return job
+
+
+@app.get("/equity/reports/{job_id}")
+def equity_report_get(job_id: str) -> dict[str, Any]:
+    job = equity_store.get_job(job_id, with_body=True)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No report job {job_id}")
+    return job
+
+
+@app.post("/equity/reports/{job_id}/cancel")
+def equity_report_cancel(job_id: str) -> dict[str, Any]:
+    job = equity_store.cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No report job {job_id}")
+    return job
+
+
+@app.delete("/equity/reports/{job_id}")
+def equity_report_delete(job_id: str) -> dict[str, Any]:
+    if not equity_store.delete_job(job_id):
+        raise HTTPException(status_code=404, detail=f"No report job {job_id}")
+    return {"deleted": job_id}
+
+
+@app.get("/equity/pins")
+def equity_pins_list() -> dict[str, Any]:
+    return {"pins": equity_pins.list_pins()}
+
+
+@app.post("/equity/pins")
+def equity_pins_add(body: EquityPinIn) -> dict[str, Any]:
+    try:
+        pin = equity_pins.add_pin(body.symbol, body.company, body.exchange)
+    except ValueError as e:
+        raise _err(e, 400) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return {"pin": pin, "pins": equity_pins.list_pins()}
+
+
+@app.delete("/equity/pins/{symbol}")
+def equity_pins_remove(symbol: str) -> dict[str, Any]:
+    if not equity_pins.remove_pin(symbol):
+        raise HTTPException(status_code=404, detail=f"{symbol} is not pinned")
+    return {"removed": symbol.upper(), "pins": equity_pins.list_pins()}
+
+
+@app.post("/equity/pins/import-watchlist")
+def equity_pins_import_watchlist() -> dict[str, Any]:
+    try:
+        return equity_pins.import_from_watchlist()
     except Exception as e:
         raise _err(e) from e
 
@@ -1786,9 +1934,15 @@ def backtest_limits(
             "source": "kite",
             "timeframe": timeframe,
             "max_days": kite_max_lookback_days(timeframe),
+            "default_range_days": kite_default_range_days(timeframe),
             "default_start": start.isoformat(),
             "default_end": end.isoformat(),
-            "note": "Kite intraday history (up to ~400 days for 15/30/60min). Login required.",
+            "note": (
+                "Kite intraday history reaches ~5 years for index and cash; futures "
+                "and options are limited by their listing date. default_start reflects "
+                "the shorter default span, not the ceiling — pass an explicit start to "
+                "reach further back. Login required."
+            ),
         }
     start, end = default_date_range(timeframe)
     return {
@@ -1823,8 +1977,9 @@ def backtest_run(body: BacktestIn) -> dict[str, Any]:
                 start, end = default_kite_date_range(timeframe)
             else:
                 start, end = body.start, body.end
-                max_days = kite_max_lookback_days(timeframe)
-                earliest = date.today() - timedelta(days=max_days)
+                # Clamp to the furthest back Kite serves — NOT to the default
+                # range. An explicit start older than the default is honoured.
+                earliest = date.today() - timedelta(days=kite_max_lookback_days(timeframe))
                 if start < earliest:
                     start = earliest
                 if end > date.today():
@@ -2616,8 +2771,9 @@ def backtest_rolling_atm(body: RollingAtmBacktestIn) -> dict[str, Any]:
                 start, end = default_kite_date_range(timeframe)
             else:
                 start, end = body.start, body.end
-                max_days = kite_max_lookback_days(timeframe)
-                earliest = date.today() - timedelta(days=max_days)
+                # Clamp to the furthest back Kite serves — NOT to the default
+                # range. An explicit start older than the default is honoured.
+                earliest = date.today() - timedelta(days=kite_max_lookback_days(timeframe))
                 if start < earliest:
                     start = earliest
             if target["instrument_token"]:
@@ -2694,6 +2850,102 @@ def backtest_rolling_atm(body: RollingAtmBacktestIn) -> dict[str, Any]:
         }
     except Exception as e:
         raise _err(e) from e
+
+
+@app.get("/velocity/status")
+def velocity_status() -> dict[str, Any]:
+    """Delta-velocity engine health and last sample.
+
+    Prefix is ``/velocity`` rather than ``/delta-velocity`` so a future SPA page
+    at ``/delta-velocity`` does not collide with an API prefix — a hard browser
+    load of a colliding path returns a JSON 404 (see CLAUDE.md).
+    """
+    return {
+        "alive": delta_velocity_alive(),
+        "underlyings": list(dv_collector.UNDERLYINGS),
+        "strike_width": dv_collector.STRIKE_WIDTH,
+        "expiries_tracked": dv_collector.EXPIRIES,
+        "last_report": delta_velocity_last_report(),
+        "state": delta_velocity_store.load_state(),
+    }
+
+
+@app.get("/velocity/coverage")
+def velocity_coverage(underlying: str = "NIFTY") -> dict[str, Any]:
+    """What the archive holds — the Phase 1 exit criterion is gap-free sessions."""
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    return delta_velocity_store.coverage(u)
+
+
+@app.get("/velocity/series")
+def velocity_series(underlying: str = "NIFTY", session_date: str | None = None) -> dict[str, Any]:
+    """Computed v_t for one archived session.
+
+    Read-only over the archive: never fetches, so it cannot be slowed by Kite
+    and returns nothing for a session that was not collected.
+    """
+    import pandas as pd
+
+    from analysis.delta_velocity.features import blank_summary, compute_delta_velocity
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+
+    snapshots = delta_velocity_store.load_session(u, day)
+    if not snapshots:
+        return {"underlying": u, "session_date": session_date, "minutes": 0, "points": []}
+
+    rows = pd.DataFrame(delta_velocity_store.to_rows(snapshots))
+    rows["ts"] = pd.to_datetime(rows["ts"], format="mixed", utc=True)
+    velocity, blanks = compute_delta_velocity(rows)
+    return {
+        "underlying": u,
+        "session_date": session_date or snapshots[0].get("session_date"),
+        "minutes": len(snapshots),
+        "observations": int(len(velocity)),
+        "blanks": blank_summary(blanks),
+        "points": [
+            {
+                "ts": str(r.ts),
+                "expiry": r.expiry,
+                "strike": r.strike,
+                "option_type": r.option_type,
+                "v_t": round(float(r.v_t), 8),
+            }
+            for r in velocity.itertuples()
+        ],
+    }
+
+
+@app.get("/velocity/chart")
+def velocity_chart(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+) -> dict[str, Any]:
+    """Per-minute spot + aggregated v_t + lag correlation for one session.
+
+    Aggregation and correlation run here rather than in the browser: a session
+    is ~25k (minute, contract) points, and keeping the statistics in one place
+    means they are testable instead of reimplemented in TypeScript.
+    """
+    from analysis.delta_velocity import chart as dv_chart
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+    return dv_chart.session_chart(u, day, expiry=expiry)
 
 
 @app.get("/api/meta")

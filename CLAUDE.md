@@ -13,6 +13,7 @@ This file provides guidance to Claude (Claude Code / Cowork) when working with c
 | Premium Book | `/premium-book` | `execution/premium_book_runner.py` |
 | Live Desk / Watchlist | `/live` | `execution/watchlist_activation.py`, `watchlist_exit_runner.py` |
 | Algo Execution (taskbar) | `/execution` | `execution/execution_queue.py` |
+| Equity Report | `/equity-report` | `analysis/equity_report/` |
 | RRG, OI Tracker, OI VAR, Gamma Density, Vanna Exposure, Vol Surface, IV Smile, Pricing Engine, Calendar Arb, OI Profile, Analogue Paths | various | `analysis/`, `options/` |
 
 Legacy **Streamlit** UI (`app.py`) still exists but is not actively developed — treat `Pixel Perfect UI` + FastAPI as canonical.
@@ -35,6 +36,7 @@ Do not restate docs content into a second location — edit the source file and 
 - **Static-IP egress for orders.** Kite whitelists a fixed IP for order placement (data reads are unrestricted). 3ST supports both a direct bind (`KITE_ALLOWED_EGRESS_IP`) and a `staticip.in` proxy (`KITE_USE_STATICIP_PROXY`). Whitelist updates on developers.kite.trade are capped at once per calendar week — misconfiguring this has blocked live orders for days at a time (see CONVERSATION_SUMMARY, 2026-07-15 sessions). Verify via `GET /health` → `kite_egress_mode`.
 - **Kite tokens expire ~6 AM IST daily** — expect a re-login every trading day.
 - Secrets: `.env` (API key/secret, egress IP, proxy creds) and all session/state files under `data/` are gitignored except `data/fpi_sectors_seed.json` (an intentional offline fallback seed). Never commit `access_token*` or `.kite_session.json`.
+- **LLM credentials for the Equity Report desk only.** `EQUITY_REPORT_PROVIDER` selects `anthropic` (default) or `gemini`; each reads its own key (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`). Anthropic spends money per report — `EQUITY_REPORT_DAILY_USD_CAP` (default $10) refuses to queue a new report once today's accumulated cost crosses it. `EQUITY_REPORT_STUB=1` returns canned reports so the UI can be worked on with zero spend. A blank key disables the desk cleanly — the page says so rather than failing obscurely.
 
 ## Development Environment Setup
 
@@ -60,6 +62,18 @@ Or use the combined dev script: `powershell -ExecutionPolicy Bypass -File "C:\De
 
 **Health check:** `GET http://127.0.0.1:8001/health`. **Swagger:** `/docs`.
 
+**Two surfaces serve the UI, and they are not equivalent.** Port 8080 is the Vite dev server (live source). Port 8001 is FastAPI serving a *prebuilt* bundle from `Pixel Perfect UI/.output/public` (`api/ui_static.py`). A new route added to `src/routes/` appears on 8080 immediately and on 8001 **only after `npm run build`** — verifying a UI change on 8080 alone proves nothing about the app as normally opened. `.output/` is gitignored, so a build artifact that gets overwritten is not recoverable from git.
+
+> ⚠️ **Stop the API before running `npm run build`.** FastAPI mounts `.output/public/assets` via `StaticFiles`, which holds a Windows directory lock; Vite then fails to clean it with `EBUSY: resource busy or locked, rmdir` and can leave a half-written bundle.
+
+**The frontend is a plain Vite SPA** (migrated 2026-08-08 — see `docs/UI_LOVABLE_EXIT_PLAN.md`). `npm run build` is literally `vite build`, exits zero, and emits a normal `index.html` from the real `index.html` at the project root.
+
+This replaced `@lovable.dev/vite-tanstack-config` + `@tanstack/react-start` + nitro. That stack could not run TanStack Start's prerender step (the Lovable preset routed the server build through nitro, so prerender found no `server.js`, 500'd, and emitted no shell), which is why `scripts/build-desk.mjs` used to boot a nitro server just to scrape a shell out of it and string-patch `hydrateRoot` → `createRoot`. All of that — plus `_shell.html`, `src/server.ts`, `src/start.ts`, and the "`vite build` exits non-zero, that's expected" caveat — is gone. There is no `scripts/` directory in `Pixel Perfect UI/` anymore.
+
+The app is client-rendered only: **no SSR and no server functions.** Don't add `createServerFn` or reintroduce `@tanstack/react-start`; data comes from FastAPI via `src/lib/api.ts`. Document `<head>` (title, meta, fonts, favicon) and the inline theme boot script live in `Pixel Perfect UI/index.html`, not in `__root.tsx`.
+
+> **Direct URL loads work only for SPA routes whose path does not collide with an API prefix.** `/gamma-density`, `/oi-var`, `/execution` etc. are also API prefixes, so a hard browser load of those returns a JSON 404 — they are reachable by clicking through the sidebar (client-side routing). Give any new SPA page a path that isn't an API prefix, or register the API side with a trailing slash (`"/equity/"`) as `/equity-report` does.
+
 ## Architecture
 
 ```
@@ -77,6 +91,14 @@ execution/      ~30 modules: 5 parallel runners (Rolling Straddle, Watchlist/Liv
                   additive and currently inert. Do not assume it is tracking live legs
                   until a runner is migrated to call order_router.submit_intent().
 options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG, etc.)
+                — analysis/equity_report/ (added 2026-08-07): the only module that calls an
+                  LLM. Runs the vendored `india-equity-report` prompt to produce NSE/BSE
+                  research reports. Its own daemon thread (runner.py), its own JSON stores,
+                  and no imports from broker/ execution/ risk/ — a slow model call must
+                  never be able to delay an order-placing tick.
+                  Two backends behind one generate_report(): agent.py (Anthropic,
+                  web_search + web_fetch) and gemini_backend.py (Gemini Interactions API).
+                  See "Equity Report providers" below before touching either.
 strategy_3st.py, backtest_engine.py   Core indicator + backtest engine
 tests/          40+ pytest files — good coverage of strategy parity, risk limits,
                 reconcile, bar-churn, exit-grace edge cases
@@ -100,8 +122,57 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | `paper_broker.json` | `broker/paper_broker.py` |
 | `kite_session.json` | `kite_auth.py` — gitignored |
 | `kite_instruments.json` | `instruments.py` cache |
+| `equity_reports.json` + `equity_reports/*.md` | `analysis/equity_report/store.py` |
+| `equity_pins.json` | `analysis/equity_report/pins.py` |
 
 There is no single source of truth across runners for "what legs are open" today — that's exactly the gap `position_ledger.py` exists to close, once runners migrate to it.
+
+## Equity Report providers
+
+`EQUITY_REPORT_PROVIDER` picks the backend; both satisfy the same
+`generate_report()` contract and share the prompt, the `sources.py` allowlist,
+the store, the runner and the page.
+
+| | `anthropic` (default) | `gemini` |
+| --- | --- | --- |
+| Search | `web_search` server tool | **none** — see below |
+| Fetch | `web_fetch` server tool | `url_context` |
+| Continuation | `pause_turn` re-send | `previous_interaction_id` on `status: incomplete` |
+| Cost | ~$1–3/report (unmeasured) | free tier, recorded as $0.00 |
+
+**Gemini has no search.** Measured 2026-08-08 on a free-tier key: plain generation
+and `url_context` both work, but `google_search` grounding 429s — it sits behind a
+separate quota the free tier doesn't grant. `EQUITY_REPORT_GEMINI_SEARCH` exists to
+turn it on if you get a plan that includes it; leave it `0` otherwise or every
+report fails.
+
+That is survivable because `sources.seed_urls()` templates the canonical URLs per
+ticker, so search was only ever doing *discovery*. What is genuinely lost: recent
+news, credit ratings, and analyst consensus. The prompt addendum tells the model to
+mark those "not available in this run" instead of inventing them.
+
+**The anti-hallucination backstop lives in `gemini_backend.generate_report_gemini`:**
+`url_context_result` reports per-URL success/failure, and if *nothing* fetched the
+function raises rather than returning a report whose every number came from model
+memory. Several finance sites (Trendlyne, observed) block automated retrieval, so
+partial failure is normal and expected.
+
+**Model choice matters more than usual.** Measured against the report template
+(RELIANCE, same prompt, `thinking_level: high`):
+
+| model | time | words | mandatory sections |
+| --- | --- | --- | --- |
+| `gemini-3.1-flash-lite` | 20s | 1,045 | 3/6 |
+| `gemini-3.5-flash-lite` (default) | 46s | 3,406 | 5/6 |
+| `gemini-3.5-flash` | 194s | 5,311 | 5/6 |
+| `gemini-3.6-flash` | 88s | 5,775 | 5/6 |
+
+Flash-Lite 3.1 drops the Bull/Base/Bear table and the split verdict — both mandatory
+in the skill's rubric — which is why the default is 3.5-flash-lite despite being
+slower.
+
+Gemini needs `google-genai >= 2.3.0` for the Interactions API (`client.interactions.create`);
+the older `generate_content` surface does not carry these tools.
 
 ## Runtime Constraints
 
@@ -130,7 +201,17 @@ pytest tests/test_order_router.py::test_submit_intent_duplicate_tag_blocked -v
 
 CI runs this on every push/PR — `.github/workflows/ci.yml` (added 2026-07-25). The `test` job installs `requirements.txt` and runs the full suite; a `lint` job runs `ruff check .` but is `continue-on-error: true` for now (see Code Style) so pre-existing style debt doesn't block merges — flip it to blocking once that backlog is cleared.
 
-Some tests are date-sensitive (expiry/vol-surface fixtures assume a "today" relative to when they were written) and will start failing as real dates pass — a failure in `test_vol_surface.py` or `test_mcx_rolling_straddle.py` around expiry dates is often this, not a regression. Check the assumed date before assuming a real break. (These are the 5 known-stale failures as of 2026-07-25: `test_execution_queue.py::test_build_execution_queue_pending_confirm_mode`, `test_fpi_sectors.py::test_attach_fpi_overlay_uses_seed`, `test_mcx_rolling_straddle.py::test_save_config_corrects_stale_crudeoilm_expiry`, `test_vol_surface.py::test_term_structure_recovered`, `test_vol_surface.py::test_max_expiries_limit`.)
+**The suite is fully green and runs offline in ~25s** (as of 2026-08-09). If you see failures, they are real — the long-standing "6 known-stale date-sensitive failures" are fixed, not tolerated.
+
+**`tests/conftest.py` blocks live Kite in every test.** It patches the client accessors that every market-data path resolves at call time (`_kite_direct_client`, `get_kite_client`, `kite_read_client`), so nothing can reach the broker. This is *not* optional politeness: one gamma-snapshot test used to walk a whole option chain issuing ~80 per-strike 60min historical requests (`gamma_density` → `oi_movers.ensure_session_open_oi` → `fetch_historical_by_token`), taking 80+ seconds and returning different data every run. Blocking it took the suite from **402s to ~25s** and made CI runnable without a broker session.
+
+- Patch the *accessors*, not `kite_client.fetch_*` — modules do `from kite_client import fetch_historical_by_token` at import time and hold their own reference, so patching the wrapper misses them.
+- A test that genuinely needs a broker can use `@pytest.mark.live_kite` (nothing does today).
+- `tests/test_offline_guard.py` asserts the guard is still live, so renaming an accessor fails loudly instead of silently turning it into a no-op.
+
+**Date-sensitive fixtures must derive from `date.today()`**, never hardcode a date that is *current* when written — that is what rotted before. `test_vol_surface.py` builds weekly expiries with `_weekly_expiries()`; `test_mcx_rolling_straddle.py` derives its stale expiry as `today - 90d`. A hardcoded date that is *already past* (and meant to be) is fine; one that is *currently valid* will silently stop testing anything the moment it expires. `test_fpi_sectors.py` reads its expected values out of `data/fpi_sectors_seed.json` rather than hardcoding NSDL numbers that change whenever the seed is refreshed.
+
+Fixing those fixtures uncovered a live bug the stale dates had been masking: `save_config` does not correct a past expiry unless the patch touches `expiry`/`underlying` — see `test_save_config_keeps_expiry_on_unrelated_patch`, which pins current behaviour so a deliberate fix shows up as a failure there.
 
 **A CI/lint gap already caught a live bug once** — `ruff check . --select F821` (undefined-name) surfaced `execution/watchlist_activation.py` referencing `patch` while the `patch` dict was still being constructed. That raised `UnboundLocalError` on *every* watchlist entry activation (manual live BUY/SELL, and the taskbar's ship/execute action) — after the broker order had already been placed. Fixed 2026-07-25 (`tests/test_watchlist_activation.py` is the regression test). Take this as the reason the `lint` job exists at all, even non-blocking.
 
@@ -164,7 +245,9 @@ As of 2026-07-25 there's a backlog of ~90 pre-existing findings (mostly unsorted
 - **Port confusion**: `.env` defaults to API port 8001; some UI config/docs reference 8000. Confirm `VITE_API_BASE_URL` matches wherever uvicorn is actually bound.
 - **"Waiting 09:20" / ticks not updating after underlying switch**: historically caused by stale `morning_bar_seen` / `last_spot` carried over from a different underlying — fixed in `rolling_straddle_store.py`, but worth checking first if a desk looks frozen after a config change.
 - **Orders rejected — IP not whitelisted**: check `GET /health` → `kite_egress_mode`, then confirm the *outgoing* IP (not your ISP IP) matches what's whitelisted on developers.kite.trade.
-- **API restart required after any `execution/` change** — don't trust `--reload` alone if behavior looks stale.
+- **API restart required after any `execution/` change** — don't trust `--reload` alone if behavior looks stale. The same applies to `analysis/equity_report/`: a running API will not pick up a new module there, and `GET /health` → `equity_report_runner_alive` is the quickest way to tell whether the restart took.
+- **Equity Report jobs stuck at "failed: API restarted while this report was in flight"** — expected. A report is a live model stream; a restart kills it and `store.load_persisted_jobs()` fails anything left `queued`/`running` rather than leaving the UI spinning. Just re-run it.
+- **New config not taking effect** — read settings through `settings.env()` (which loads `.env`), never `os.getenv` directly. A raw `os.getenv` depends on the environment of whichever shell launched uvicorn, which differs between `start_3st_dev.ps1`, a bare `uvicorn` call, and a service wrapper. This bit the `EQUITY_REPORT_STUB` flag during development.
 
 ## Claude Instructions
 

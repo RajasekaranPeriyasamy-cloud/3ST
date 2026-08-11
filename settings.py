@@ -108,6 +108,79 @@ def kite_ready() -> bool:
     return bool(c["api_key"] and c["api_secret"])
 
 
+def anthropic_api_key() -> str:
+    """Key for the Equity Report desk only — unrelated to any broker credential."""
+    return env("ANTHROPIC_API_KEY")
+
+
+def anthropic_ready() -> bool:
+    return bool(anthropic_api_key())
+
+
+_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
+
+
+def equity_report_config() -> dict:
+    """Model/effort/spend settings for the Equity Report desk."""
+    effort = env("EQUITY_REPORT_EFFORT", "high").lower()
+    if effort not in _EFFORT_LEVELS:
+        effort = "high"
+    try:
+        cap = float(env("EQUITY_REPORT_DAILY_USD_CAP", "10"))
+    except ValueError:
+        cap = 10.0
+    provider = env("EQUITY_REPORT_PROVIDER", "anthropic").lower()
+    if provider not in {"anthropic", "gemini"}:
+        provider = "anthropic"
+    return {
+        "provider": provider,
+        "model": env("EQUITY_REPORT_MODEL", "claude-opus-5"),
+        "effort": effort,
+        "daily_usd_cap": max(cap, 0.0),
+        # Return canned reports instead of calling the API. Read through env()
+        # like every other setting so it comes from .env — an os.getenv read
+        # would depend on the launching shell's environment, which differs
+        # between start_3st_dev.ps1, a bare uvicorn call, and a service.
+        "stub": env("EQUITY_REPORT_STUB", "0").lower() in {"1", "true", "yes", "on"},
+    }
+
+
+_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+
+
+def gemini_config() -> dict:
+    """Gemini settings for the Equity Report desk's alternate provider.
+
+    `enable_search` is off by default: free-tier keys 429 on `google_search`
+    grounding even though plain generation and `url_context` both work.
+    """
+    level = env("EQUITY_REPORT_GEMINI_THINKING", "medium").lower()
+    if level not in _THINKING_LEVELS:
+        level = "medium"
+    return {
+        "api_key": env("GEMINI_API_KEY"),
+        # 3.5-flash-lite measured best against the report template on 2026-08-08:
+        # ~3.4k words in ~46s hitting 5/6 mandatory sections. 3.1-flash-lite is
+        # faster but drops the scenario table and the split verdict; 3.6-flash is
+        # richer but runs long (~5.8k words, well past the 3k target).
+        "model": env("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+        "thinking_level": level,
+        "enable_search": env("EQUITY_REPORT_GEMINI_SEARCH", "0").lower()
+        in {"1", "true", "yes", "on"},
+    }
+
+
+def gemini_ready() -> bool:
+    return bool(gemini_config()["api_key"])
+
+
+def equity_report_ready() -> bool:
+    """True when the configured provider has credentials."""
+    if equity_report_config()["provider"] == "gemini":
+        return gemini_ready()
+    return anthropic_ready()
+
+
 def data_dir() -> Path:
     d = _ROOT / "data"
     d.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>3ST Algo Desk — Kite Control Panel</title>
+    <meta
+      name="description"
+      content="Algo trading control panel for Zerodha Kite Connect. 3ST (Triple HA SuperTrend + ADX) strategy with backtest and live desk."
+    />
+    <meta name="author" content="3ST Algo Desk" />
+    <meta property="og:title" content="3ST Algo Desk" />
+    <meta
+      property="og:description"
+      content="Kite Connect algo trading control panel with 3ST strategy."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
+
+    <!--
+      Mirrors THEME_BOOT_SCRIPT in src/lib/theme.ts — keep the two in sync.
+      Must run before paint, so it is inlined rather than imported. `class="dark"`
+      above is the default; this only downgrades to light when that is the stored
+      preference.
+    -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("3st-theme");
+          if (t !== "light") document.documentElement.classList.add("dark");
+          else document.documentElement.classList.remove("dark");
+        } catch (e) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -20,7 +20,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from config import GAMMA_DENSITY_DEFAULTS, INDEX_OPTIONS
+from config import ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS, GAMMA_DENSITY_DEFAULTS, INDEX_OPTIONS
 from options.gamma_density_provider import (
     GammaDensityDataProvider,
     get_gamma_density_provider,
@@ -2412,13 +2412,30 @@ def build_gamma_snapshot(
     except Exception:
         cas_block = None
 
+    # session_poc stays dict-or-None (unchanged contract). session_poc_status is
+    # additive and always present, so the UI can say why Fut POC is blank instead
+    # of silently dropping the chip — a closed market and a broken fetch used to
+    # look identical.
     session_poc_block = None
+    session_poc_status: dict[str, Any] = {"ok": False, "reason": "error"}
     try:
-        from options.session_poc import compute_session_poc
+        from options.session_poc import compute_session_poc_detail
 
-        session_poc_block = compute_session_poc(underlying)
-    except Exception:
-        session_poc_block = None
+        detail = compute_session_poc_detail(underlying)
+        if detail.get("poc") is not None:
+            session_poc_block = detail
+        session_poc_status = {
+            "ok": detail.get("poc") is not None,
+            "reason": detail.get("reason"),
+        }
+    except Exception as exc:
+        log_event(
+            _log,
+            logging.WARNING,
+            "session_poc_failed",
+            underlying=underlying,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
     return {
         "underlying": underlying,
@@ -2486,6 +2503,7 @@ def build_gamma_snapshot(
         ),
         "cas": cas_block,
         "session_poc": session_poc_block,
+        "session_poc_status": session_poc_status,
     }
 
 
@@ -2779,16 +2797,10 @@ def build_concentration_summary(
 # Cash + major MCX names the Gamma desk charts. Each wake samples *all* due
 # in-session names (budgeted), not one round-robin pick — RR of 1 left CRUDE
 # with near-empty trails while NIFTY UI polls filled only the open desk.
-_GEX_HISTORY_SAMPLE_CANDIDATES = (
-    "NIFTY",
-    "BANKNIFTY",
-    "SENSEX",
-    "CRUDEOIL",
-    "NATURALGAS",
-    "GOLD",
-    "SILVER",
-)
-GEX_HISTORY_SAMPLE_INTERVAL_SEC = 60
+# Shared with options/oi_var.py via config.ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS
+# so both desks record the same underlyings.
+_GEX_HISTORY_SAMPLE_CANDIDATES = ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS
+GEX_HISTORY_SAMPLE_INTERVAL_SEC = 30
 # Failures retry sooner than a full success interval so a bad tick does not
 # silence an underlying for a full minute while the desk is open.
 GEX_HISTORY_SAMPLE_FAIL_BACKOFF_SEC = 20

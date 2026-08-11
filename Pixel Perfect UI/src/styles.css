@@ -225,3 +225,44 @@
   color: var(--color-bear-foreground);
   box-shadow: 0 0 10px color-mix(in oklch, var(--bear) 55%, transparent);
 }
+
+/* ---------------------------------------------------------------------------
+   Print / Save-as-PDF.
+
+   Driven by src/components/ReportPageDownload.tsx, which stamps
+   `printing-report` on <body> and removes the `dark` class before calling
+   window.print(). Elements marked `report-no-print` are interactive chrome
+   (toggles, buttons, nav) that should not appear in the PDF.
+   --------------------------------------------------------------------------- */
+@media print {
+  .report-no-print,
+  [data-sidebar="sidebar"],
+  [data-sidebar="trigger"] {
+    display: none !important;
+  }
+
+  body.printing-report {
+    background: #fff;
+    color: #000;
+  }
+
+  /* Cards and tables must not be sliced across a page boundary. */
+  body.printing-report .print-block {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  body.printing-report table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  /* Wide content scrolls on screen; in print it has to wrap instead. */
+  body.printing-report .overflow-x-auto {
+    overflow: visible !important;
+  }
+
+  @page {
+    margin: 14mm;
+  }
+}

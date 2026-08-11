@@ -102,6 +102,30 @@ const JOINT_LABELS: Record<string, string> = {
   mixed: "Mixed regime — watch flip distance",
 };
 
+/** Short chip text when Fut POC has no level (see options/session_poc.py). */
+const SESSION_POC_LABELS: Record<string, string> = {
+  no_session_bars: "no session today",
+  no_session_volume: "no volume yet",
+  before_session_open: "pre-open",
+  future_unresolved: "no future",
+  fetch_failed: "fetch failed",
+  unknown_underlying: "n/a",
+  error: "unavailable",
+};
+
+const SESSION_POC_HINTS: Record<string, string> = {
+  no_session_bars:
+    "No 1-minute futures candles for today — weekend, exchange holiday, or the session has not printed yet. Returns at the next open.",
+  no_session_volume:
+    "Futures candles exist but total traded volume is zero, so there is no volume point of control yet.",
+  before_session_open: "The session has not started; the POC window opens at 09:15 IST.",
+  future_unresolved:
+    "The front-month future could not be resolved for this underlying — check the instruments cache.",
+  fetch_failed: "The Kite historical call for futures candles failed. See log/errors.jsonl.",
+  unknown_underlying: "No strike_step is configured for this underlying.",
+  error: "Fut POC could not be computed. See log/errors.jsonl.",
+};
+
 function fmt(v: number | null | undefined, digits = 0): string {
   if (v == null) return "—";
   return v.toLocaleString(undefined, { maximumFractionDigits: digits });
@@ -579,7 +603,17 @@ function GammaDensityPage() {
               {snapshot.session_poc.poc.toFixed(2)}
             </span>
           </>
-        ) : null}
+        ) : (
+          <>
+            {" · "}
+            <span title={SESSION_POC_HINTS[snapshot.session_poc_status?.reason ?? "error"]}>
+              Fut POC{" "}
+              <span className="font-mono text-muted-foreground">
+                — {SESSION_POC_LABELS[snapshot.session_poc_status?.reason ?? "error"]}
+              </span>
+            </span>
+          </>
+        )}
         {" · "}ATM {snapshot.atm_strike}
         {" · "}ATM IV {snapshot.atm_iv != null ? `${snapshot.atm_iv}%` : "—"}
         {" · "}q {(snapshot.dividend_yield ?? 0) * 100}%

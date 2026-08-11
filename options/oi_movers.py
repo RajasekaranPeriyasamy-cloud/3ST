@@ -20,7 +20,7 @@ PREV_DAY_CACHE = data_dir() / "oi_movers_prev_day_oi.json"
 HISTORY_FILE = data_dir() / "oi_movers_history.json"
 
 # Background sampler (scheduler) — keep CE/PE/PCR lines from ~09:20 without UI open.
-OI_MOVERS_SAMPLE_INTERVAL_SEC = 60
+OI_MOVERS_SAMPLE_INTERVAL_SEC = 30
 OI_MOVERS_SAMPLE_FAIL_BACKOFF_SEC = 20
 OI_MOVERS_SAMPLE_BUDGET_SEC = 45.0
 _oi_sample_last_ok: dict[str, float] = {}

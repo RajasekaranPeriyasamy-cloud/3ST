@@ -25,9 +25,16 @@ EXPIRY = "2026-08-13"
 def _clear_cas_last_ticks(monkeypatch: pytest.MonkeyPatch) -> None:
     cas.clear_last_ticks()
     # Keep CAS unit tests off Kite for Fut POC / synth / estimate (tested explicitly).
+    # Both entry points must be stubbed: cas_indicative calls compute_session_poc,
+    # gamma_density calls compute_session_poc_detail. Missing either one lets these
+    # tests make live historical calls.
     monkeypatch.setattr(
         "options.session_poc.compute_session_poc",
         lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "options.session_poc.compute_session_poc_detail",
+        lambda *a, **k: {"poc": None, "reason": "no_session_bars"},
     )
     monkeypatch.setattr(
         "options.synthetic_future.compute_synthetic_future",

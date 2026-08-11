@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 from vollib.black_scholes import black_scholes as bs_price
 
@@ -10,10 +12,29 @@ from options import vol_surface as vs
 R = 0.065
 SPOT = 20000.0
 STEP = 50
-EXPIRIES = ["2026-07-16", "2026-07-23", "2026-07-30"]
+
+
+def _weekly_expiries(count: int = 3, *, min_days: int = 3) -> list[str]:
+    """``count`` upcoming weekly (Thursday) expiries, relative to today.
+
+    These were hardcoded to July 2026 and started failing the moment real time
+    passed them: ``vol_surface._select_expiries`` drops anything before
+    ``date.today()``, so every test here died with "No expiries available".
+    Deriving them keeps the fixtures from rotting again. ``min_days`` avoids a
+    near-zero time-to-expiry, which makes the IV solve numerically touchy.
+    """
+    today = date.today()
+    days_ahead = (3 - today.weekday()) % 7  # Thursday == 3
+    while days_ahead < min_days:
+        days_ahead += 7
+    first = today + timedelta(days=days_ahead)
+    return [(first + timedelta(days=7 * i)).isoformat() for i in range(count)]
+
+
+EXPIRIES = _weekly_expiries()
 # IV term structure by expiry (decimals) so we can assert it comes back through.
-IV_BY_EXP = {"2026-07-16": 0.14, "2026-07-23": 0.16, "2026-07-30": 0.18}
-TTE_BY_EXP = {"2026-07-16": 4 / 365, "2026-07-23": 11 / 365, "2026-07-30": 18 / 365}
+IV_BY_EXP = dict(zip(EXPIRIES, (0.14, 0.16, 0.18), strict=True))
+TTE_BY_EXP = {e: (date.fromisoformat(e) - date.today()).days / 365 for e in EXPIRIES}
 
 
 def _chain(underlying: str, expiry: str) -> dict:

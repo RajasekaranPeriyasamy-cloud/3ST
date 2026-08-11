@@ -6,14 +6,27 @@ Gamma context, multi-expiry, history + alerts.
 
 from __future__ import annotations
 
+import logging
+import time as time_mod
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from config import INDEX_OPTIONS, OI_VAR_DEFAULTS
+from config import ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS, INDEX_OPTIONS, OI_VAR_DEFAULTS
 from options.chain import get_chain, list_expiries, nearest_expiry, require_index_spot
 from options.oi_var_store import CRORE, ensure_eod_baseline
 
 QUOTE_BATCH = 500
+IST = ZoneInfo("Asia/Kolkata")
+
+# Background sampler (analytics scheduler) — keep ΔVAR/PCR lines from ~09:20
+# without the desk UI open. Mirrors options.oi_movers'
+# maybe_sample_oi_movers_history_periodic / options.gamma_density's
+# maybe_sample_gex_history_periodic (same due/backoff/budget shape).
+OI_VAR_SAMPLE_INTERVAL_SEC = 30
+OI_VAR_SAMPLE_FAIL_BACKOFF_SEC = 10
+OI_VAR_SAMPLE_BUDGET_SEC = 45.0
+_oi_var_sample_last_ok: dict[str, float] = {}
 
 
 def _cfg() -> dict[str, Any]:
@@ -834,3 +847,88 @@ def build_var_snapshot(
         "alerts": alerts,
         **ranked,
     }
+
+
+# ---------------------------------------------------------------------------
+# Background session ΔVAR recorder (analytics scheduler) — persists ticks
+# without the desk UI open. Same shape as options.oi_movers'
+# maybe_sample_oi_movers_history_periodic and options.gamma_density's
+# maybe_sample_gex_history_periodic — kept independent (no shared helper)
+# since each desk's snapshot builder has its own signature/cost profile.
+# ---------------------------------------------------------------------------
+
+
+def default_oi_var_sample_underlyings() -> list[str]:
+    """Cash + major MCX underlyings the OI VAR desk records in the background."""
+    return [u for u in ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS if u in INDEX_OPTIONS]
+
+
+def maybe_sample_oi_var_history_periodic() -> bool:
+    """Scheduler hook: persist OI VAR (ΔVAR/PCR) chart ticks without the UI open.
+
+    Spot/ΔVAR lines only exist where we recorded samples via ``build_var_snapshot``.
+    UI polls cover the open desk; this hook covers the rest from the post-09:20
+    open gate onward, for every due in-session underlying (budgeted). Never raises.
+    """
+    from options.gamma_density_history import in_session
+
+    now = datetime.now(tz=IST)
+    if now.weekday() >= 5:
+        return False
+
+    names = default_oi_var_sample_underlyings()
+    if not names:
+        return False
+
+    now_ts = time_mod.time()
+    due = [
+        u
+        for u in names
+        if in_session(u, now)
+        and (now_ts - _oi_var_sample_last_ok.get(u, 0.0)) >= OI_VAR_SAMPLE_INTERVAL_SEC
+    ]
+    if not due:
+        return False
+
+    deadline = now_ts + OI_VAR_SAMPLE_BUDGET_SEC
+    any_ok = False
+    sampled = 0
+    try:
+        from utils.logging import get_logger, log_event
+
+        _log = get_logger("oi_var")
+    except Exception:
+        _log = None
+
+    for underlying in due:
+        if sampled > 0 and time_mod.time() >= deadline:
+            if _log is not None:
+                log_event(
+                    _log,
+                    logging.WARNING,
+                    "oi_var_history_sample_budget",
+                    sampled=sampled,
+                    remaining=",".join(due[due.index(underlying):]),
+                )
+            break
+        try:
+            # include_multi_expiry / include_gamma_context stay False (defaults)
+            # — background samples only need the history-point side effect,
+            # not the heavier multi-expiry/gamma-context computation the UI asks for.
+            build_var_snapshot(underlying)
+            _oi_var_sample_last_ok[underlying] = time_mod.time()
+            any_ok = True
+            sampled += 1
+        except Exception as exc:
+            _oi_var_sample_last_ok[underlying] = (
+                time_mod.time() - OI_VAR_SAMPLE_INTERVAL_SEC + OI_VAR_SAMPLE_FAIL_BACKOFF_SEC
+            )
+            if _log is not None:
+                log_event(
+                    _log,
+                    logging.WARNING,
+                    "oi_var_history_sample_failed",
+                    underlying=underlying,
+                    error=str(exc),
+                )
+    return any_ok
