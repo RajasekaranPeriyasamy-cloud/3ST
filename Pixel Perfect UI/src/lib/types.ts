@@ -1466,6 +1466,128 @@ export interface IvSmileSnapshot {
   updated_at: string;
 }
 
+export interface IvSkewConfig {
+  underlyings: OiUnderlying[];
+  max_expiries: number;
+  target_delta: number;
+  refresh_seconds: number;
+  wing_delta: number;
+}
+
+export interface IvSkewPoint {
+  strike: number;
+  abs_delta: number;
+  iv: number | null;
+  option_type: "CE" | "PE";
+}
+
+/** How the 25Δ IV was obtained. */
+export type IvSkewQuality = "interpolated" | "extrapolated" | "unavailable";
+
+/** Whether the chain underneath was good enough to believe it. */
+export type IvSkewConfidence = "clean" | "degraded" | "unavailable";
+
+export interface IvSkewExpiry {
+  expiry: string;
+  dte: number;
+  ok: boolean;
+  quality: IvSkewQuality;
+  confidence: IvSkewConfidence;
+  warnings: string[];
+  error?: string;
+  half_width?: number | null;
+  forward?: number | null;
+  // Present only on resolved rows.
+  tte_years?: number;
+  forward_basis?: number;
+  forward_spread_bps?: number;
+  atm_strike?: number | null;
+  atm_iv?: number | null;
+  atm_parity_gap?: number | null;
+  call_iv?: number | null;
+  put_iv?: number | null;
+  call_quality?: IvSkewQuality;
+  put_quality?: IvSkewQuality;
+  call_delta_range?: [number, number] | null;
+  put_delta_range?: [number, number] | null;
+  call_bracket_gap?: number | null;
+  put_bracket_gap?: number | null;
+  risk_reversal?: number | null;
+  butterfly?: number | null;
+  legs_resolved?: number;
+  legs_dropped?: Record<string, number>;
+  points?: IvSkewPoint[];
+}
+
+export interface IvSkewSnapshot {
+  underlying: OiUnderlying;
+  label: string;
+  exchange: string;
+  reference: number;
+  reference_source: string;
+  strike_step: number;
+  target_delta: number;
+  expiries: IvSkewExpiry[];
+  updated_at: string;
+}
+
+export interface IvSkewDailyPoint {
+  date: string;
+  underlying: OiUnderlying;
+  expiry: string;
+  rank: number;
+  dte: number | null;
+  rr: number | null;
+  fly: number | null;
+  atm_iv: number | null;
+  call_iv: number | null;
+  put_iv: number | null;
+  forward_basis: number | null;
+  parity_gap: number | null;
+  confidence: IvSkewConfidence;
+  quality: IvSkewQuality;
+  reference: number | null;
+  ts: string | null;
+  samples: number;
+}
+
+export interface IvSkewDailySeries {
+  underlying: OiUnderlying;
+  rank: number;
+  clean_only: boolean;
+  points: IvSkewDailyPoint[];
+  /** Sessions held back by clean_only — surfaced, never silently dropped. */
+  excluded_degraded: string[];
+}
+
+export interface IvSkewIntradayRow {
+  expiry: string;
+  dte: number;
+  rank: number;
+  ok: boolean;
+  confidence: IvSkewConfidence;
+  quality: IvSkewQuality;
+  rr?: number | null;
+  fly?: number | null;
+  atm_iv?: number | null;
+}
+
+export interface IvSkewIntradaySample {
+  ts: string;
+  session_date: string;
+  underlying: OiUnderlying;
+  reference: number | null;
+  reference_source: string;
+  expiries: IvSkewIntradayRow[];
+}
+
+export interface IvSkewSeries {
+  underlying: OiUnderlying;
+  session_date: string | null;
+  samples: number;
+  points: IvSkewIntradaySample[];
+}
+
 export interface ArbitrageConfig {
   default_exchanges: string[];
   supported_exchanges: string[];

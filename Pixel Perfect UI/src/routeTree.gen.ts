@@ -29,6 +29,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as LatencyRouteImport } from './routes/latency'
 import { Route as IvSmileRouteImport } from './routes/iv-smile'
+import { Route as IvSkewRouteImport } from './routes/iv-skew'
 import { Route as GammaDensityRouteImport } from './routes/gamma-density'
 import { Route as ExecutionRouteImport } from './routes/execution'
 import { Route as EquityReportRouteImport } from './routes/equity-report'
@@ -140,6 +141,11 @@ const IvSmileRoute = IvSmileRouteImport.update({
   path: '/iv-smile',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IvSkewRoute = IvSkewRouteImport.update({
+  id: '/iv-skew',
+  path: '/iv-skew',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GammaDensityRoute = GammaDensityRouteImport.update({
   id: '/gamma-density',
   path: '/gamma-density',
@@ -202,6 +208,7 @@ export interface FileRoutesByFullPath {
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
+  '/iv-skew': typeof IvSkewRoute
   '/iv-smile': typeof IvSmileRoute
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
@@ -234,6 +241,7 @@ export interface FileRoutesByTo {
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
+  '/iv-skew': typeof IvSkewRoute
   '/iv-smile': typeof IvSmileRoute
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
@@ -267,6 +275,7 @@ export interface FileRoutesById {
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
+  '/iv-skew': typeof IvSkewRoute
   '/iv-smile': typeof IvSmileRoute
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
@@ -301,6 +310,7 @@ export interface FileRouteTypes {
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
+    | '/iv-skew'
     | '/iv-smile'
     | '/latency'
     | '/live'
@@ -333,6 +343,7 @@ export interface FileRouteTypes {
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
+    | '/iv-skew'
     | '/iv-smile'
     | '/latency'
     | '/live'
@@ -365,6 +376,7 @@ export interface FileRouteTypes {
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
+    | '/iv-skew'
     | '/iv-smile'
     | '/latency'
     | '/live'
@@ -398,6 +410,7 @@ export interface RootRouteChildren {
   EquityReportRoute: typeof EquityReportRoute
   ExecutionRoute: typeof ExecutionRoute
   GammaDensityRoute: typeof GammaDensityRoute
+  IvSkewRoute: typeof IvSkewRoute
   IvSmileRoute: typeof IvSmileRoute
   LatencyRoute: typeof LatencyRoute
   LiveRoute: typeof LiveRoute
@@ -562,6 +575,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IvSmileRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/iv-skew': {
+      id: '/iv-skew'
+      path: '/iv-skew'
+      fullPath: '/iv-skew'
+      preLoaderRoute: typeof IvSkewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/gamma-density': {
       id: '/gamma-density'
       path: '/gamma-density'
@@ -646,6 +666,7 @@ const rootRouteChildren: RootRouteChildren = {
   EquityReportRoute: EquityReportRoute,
   ExecutionRoute: ExecutionRoute,
   GammaDensityRoute: GammaDensityRoute,
+  IvSkewRoute: IvSkewRoute,
   IvSmileRoute: IvSmileRoute,
   LatencyRoute: LatencyRoute,
   LiveRoute: LiveRoute,

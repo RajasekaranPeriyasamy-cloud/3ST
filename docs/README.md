@@ -18,6 +18,7 @@ Sidebar categories map to folders below. Deep conversation notes currently live 
 | Vanna Exposure | `/vanna-exposure` | [vanna-exposure/](vanna-exposure/) |
 | Vol Surface | `/vol-surface` | [vol-surface/](vol-surface/) |
 | IV Smile | `/iv-smile` | [iv-smile/](iv-smile/) |
+| IV Skew | `/iv-skew` | [iv-skew/](iv-skew/) — 25Δ risk reversal; forward-based, covers MCX |
 | IV Chart | `/iv-chart` | [iv-chart/](iv-chart/) |
 | Pricing Engine | `/pricing-engine` | [pricing-engine/](pricing-engine/) |
 | Calendar Arb | `/arbitrage` | [calendar-arb/](calendar-arb/) |

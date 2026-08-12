@@ -41,6 +41,9 @@ from analysis.delta_velocity.runner import is_alive as delta_velocity_alive
 from analysis.delta_velocity.runner import last_report as delta_velocity_last_report
 from analysis.delta_velocity.runner import start as start_delta_velocity_runner
 from analysis.delta_velocity.runner import stop as stop_delta_velocity_runner
+from analysis.iv_skew import build_iv_skew, iv_skew_config
+from analysis.iv_skew import runner as iv_skew_runner
+from analysis.iv_skew import store as iv_skew_store
 from execution.arming import arm, disarm, get_arm_state, set_mode
 from execution.rolling_straddle import close_all, close_leg, adopt_leg, unlink_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
 from execution.rolling_straddle_store import get_config as rs_get_config
@@ -188,6 +191,7 @@ async def _lifespan(app: FastAPI):
     start_analytics_scheduler()
     start_report_runner()
     start_delta_velocity_runner()
+    iv_skew_runner.start()
     threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
     await start_ltp_feed()
     try:
@@ -223,6 +227,7 @@ async def _lifespan(app: FastAPI):
     stop_analytics_scheduler()
     stop_report_runner()
     stop_delta_velocity_runner()
+    iv_skew_runner.stop()
 
 
 app = FastAPI(title="3ST Kite Algo API", version="0.2.0", lifespan=_lifespan)
@@ -843,6 +848,7 @@ def health() -> dict[str, Any]:
         "spread_templates": list(SPREAD_TEMPLATES.keys()),
         "st_methods": ["heikin_ashi", "regular", "hybrid"],
         "delta_velocity_runner_alive": delta_velocity_alive(),
+        "iv_skew_runner_alive": iv_skew_runner.is_alive(),
         **analytics_scheduler_status(),
         **report_runner_status(),
         "anthropic_ready": anthropic_ready(),
@@ -2597,6 +2603,114 @@ def iv_smile_snapshot(
         raise
     except Exception as e:
         raise _err(e) from e
+
+
+@app.get("/skew/config")
+def iv_skew_get_config() -> dict[str, Any]:
+    """IV Skew desk config.
+
+    Prefix is ``/skew`` rather than ``/iv-skew`` so the SPA page at ``/iv-skew``
+    does not collide with an API prefix — a hard browser load of a colliding
+    path returns a JSON 404 (see CLAUDE.md, and ``/velocity`` for the same
+    reason).
+    """
+    return iv_skew_config()
+
+
+@app.get("/skew/snapshot")
+def iv_skew_snapshot(
+    underlying: str = Query("NIFTY", description="Index or MCX underlying"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD; omit for the nearest expiries"),
+    max_expiries: int | None = Query(None, ge=1, le=6),
+    target_delta: float | None = Query(None, gt=0.01, lt=0.5),
+) -> dict[str, Any]:
+    """25Δ risk reversal and butterfly per expiry, forward-based."""
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        _require_kite_session()
+        return build_iv_skew(
+            u,
+            expiries=[expiry] if expiry else None,
+            max_expiries=max_expiries,
+            target_delta=target_delta,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+def _skew_underlying(underlying: str) -> str:
+    u = underlying.upper()
+    if u not in iv_skew_runner.underlyings():
+        raise _err(RuntimeError(f"Unknown underlying. Use {list(iv_skew_runner.underlyings())}"))
+    return u
+
+
+@app.get("/skew/status")
+def iv_skew_status() -> dict[str, Any]:
+    """Sampler health and the last cycle's per-underlying result."""
+    return {
+        "alive": iv_skew_runner.is_alive(),
+        "underlyings": list(iv_skew_runner.underlyings()),
+        "sample_interval_min": iv_skew_runner.SAMPLE_INTERVAL_MIN,
+        "last_report": iv_skew_runner.last_report(),
+    }
+
+
+@app.get("/skew/coverage")
+def iv_skew_coverage(underlying: str = "NIFTY") -> dict[str, Any]:
+    """What the archive holds, and which sessions have been rolled up."""
+    return iv_skew_store.coverage(_skew_underlying(underlying))
+
+
+@app.get("/skew/series")
+def iv_skew_series(
+    underlying: str = "NIFTY",
+    session_date: str | None = Query(None, description="YYYY-MM-DD; omit for the latest archived"),
+) -> dict[str, Any]:
+    """Intraday samples for one archived session.
+
+    Read-only over the archive: never fetches, so it cannot be slowed by Kite and
+    returns nothing for a session that was not sampled.
+    """
+    u = _skew_underlying(underlying)
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+
+    # Latest archived, not today — before the open there is no file for today.
+    day = day or iv_skew_store.latest_session(u)
+    samples = iv_skew_store.load_session(u, day) if day else []
+    return {
+        "underlying": u,
+        "session_date": day.isoformat() if day else None,
+        "samples": len(samples),
+        "points": samples,
+    }
+
+
+@app.get("/skew/daily")
+def iv_skew_daily(
+    underlying: str = "NIFTY",
+    rank: int = Query(0, ge=0, le=5, description="0 = nearest expiry"),
+    clean_only: bool = Query(True, description="Exclude sessions whose chain was degraded"),
+    limit: int | None = Query(None, ge=1, le=2000),
+) -> dict[str, Any]:
+    """The daily RR series — the desk's actual purpose.
+
+    Keyed by expiry *rank* rather than contract, because expiries roll; ``dte``
+    rides along on each point so the resulting sawtooth is visible rather than
+    silently confounding the trend.
+    """
+    u = _skew_underlying(underlying)
+    # Lazy, idempotent: any completed session missing a daily row is rolled up
+    # here, so the series is correct even if the sampler was down at the close.
+    iv_skew_store.ensure_rollup(iv_skew_runner.underlyings())
+    return iv_skew_store.daily_series(u, rank=rank, clean_only=clean_only, limit=limit)
 
 
 @app.get("/arbitrage/config")

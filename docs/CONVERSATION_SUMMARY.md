@@ -1,12 +1,135 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-11  
+**Last updated:** 2026-08-12  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Gamma Concentration tab rebuild · HHI measurement basis
+**Session focus:** IV Skew desk — 25Δ risk reversal, forward-based, with a daily monitor
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-12 — IV Skew desk (Phases 0–1) · the forward bug
+
+User asked for a daily skew monitor after noticing calls apparently priced above puts, and
+defined the metric correctly: `25Δ RR = IV(25Δ call) − IV(25Δ put)`. Read-only analysis desk;
+nothing under `broker/` / `execution/` / `risk/` touched.
+
+### The finding that reframed the request
+
+**The positive risk reversal was a forward artifact, not a market signal.** `iv_smile.py` and
+`vol_surface.py` solve IV from spot at a flat `r = 6.5%`, but NIFTY's parity forward carried
+**+54 points at 6 DTE** where 6.5% implies ~26. The residual shows up as a put-call parity
+violation — the *same strike* solving to 11.7% off the call and 9.6% off the put — which biases
+calls up and puts down by ~1 vol point each. Enough to flip RR from **−0.76 to +0.54**.
+
+Measured live across all five underlyings once the forward-based build existed: indices print
+RR ≈ **−0.4 to −1.2** (ordinary defensive skew), and the ATM parity gap collapsed from ~2.1 vol
+points to **0.01–0.05**.
+
+**The user's instinct was right on a different underlying.** NATURALGAS is genuinely call-skewed:
+**RR +2.0 front month, +5.5 at 42 DTE** — the largest on the desk. Adding MCX (their call, against
+the original plan's "out of scope") is what surfaced it.
+
+MCX also validated the parity-forward design: the September crude expiry resolved a forward
+**106 points below** the front-month future. Mapping MCX options onto the front-month future
+would have been wrong by that much on every September number.
+
+### Shipped
+
+1. **`options/skew_metrics.py`** — pure, offline. Parity forward (median of 3 nearest-ATM strikes,
+   so one stale leg cannot move it), Black-76 IV/delta, OTM-wing-only construction, interpolation
+   onto the delta axis, RR + butterfly + ATM vol, and an ATM `parity_gap` as the module's own
+   correctness check.
+2. **`analysis/iv_skew/builder.py`** — two batched quote passes: a sizing probe near the money,
+   then a window sized from the *measured* ATM vol. Two Kite calls per snapshot regardless of
+   expiry count. Fixed strike counts were shown to fail both ways — ±20 still missed 25Δ on
+   48-DTE BANKNIFTY while over-quoting 1-DTE SENSEX by 30 worthless legs.
+3. **`GET /skew/config` · `GET /skew/snapshot`** — prefix `/skew`, page `/iv-skew`, following the
+   `/velocity` precedent so a hard browser load does not hit the API-prefix collision `/iv-smile`
+   is subject to.
+4. **`/iv-skew` page** — RR / fly / ATM IV / forward-basis tiles, IV-by-strike with the two 25Δ
+   readings drawn as reference lines, RR-by-tenor bars (degraded rows rendered faded), and an
+   all-expiries table with per-row warning tooltips.
+5. **Docs** — [`docs/iv-skew/README.md`](iv-skew/README.md) + desk index row.
+
+### Quality gating — added after a live failure
+
+First live run printed **RR +6.90 labelled "interpolated"** on 76-DTE BANKNIFTY, off a chain that
+had dropped 45 of 81 legs to wide spreads and never solved an ATM put. Two independent fields now
+separate the questions: **`quality`** (how 25Δ was obtained — interpolated / extrapolated) and
+**`confidence`** (whether the chain was good enough to believe it — clean / degraded). Warnings
+cover missing parity check, parity gap, forward disagreement, extrapolated wing, sparse delta
+bracket, and thin chain. That row now fails cleanly instead of printing a number.
+
+### Found while verifying live
+
+- **`reference_source` was always "index".** `get_index_spot_detail` returns
+  `(price, failure_reason)` — the second value is *not* a source. Reading it as one labelled every
+  MCX underlying "Spot" on the page when the reference is the front future, and swallowed the
+  failure reason on the error path. Source now derives from `INDEX_OPTIONS` meta the same way
+  `chain.py` does internally.
+- **A cold snapshot took 16.4s**, 10.6s of it `get_chain` — 9.1s a per-row `pd.to_datetime` at
+  `options/chain.py:96` re-guessing the date format over 5,382 rows, every call. Strike→symbol
+  resolution is cached in the builder for 10 minutes; warm snapshots now run **~2.6s**.
+  `chain.py` itself is untouched — it is on the order-placement leg-resolution path — but **every
+  options desk pays that 9s on every chain read**, and it is worth fixing centrally.
+
+### Test status
+
+**676 passed**, offline, ~25s. 50 new (`test_skew_metrics.py`, `test_iv_skew_builder.py`) —
+synthetic chains priced with Black-76 so the tests assert the module recovers what was priced in.
+Ruff clean on all new files; no additions to the `api/main.py` lint backlog (7 findings before and
+after).
+
+### Phase 2 — the daily monitor (shipped same session)
+
+- **`analysis/iv_skew/store.py`** — two tiers: intraday JSONL per underlying per session (metrics
+  only, `points` dropped, 90-day retention) and `daily.jsonl`, one row per underlying/expiry/session,
+  kept indefinitely. **The roll-up is lazy and idempotent, not scheduled** — a "write at 15:25"
+  trigger loses a day to a restart or a holiday, so any completed session without a daily row is
+  rolled up on the next read or tick. Each row is the day's last *clean* sample, falling back to the
+  last resolved one and carrying `degraded` forward. Pruning refuses to delete a session that has
+  not been rolled up.
+- **`analysis/iv_skew/runner.py`** — own daemon thread, 5-minute cadence (which also keeps the
+  builder's chain cache warm), **per-underlying session windows** so MCX keeps sampling after the
+  indices close. One failing underlying does not stop the cycle.
+- **`/skew/status` · `/skew/coverage` · `/skew/series` · `/skew/daily`** — the last two read the
+  archive only, so history survives the ~6 AM token expiry. Daily series is keyed by **expiry rank**,
+  not contract (expiries roll); `dte` rides along so the sawtooth is visible. Degraded sessions are
+  excluded by default and **named** in `excluded_degraded`.
+- **Page** — daily RR+fly chart with rank selector and a clean-only toggle, plus an intraday path.
+
+**Verified live 2026-08-12 18:36 IST:** with the indices closed the sampler correctly sampled only
+CRUDEOIL / CRUDEOILM / NATURALGAS, wrote `data/iv_skew/<U>/2026-08-12.jsonl`, and the intraday chart
+picked up successive samples (NATURALGAS RR 2.21 → 2.55). `iv_skew_runner_alive: true` on `/health`.
+
+Two display bugs found by clicking through and fixed:
+
+- **Switching underlying left the previous one's numbers under the new header** for the duration of
+  the fetch — NIFTY's RR −0.38 shown as NATURALGAS. On a trading desk that reads as a live quote for
+  the wrong instrument, so the snapshot is now cleared on selection change.
+- **One degraded expiry flattened the term-structure chart.** NATURALGAS 42 DTE printed RR −12.39
+  against clean readings of +2.13 and +0.01; its axis range made the real bars unreadable. The chart
+  now plots clean expiries only and captions how many were hidden; the degraded row stays in the
+  table with its badge.
+
+### Open — next
+
+- **Phase 2b (decided, not built):** route `iv_smile.py` and `vol_surface.py` through
+  `skew_metrics` so they stop pricing off spot. They currently carry the same parity violation and
+  will disagree in sign with this desk until they do.
+- **Phase 3 (optional):** backfill 8 NIFTY sessions from `data/chain_history/` (±25 strikes, wide
+  enough for real RR; its writer is no longer in the tree). A Kite-historical backfill only
+  resolves currently-listed contracts, so it gives a DTE-drifting series that breaks at rollovers.
+- **Verified end-to-end after an API restart** (2026-08-12 16:34 IST): NIFTY renders
+  RR −0.37 / −0.94 / −0.78 across 6/13/20 DTE, all `clean`, parity gap 0.000; NATURALGAS renders
+  **RR +2.42, "Calls bid"**, labelled "Front future 266.4", with its 42-DTE row flagged
+  `degraded`. Desk came back healthy — Kite authenticated, egress `staticip_proxy`, runners alive,
+  still DISARMED.
+- **`options/chain.py:96` datetime hot path** — see above; a central fix benefits every options
+  desk but touches an order-path module, so it needs its own change with tests.
 
 ---
 

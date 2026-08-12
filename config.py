@@ -352,6 +352,33 @@ IV_SMILE_DEFAULTS = {
     "risk_free_rate": 0.065,
 }
 
+# IV Skew desk (delta-space skew: 25d risk reversal + butterfly, per expiry).
+# Forward-based Black-76 — see options/skew_metrics.py for why spot is not used.
+IV_SKEW_DEFAULTS = {
+    "underlyings": ("NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL", "CRUDEOILM", "NATURALGAS"),
+    "max_expiries": 3,
+    "target_delta": 0.25,
+    "refresh_seconds": 60,
+    "risk_free_rate": 0.065,
+    # The strike window is sized so this |delta| is reachable on both wings,
+    # deliberately deeper than target_delta so 25d is interpolated rather than
+    # extrapolated. A fixed strike count cannot do that: BANKNIFTY at 48 DTE
+    # had still not reached 25d at +/-20 strikes (measured 2026-08-12).
+    "wing_delta": 0.10,
+    "min_half_width": 6,
+    "max_half_width": 40,
+    # Quote-quality gates. MCX wings are thin enough to quote a 5-paisa option
+    # with no two-sided market, which solves to a meaningless IV.
+    "max_relative_spread": 0.5,
+    "parity_gap_warn": 0.005,  # 0.5 vol points
+    "forward_spread_warn_bps": 25.0,
+    # Interpolating 25d across more than this much delta means the wing was too
+    # sparse to have measured it; dropping more than this share of the quoted
+    # legs means the chain was too thin to read at all.
+    "max_bracket_gap": 0.15,
+    "max_drop_ratio": 0.4,
+}
+
 # Complementary pricing engine (BS IV/Greeks + optional Heston-COS).
 # Isolated from Rolling Straddle / 3ST signal execution.
 PRICING_ENGINE_DEFAULTS = {
