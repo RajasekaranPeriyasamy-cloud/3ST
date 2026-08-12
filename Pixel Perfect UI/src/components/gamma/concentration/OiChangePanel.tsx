@@ -26,6 +26,10 @@ type Mover = {
 /**
  * ΔOI sign → book action. Rising OI on a leg is fresh writing (short), falling OI
  * is unwind (covering) — the same convention as the OI Tracker desk.
+ *
+ * Bars are coloured by **side** (CE red / PE green), matching `sideBiasColor` and
+ * the rest of the gamma desk. Writing vs unwind is carried by the sign of the
+ * value and the action label, not by colour.
  */
 function moverAction(side: "CE" | "PE", doi: number): string {
   if (side === "CE") return doi >= 0 ? "call writing" : "call unwind";
@@ -127,12 +131,9 @@ export function OiChangePanel({ snap }: { snap: GammaSnapshot }) {
             <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
               Day ΔOI
             </p>
-            <p
-              className="font-mono text-2xl font-semibold tabular-nums"
-              style={{
-                color: dayDoi == null ? undefined : dayDoi >= 0 ? PE_COLOR : CE_COLOR,
-              }}
-            >
+            {/* Aggregate across both sides, so it takes no side colour — green/red
+                now mean CE/PE in the list below, and the caption carries direction. */}
+            <p className="font-mono text-2xl font-semibold tabular-nums">
               {compactOi(dayDoi)}
             </p>
             <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
@@ -149,6 +150,17 @@ export function OiChangePanel({ snap }: { snap: GammaSnapshot }) {
           <p className="text-xs text-muted-foreground">No OI change on the window yet.</p>
         ) : (
           <div className="space-y-1">
+            <div className="flex flex-wrap gap-3 pb-1 text-[10px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ background: CE_COLOR }} />
+                call (CE)
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ background: PE_COLOR }} />
+                put (PE)
+              </span>
+              <span>+ writing · − unwind</span>
+            </div>
             {shown.map((m) => (
               <div key={m.key} className="flex items-center gap-2 text-[11px]">
                 <span className="w-[5.5rem] shrink-0 font-mono tabular-nums font-semibold">
@@ -159,13 +171,13 @@ export function OiChangePanel({ snap }: { snap: GammaSnapshot }) {
                     className="absolute inset-y-0 left-0 rounded-sm"
                     style={{
                       width: `${(Math.abs(m.doi) / maxAbs) * 100}%`,
-                      background: m.doi >= 0 ? PE_COLOR : CE_COLOR,
+                      background: m.color,
                     }}
                   />
                 </div>
                 <span
                   className="w-16 shrink-0 text-right font-mono tabular-nums"
-                  style={{ color: m.doi >= 0 ? PE_COLOR : CE_COLOR }}
+                  style={{ color: m.color }}
                 >
                   {compactOi(m.doi)}
                 </span>
