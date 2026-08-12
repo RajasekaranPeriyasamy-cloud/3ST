@@ -589,3 +589,31 @@ def test_chart_ladder_uses_one_expiry_only(tmp_path, monkeypatch):
         })
     out = chart.session_chart("NIFTY", date(2026, 8, 10))
     assert len(out["ladder"]["series"]) == 12
+
+
+def test_chart_lists_session_expiries(tmp_path, monkeypatch):
+    """The selector needs every archived expiry, not just the filtered one."""
+    from analysis.delta_velocity import chart
+
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    base = datetime(2026, 8, 10, 9, 15, tzinfo=store.IST)
+    for i in range(40):
+        legs = [
+            {"expiry": exp, "strike": 24500.0, "option_type": opt,
+             "delta": 0.5 + 0.001 * i, "iv": 0.12, "ltp": 100.0 + i, "oi": 1000.0, "volume": 1.0}
+            for exp in ("2026-08-11", "2026-08-18") for opt in ("CE", "PE")
+        ]
+        store.append_snapshot("NIFTY", {
+            "ts": (base + timedelta(minutes=i)).isoformat(), "session_date": "2026-08-10",
+            "underlying": "NIFTY", "spot": 24500.0, "legs": legs,
+        })
+
+    pooled = chart.session_chart("NIFTY", date(2026, 8, 10))
+    assert pooled["expiries"] == ["2026-08-11", "2026-08-18"]
+    assert pooled["selected_expiry"] is None
+
+    filtered = chart.session_chart("NIFTY", date(2026, 8, 10), expiry="2026-08-18")
+    assert filtered["selected_expiry"] == "2026-08-18"
+    # Still lists both, or the selector loses its other options after one click.
+    assert filtered["expiries"] == ["2026-08-11", "2026-08-18"]
+    assert filtered["contracts"] < pooled["contracts"]

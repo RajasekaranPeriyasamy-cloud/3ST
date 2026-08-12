@@ -2614,6 +2614,10 @@ export interface VelocityChart {
   session_date: string | null;
   atm_strike: number | null;
   nearest_expiry?: string;
+  /** Every expiry archived this session, for the selector. */
+  expiries: string[];
+  /** null = pooled across expiries. */
+  selected_expiry: string | null;
   contracts: number;
   ladder: VelocityLadder;
   context: VelocityContext;

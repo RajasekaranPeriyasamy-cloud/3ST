@@ -83,6 +83,7 @@ function changeTone(v: number | null | undefined): string {
 
 function DeltaVelocityPage() {
   const [underlying, setUnderlying] = useState<string>("NIFTY");
+  const [expiry, setExpiry] = useState<string | null>(null);
   const [status, setStatus] = useState<VelocityStatus | null>(null);
   const [coverage, setCoverage] = useState<VelocityCoverage | null>(null);
   const [chart, setChart] = useState<VelocityChart | null>(null);
@@ -98,7 +99,9 @@ function DeltaVelocityPage() {
     const [s, c, k] = await Promise.allSettled([
       api.get<VelocityStatus>("/velocity/status"),
       api.get<VelocityCoverage>(`/velocity/coverage?underlying=${underlying}`),
-      api.get<VelocityChart>(`/velocity/chart?underlying=${underlying}`),
+      api.get<VelocityChart>(
+        `/velocity/chart?underlying=${underlying}${expiry ? `&expiry=${expiry}` : ""}`,
+      ),
     ]);
     if (s.status === "fulfilled") setStatus(s.value);
     if (c.status === "fulfilled") setCoverage(c.value);
@@ -109,7 +112,7 @@ function DeltaVelocityPage() {
       .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)));
     setError(failures.length ? failures[0] : null);
     setLoading(false);
-  }, [underlying]);
+  }, [underlying, expiry]);
 
   useEffect(() => {
     void load();
@@ -163,7 +166,10 @@ function DeltaVelocityPage() {
               key={u}
               size="sm"
               variant={u === underlying ? "default" : "outline"}
-              onClick={() => setUnderlying(u)}
+              onClick={() => {
+                setUnderlying(u);
+                setExpiry(null);
+              }}
             >
               {u}
             </Button>
@@ -173,6 +179,45 @@ function DeltaVelocityPage() {
           </Button>
         </div>
       </div>
+
+      {chart?.expiries?.length ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Expiry</span>
+          <Button
+            size="sm"
+            variant={expiry === null ? "default" : "outline"}
+            onClick={() => setExpiry(null)}
+          >
+            All
+          </Button>
+          {chart.expiries.map((e) => {
+            const dte = chart.session_date
+              ? Math.round(
+                  (new Date(`${e}T00:00:00`).getTime() -
+                    new Date(`${chart.session_date}T00:00:00`).getTime()) /
+                    86_400_000,
+                )
+              : null;
+            return (
+              <Button
+                key={e}
+                size="sm"
+                variant={expiry === e ? "default" : "outline"}
+                onClick={() => setExpiry(e)}
+              >
+                {e}
+                {dte !== null ? (
+                  <span className="ml-1 opacity-70">{dte}d</span>
+                ) : null}
+              </Button>
+            );
+          })}
+          <span className="text-[11px] text-muted-foreground">
+            Pooling expiries hides the dominant effect — measured NIFTY 2026-08-11, DTE 0 ran
+            4.9× the DTE 14 p95 and supplied every reading above 0.015 that session.
+          </span>
+        </div>
+      ) : null}
 
       {error ? (
         <Card>

@@ -258,6 +258,8 @@ def session_chart(
         "thresholds": {},
         "correlation": {"n": 0, "lag_profile": [], "best_lag": None,
                         "contemporaneous": None, "interpretation": "no data"},
+        "expiries": [],
+        "selected_expiry": expiry,
         "ladder": {"baseline_ts": None, "atm_at_open": None, "step": _step(u), "series": []},
         "context": session_context(None, u),
     }
@@ -268,6 +270,13 @@ def session_chart(
     if rows.empty:
         return empty
     rows["ts"] = pd.to_datetime(rows["ts"], format="mixed", utc=True)
+
+    # Every expiry archived this session, before any filter, so the selector can
+    # offer them all. Worth isolating: measured NIFTY 2026-08-11, DTE 0 ran 4.9x
+    # the DTE 14 p95 and supplied every one of the session's high readings, so a
+    # figure pooled across expiries is dominated by whichever is nearest expiry.
+    session_expiries = sorted(rows["expiry"].astype(str).unique())
+    empty = {**empty, "expiries": session_expiries}
 
     if expiry:
         rows = rows[rows["expiry"].astype(str) == str(expiry)]
@@ -289,6 +298,8 @@ def session_chart(
             **empty,
             "session_date": snapshots[0].get("session_date"),
             "atm_strike": atm,
+            "expiries": session_expiries,
+            "selected_expiry": expiry,
             "ladder": ladder,
             "context": context,
             "contracts": int(rows.groupby(["expiry", "strike", "option_type"]).ngroups),
@@ -327,6 +338,8 @@ def session_chart(
         "session_date": snapshots[0].get("session_date"),
         "atm_strike": atm,
         "nearest_expiry": nearest_expiry,
+        "expiries": session_expiries,
+        "selected_expiry": expiry,
         "ladder": ladder,
         "context": context,
         "contracts": int(velocity.groupby(["expiry", "strike", "option_type"]).ngroups),
