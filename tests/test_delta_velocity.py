@@ -617,3 +617,36 @@ def test_chart_lists_session_expiries(tmp_path, monkeypatch):
     # Still lists both, or the selector loses its other options after one click.
     assert filtered["expiries"] == ["2026-08-11", "2026-08-18"]
     assert filtered["contracts"] < pooled["contracts"]
+
+
+def test_latest_session_prefers_newest_archive(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    assert store.latest_session("NIFTY") is None
+    for d in ("2026-08-10", "2026-08-11"):
+        store.append_snapshot("NIFTY", {"ts": f"{d}T09:20:00", "session_date": d,
+                                        "underlying": "NIFTY", "spot": 1.0, "legs": []})
+    assert store.latest_session("NIFTY") == date(2026, 8, 11)
+
+
+def test_chart_defaults_to_latest_session_not_today(tmp_path, monkeypatch):
+    """Pre-open, today has no file — defaulting to it renders an empty desk.
+
+    Observed 2026-08-12 08:54: coverage reported 161 archived minutes while the
+    chart returned zero contracts, because the two resolved different days.
+    """
+    from analysis.delta_velocity import chart
+
+    _write_session(tmp_path, monkeypatch, minutes=90)  # writes 2026-08-10 only
+    out = chart.session_chart("NIFTY")
+    assert out["session_date"] == "2026-08-10"
+    assert out["minutes"], "default must resolve to the archived session"
+    assert out["contracts"] > 0
+
+
+def test_chart_with_no_archive_at_all_is_still_safe(tmp_path, monkeypatch):
+    from analysis.delta_velocity import chart
+
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    out = chart.session_chart("NIFTY")
+    assert out["minutes"] == []
+    assert out["contracts"] == 0

@@ -2898,7 +2898,9 @@ def velocity_series(underlying: str = "NIFTY", session_date: str | None = None) 
     except ValueError as exc:
         raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
 
-    snapshots = delta_velocity_store.load_session(u, day)
+    # Same default as the chart endpoint: latest archived session, not today.
+    day = day or delta_velocity_store.latest_session(u)
+    snapshots = delta_velocity_store.load_session(u, day) if day else []
     if not snapshots:
         return {"underlying": u, "session_date": session_date, "minutes": 0, "points": []}
 

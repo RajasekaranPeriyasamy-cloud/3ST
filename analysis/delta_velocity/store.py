@@ -131,6 +131,18 @@ def sessions_available(underlying: str) -> list[date]:
     return sorted(out)
 
 
+def latest_session(underlying: str) -> date | None:
+    """Most recent archived session, or None if nothing has been collected.
+
+    Callers that render a session should default to this rather than to today.
+    The collector only writes during market hours, so before the open there is
+    no file for today and defaulting to it renders an empty page while a full
+    session sits on disk one day back — which reads as a broken desk.
+    """
+    days = sessions_available(underlying)
+    return days[-1] if days else None
+
+
 def coverage(underlying: str) -> dict[str, Any]:
     """What the archive actually holds — the Phase 1 exit criterion."""
     days = sessions_available(underlying)

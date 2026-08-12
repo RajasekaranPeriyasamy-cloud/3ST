@@ -155,9 +155,19 @@ function DeltaVelocityPage() {
     <div className="space-y-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold">Delta Velocity</h1>
+          <h1 className="text-xl font-semibold">
+            Delta Velocity
+            {chart?.session_date ? (
+              <Badge variant="outline" className="ml-2 font-mono text-[10px] align-middle">
+                session {chart.session_date}
+              </Badge>
+            ) : null}
+          </h1>
           <p className="text-xs text-muted-foreground">
             Minute-level option-state velocity. Collection only — no detection, no orders.
+            {chart?.session_date && chart.session_date !== new Date().toISOString().slice(0, 10)
+              ? " Showing the latest archived session — today has not been collected yet."
+              : ""}
           </p>
         </div>
         <div className="flex items-center gap-2">

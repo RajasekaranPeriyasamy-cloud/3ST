@@ -246,9 +246,17 @@ def session_chart(
     *,
     expiry: str | None = None,
 ) -> dict[str, Any]:
-    """Per-minute spot and aggregated v_t for one archived session."""
+    """Per-minute spot and aggregated v_t for one archived session.
+
+    With no ``session_date`` this resolves to the latest archived session, not
+    to today. Before the open there is no file for today, and defaulting to it
+    returned an empty payload while coverage simultaneously reported a full
+    session on disk — the page then showed "161 of 16 minutes collected" beside
+    zero contracts.
+    """
     u = str(underlying).upper()
-    snapshots = store.load_session(u, session_date)
+    session_date = session_date or store.latest_session(u)
+    snapshots = store.load_session(u, session_date) if session_date else []
     empty = {
         "underlying": u,
         "session_date": session_date.isoformat() if session_date else None,
