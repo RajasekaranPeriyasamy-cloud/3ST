@@ -115,6 +115,22 @@ Two display bugs found by clicking through and fixed:
   now plots clean expiries only and captions how many were hidden; the degraded row stays in the
   table with its badge.
 
+### CI had been red on main, and why
+
+Pushing this branch surfaced it: **7 failed, 701 passed**, all seven in
+`tests/test_mcx_rolling_straddle.py` with `RuntimeError: Instrument cache empty`. Those tests read
+`data/kite_instruments.json`, which is **gitignored** — so they pass on a machine with a Kite session
+and cannot pass in CI. `main` had failed its last five runs for the same reason, well before this
+work. CLAUDE.md's "the suite runs offline" was therefore true locally and false in CI.
+
+Fixed by seeding a synthetic MCX instrument cache in that module, which keeps the real code path
+under test (`list_expiries` → `load_instruments` → `CACHE_FILE`) rather than stubbing it out. Note
+`options/chain.py` does `from instruments import CACHE_FILE`, binding it at import time, so **both**
+bindings need patching — the same trap `conftest.py` documents for the Kite client accessors.
+Verified by running the suite in a clean git worktree with no instrument cache: **708 passed**.
+
+Shipped as [PR #4](https://github.com/RajasekaranPeriyasamy-cloud/3ST/pull/4) — 3 commits, CI green.
+
 ### Open — next
 
 - **Phase 2b (decided, not built):** route `iv_smile.py` and `vol_surface.py` through
