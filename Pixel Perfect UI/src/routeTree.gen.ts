@@ -14,6 +14,7 @@ import { Route as WaveRouteImport } from './routes/wave'
 import { Route as VolSurfaceRouteImport } from './routes/vol-surface'
 import { Route as VannaExposureRouteImport } from './routes/vanna-exposure'
 import { Route as TradeSuggestionsRouteImport } from './routes/trade-suggestions'
+import { Route as ThetaDecayRouteImport } from './routes/theta-decay'
 import { Route as SurvivorRouteImport } from './routes/survivor'
 import { Route as StraddleWatchRouteImport } from './routes/straddle-watch'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -64,6 +65,11 @@ const VannaExposureRoute = VannaExposureRouteImport.update({
 const TradeSuggestionsRoute = TradeSuggestionsRouteImport.update({
   id: '/trade-suggestions',
   path: '/trade-suggestions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ThetaDecayRoute = ThetaDecayRouteImport.update({
+  id: '/theta-decay',
+  path: '/theta-decay',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SurvivorRoute = SurvivorRouteImport.update({
@@ -224,6 +230,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
+  '/theta-decay': typeof ThetaDecayRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
@@ -257,6 +264,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
+  '/theta-decay': typeof ThetaDecayRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
@@ -291,6 +299,7 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
+  '/theta-decay': typeof ThetaDecayRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
@@ -326,6 +335,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/straddle-watch'
     | '/survivor'
+    | '/theta-decay'
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
@@ -359,6 +369,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/straddle-watch'
     | '/survivor'
+    | '/theta-decay'
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
@@ -392,6 +403,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/straddle-watch'
     | '/survivor'
+    | '/theta-decay'
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
@@ -426,6 +438,7 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   StraddleWatchRoute: typeof StraddleWatchRoute
   SurvivorRoute: typeof SurvivorRoute
+  ThetaDecayRoute: typeof ThetaDecayRoute
   TradeSuggestionsRoute: typeof TradeSuggestionsRoute
   VannaExposureRoute: typeof VannaExposureRoute
   VolSurfaceRoute: typeof VolSurfaceRoute
@@ -468,6 +481,13 @@ declare module '@tanstack/react-router' {
       path: '/trade-suggestions'
       fullPath: '/trade-suggestions'
       preLoaderRoute: typeof TradeSuggestionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/theta-decay': {
+      id: '/theta-decay'
+      path: '/theta-decay'
+      fullPath: '/theta-decay'
+      preLoaderRoute: typeof ThetaDecayRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/survivor': {
@@ -682,6 +702,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   StraddleWatchRoute: StraddleWatchRoute,
   SurvivorRoute: SurvivorRoute,
+  ThetaDecayRoute: ThetaDecayRoute,
   TradeSuggestionsRoute: TradeSuggestionsRoute,
   VannaExposureRoute: VannaExposureRoute,
   VolSurfaceRoute: VolSurfaceRoute,

@@ -44,6 +44,7 @@ from analysis.delta_velocity.runner import stop as stop_delta_velocity_runner
 from analysis.iv_skew import build_iv_skew, iv_skew_config
 from analysis.iv_skew import runner as iv_skew_runner
 from analysis.iv_skew import store as iv_skew_store
+from analysis.theta_decay.features import DEFAULT_HORIZON_MIN as THETA_DEFAULT_HORIZON_MIN
 from execution.arming import arm, disarm, get_arm_state, set_mode
 from execution.rolling_straddle import close_all, close_leg, adopt_leg, unlink_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
 from execution.rolling_straddle_store import get_config as rs_get_config
@@ -3062,6 +3063,88 @@ def velocity_chart(
     except ValueError as exc:
         raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
     return dv_chart.session_chart(u, day, expiry=expiry)
+
+
+@app.get("/decay/chart")
+def decay_chart(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+    horizon_min: int = THETA_DEFAULT_HORIZON_MIN,
+) -> dict[str, Any]:
+    """Theta burn rate and decay capture for one archived session.
+
+    Prefix is ``/decay`` rather than ``/theta`` so the SPA page at
+    ``/theta-decay`` does not collide: ``api.ui_static.is_api_path`` matches on
+    ``startswith``, so a ``/theta`` prefix would turn a hard browser load of the
+    page into a JSON 404 (see CLAUDE.md).
+
+    Reads the delta-velocity archive — this desk has no collector of its own.
+    """
+    from analysis.theta_decay import chart as td_chart
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+    if horizon_min < 1 or horizon_min > 375:
+        raise _err(RuntimeError("horizon_min must be between 1 and 375 (one trading session)"))
+    return td_chart.session_chart(u, day, expiry=expiry, horizon_min=horizon_min)
+
+
+@app.get("/decay/velocity")
+def decay_velocity(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+) -> dict[str, Any]:
+    """Clock-removed theta velocity and its lag profile against spot moves.
+
+    Split from ``/decay/chart`` on cost — it is ~2s against that endpoint's
+    ~1.4s — and on strength. Measured 2026-08-12 it correlates 0.12-0.16 with
+    spot moves and *lags* them, so it is a diagnostic rather than a signal.
+    """
+    from analysis.theta_decay import chart as td_chart
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+    return td_chart.velocity_chart(u, day, expiry=expiry)
+
+
+@app.get("/decay/status")
+def decay_status(underlying: str = "NIFTY") -> dict[str, Any]:
+    """What the theta desk can currently see.
+
+    Its coverage *is* the delta-velocity archive's coverage — same files, same
+    collector — so this reports that rather than pretending to own a feed.
+    """
+    from analysis.theta_decay import features as td_features
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    return {
+        "source": "analysis/delta_velocity archive (shared; no separate collector)",
+        "collector_alive": delta_velocity_alive(),
+        "underlyings": list(dv_collector.UNDERLYINGS),
+        "coverage": delta_velocity_store.coverage(u),
+        "defaults": {
+            "horizon_min": td_features.DEFAULT_HORIZON_MIN,
+            "min_premium": td_features.MIN_PREMIUM,
+            "min_theta_share": td_features.MIN_THETA_SHARE,
+            "max_vega_share": td_features.MAX_VEGA_SHARE,
+            "risk_free_rate": td_features.RISK_FREE,
+            "dividend_yield": td_features.DIVIDEND_YIELD,
+        },
+    }
 
 
 @app.get("/api/meta")

@@ -2754,3 +2754,121 @@ export interface VelocityChart {
     interpretation: string;
   };
 }
+
+/* ---------------------------------------------------------------------------
+ * Theta Decay desk (/decay/*)
+ *
+ * Reads the same archive as Delta Velocity — hence the reuse of
+ * VelocityContext and VelocityLagPoint rather than near-identical copies.
+ * ------------------------------------------------------------------------ */
+
+export interface ThetaDecayMinute {
+  ts: string;
+  clock: string;
+  spot: number;
+  /** ATM straddle burn, re-struck each minute against that minute's spot. */
+  burn_straddle: number | null;
+  /** Fixed at the session's closing ATM strike — a different question. */
+  burn_atm_ce: number | null;
+  burn_atm_pe: number | null;
+  burn_med: number | null;
+}
+
+export interface ThetaBurnBucket {
+  dte: number;
+  n: number;
+  p50: number;
+  p95: number;
+  expiry: string;
+}
+
+export interface ThetaBurnStrike {
+  strike: number;
+  option_type: string;
+  premium: number | null;
+  theta: number | null;
+  burn_pct_day: number | null;
+}
+
+/** Why a capture ratio is or is not worth reading. See features.capture_quality. */
+export type ThetaCaptureQuality =
+  | "ok"
+  | "too_few_windows"
+  | "theta_too_small"
+  | "vega_dominated"
+  | "no_data";
+
+export interface ThetaCaptureBucket {
+  dte: number;
+  /** Rows: one per (contract, window). Not a sample count — see time_windows. */
+  windows: number;
+  /** Distinct clock windows. The strikes inside one window are not independent. */
+  time_windows: number;
+  capture: number | null;
+  quality: ThetaCaptureQuality;
+  /** Share of absolute price movement the theta term explains — the honesty number. */
+  theta_share: number | null;
+  vega_share: number | null;
+  theoretical: number;
+  realized: number;
+}
+
+export interface ThetaDecayChart {
+  underlying: string;
+  session_date: string | null;
+  atm_strike: number | null;
+  expiries: string[];
+  selected_expiry: string | null;
+  contracts: number;
+  step: number;
+  context: VelocityContext;
+  minutes: ThetaDecayMinute[];
+  burn_by_dte: ThetaBurnBucket[];
+  burn_by_strike: ThetaBurnStrike[];
+  capture: {
+    horizon_min: number;
+    by_dte: ThetaCaptureBucket[];
+    /** Always populated — explains an empty or partly-gated table. */
+    note: string;
+  };
+}
+
+export interface ThetaVelocityMinute {
+  ts: string;
+  clock: string;
+  spot: number;
+  tau_med: number | null;
+  tau_max: number | null;
+}
+
+export interface ThetaVelocityChart {
+  underlying: string;
+  session_date: string | null;
+  selected_expiry: string | null;
+  minutes: ThetaVelocityMinute[];
+  thresholds: { p95?: number | null; p99?: number | null };
+  blanks: string;
+  correlation: {
+    n: number;
+    lag_profile: VelocityLagPoint[];
+    best_lag: number | null;
+    best_corr?: number | null;
+    contemporaneous: number | null;
+    interpretation: string;
+  };
+}
+
+export interface ThetaDecayStatus {
+  source: string;
+  collector_alive: boolean;
+  underlyings: string[];
+  coverage: VelocityCoverage;
+  defaults: {
+    horizon_min: number;
+    min_premium: number;
+    min_theta_share: number;
+    max_vega_share: number;
+    risk_free_rate: number;
+    dividend_yield: number;
+  };
+}

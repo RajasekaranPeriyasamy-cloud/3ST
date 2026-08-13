@@ -80,13 +80,19 @@ def lag_profile(
     return out
 
 
-def _atm_strike(underlying: str, spot: float) -> float:
-    step = int((INDEX_OPTIONS.get(str(underlying).upper()) or {}).get("strike_step") or 50)
+def atm_strike(underlying: str, spot: float) -> float:
+    step = strike_step(underlying)
     return float(round(float(spot) / step) * step)
 
 
-def _step(underlying: str) -> int:
+def strike_step(underlying: str) -> int:
     return int((INDEX_OPTIONS.get(str(underlying).upper()) or {}).get("strike_step") or 50)
+
+
+# Public since analysis/theta_decay reads the same archive and needs the same
+# ATM convention; the underscored names remain for this module's own callers.
+_atm_strike = atm_strike
+_step = strike_step
 
 
 def ladder_series_spec(atm: float, step: int, *, offsets: int = LADDER_OFFSETS) -> list[dict[str, Any]]:

@@ -1,12 +1,96 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-12  
+**Last updated:** 2026-08-13  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** IV Skew desk — 25Δ risk reversal, forward-based, with a daily monitor
+**Session focus:** Theta Decay desk — burn rate and decay capture over the Delta Velocity archive
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-13 — Theta Decay desk · the degenerate decomposition
+
+User asked for "Theta Negative Velocity" as the theta analogue of Delta Velocity, then chose
+**burn rate + decay capture** over the literal analogue as the headline. Read-only analysis desk;
+nothing under `broker/` / `execution/` / `risk/` touched.
+
+### No second collector, and no collector change either
+
+`analysis/delta_velocity/` already archives `spot`, `strike`, `expiry`, `ts` and full-precision
+`iv` per leg per minute, so **theta is fully recoverable from what is already on disk** — the desk
+works over sessions collected before it existed. A sibling collector was rejected (it would double
+the quote load and duplicate the per-strike IV solve, the slowest analysis work on the desk).
+
+Storing theta in the snapshot was written, then reverted. The collector's `compute_greeks` call
+takes the default **q = 0.012**, while the archived `iv` is solved by `vollib.black_scholes` at
+**q = 0**. Feeding a q=0 IV into a q=0.012 greeks call describes no self-consistent model of the
+observed price; negligible for delta (`qT ≈ 2e-4` at 6 DTE) but a **5% shift on theta**. So
+`features.ensure_greeks` always re-derives at q=0 and never trusts a stored column. Vectorising
+the greeks made that free — a session went from ~10s to ~0.3s — which removed the only reason to
+store them.
+
+### Burn rate works; capture ratio nearly didn't
+
+**Burn rate (`−theta / premium`) is solid** and reproduces the theoretical `1/T` scaling almost
+exactly. NIFTY 2026-08-12: 8.13%/day at 6 DTE, 3.79% at 13, 2.48% at 20 — ratios 2.14 and 1.53
+against 2.17 and 1.53 predicted. Holds on all three underlyings.
+
+**Decay capture was garbage as first specified**, and the reason is structural rather than a
+tuning problem: the archived IV is *inverted from the same price being decomposed*, so
+`delta·dS + vega·dσ` alone reproduces a one-minute price change with **R² of 0.95–0.998**. Theta
+was left with 0.3–0.4% of the movement and the ratio was noise (buckets came out at −1.26, 0.80,
+−8.59).
+
+Lengthening the horizon is what fixes it — theta accumulates linearly while spot and vol noise
+partially cancels:
+
+| DTE | 1min | 5min | 15min | 30min | 60min | theta share of \|dP\| |
+| --- | --- | --- | --- | --- | --- | --- |
+| 6 | −1.14 | −0.85 | −0.22 | 0.52 | 0.59 | 0.44% → 2.05% |
+| 13 | 0.58 | 0.73 | 0.76 | 0.91 | **0.95** | 0.34% → 1.54% |
+| 20 | 0.44 | 0.56 | 0.63 | 0.81 | 0.71 | 0.31% → 1.37% |
+
+Hence `DEFAULT_HORIZON_MIN = 60`. **Smoothing IV to denoise this is wrong** — it looks like the
+obvious fix and biases instead, because a rolling-mean IV lags the true vol path and the
+under-attributed vol move lands in `time_pnl`. At a 15-minute horizon, 30-minute IV smoothing
+pushed DTE 13 from 0.76 to 1.71, an "improvement" that is entirely artefact.
+
+### Quality gating, and a sample-size trap
+
+Two buckets still came out negative, both diagnosable — theta below the noise floor, or the vol
+term too large to subtract. `capture_quality` labels them (`theta_too_small` / `vega_dominated`)
+rather than hiding them, gated on `theta_share ≥ 1%` and `vega_share ≤ 35%`, calibrated across the
+nine (underlying, DTE) buckets in the 2026-08-12 archive.
+
+A third gate came out of watching the live page mid-session: a bucket holds **one row per
+(contract, window)**, so a 92-minute session gave 22 rows — but all 22 are the same hour seen
+through 22 strikes, sharing one spot path and one vol move. Gating on row count waved that
+through with `vega_share` near 100%. It now counts **distinct time windows** and reports
+`too_few_windows`, which is the honest answer for most of a trading day.
+
+### Theta velocity, the literal analogue — shipped, demoted
+
+Kept, with the deterministic component removed (`|θ_t − θ̂_t|` where `θ̂` holds spot and IV at
+`t−1`), because unlike delta, theta has a large clock component knowable a day ahead. It measured
+weak: correlation **0.12–0.16** against absolute one-minute spot returns, and it **lags by 6–9
+minutes**. Behind its own `/decay/velocity` endpoint and a "Load" button, since it costs ~2s of
+what would otherwise be a ~1.4s page.
+
+### Notes
+
+- Routes are `/decay/*`, not `/theta/*`: `ui_static.is_api_path` matches on `startswith`, so a
+  `/theta` prefix would turn a hard browser load of the SPA page `/theta-decay` into a JSON 404.
+- `scipy` added to `requirements.txt` — it arrived transitively via `py_vollib` and is now
+  imported directly for the vectorised normal CDF.
+- `delta_velocity.chart._atm_strike` / `_step` promoted to public `atm_strike` / `strike_step`
+  (aliases kept) rather than importing another desk's privates.
+- **A test fixture patched `settings.data_dir` and wrote 1,800 synthetic snapshots into the live
+  archive** (`data/delta_velocity/NIFTY/2026-08-12.jsonl`, 383 → 2,184 lines). `store.py` does
+  `from settings import data_dir` at import time and holds its own reference — the same binding
+  trap `conftest.py` documents for `kite_client`. The file was repaired back to exactly 383 rows
+  and the fixture now patches `store.data_dir`. Patch the module that holds the reference.
 
 ---
 

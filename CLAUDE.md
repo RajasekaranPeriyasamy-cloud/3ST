@@ -14,6 +14,8 @@ This file provides guidance to Claude (Claude Code / Cowork) when working with c
 | Live Desk / Watchlist | `/live` | `execution/watchlist_activation.py`, `watchlist_exit_runner.py` |
 | Algo Execution (taskbar) | `/execution` | `execution/execution_queue.py` |
 | Equity Report | `/equity-report` | `analysis/equity_report/` |
+| Delta Velocity | `/delta-velocity` | `analysis/delta_velocity/` (API prefix `/velocity`) |
+| Theta Decay | `/theta-decay` | `analysis/theta_decay/` (API prefix `/decay`) |
 | RRG, OI Tracker, OI VAR, Gamma Density, Vanna Exposure, Vol Surface, IV Smile, Pricing Engine, Calendar Arb, OI Profile, Analogue Paths | various | `analysis/`, `options/` |
 
 Legacy **Streamlit** UI (`app.py`) still exists but is not actively developed — treat `Pixel Perfect UI` + FastAPI as canonical.
@@ -99,6 +101,14 @@ options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG
                   Two backends behind one generate_report(): agent.py (Anthropic,
                   web_search + web_fetch) and gemini_backend.py (Gemini Interactions API).
                   See "Equity Report providers" below before touching either.
+                — analysis/theta_decay/ (added 2026-08-13): burn rate + decay capture. Has
+                  **no collector, store or runner** — it reads analysis/delta_velocity/'s
+                  minute archive and re-derives theta/gamma/vega from the stored full-precision
+                  IV on every read (~0.3s/session vectorised). Do not "optimise" that by
+                  storing greeks in the snapshot: the collector computes at q=0.012 while the
+                  archived IV is solved at q=0, and mixing them shifts ATM theta ~5%. Read
+                  features.py's docstring before trusting capture_ratio — burn rate is solid,
+                  decay capture is a session-scale statistic with a quality gate.
 strategy_3st.py, backtest_engine.py   Core indicator + backtest engine
 tests/          40+ pytest files — good coverage of strategy parity, risk limits,
                 reconcile, bar-churn, exit-grace edge cases
@@ -206,6 +216,7 @@ CI runs this on every push/PR — `.github/workflows/ci.yml` (added 2026-07-25).
 **`tests/conftest.py` blocks live Kite in every test.** It patches the client accessors that every market-data path resolves at call time (`_kite_direct_client`, `get_kite_client`, `kite_read_client`), so nothing can reach the broker. This is *not* optional politeness: one gamma-snapshot test used to walk a whole option chain issuing ~80 per-strike 60min historical requests (`gamma_density` → `oi_movers.ensure_session_open_oi` → `fetch_historical_by_token`), taking 80+ seconds and returning different data every run. Blocking it took the suite from **402s to ~25s** and made CI runnable without a broker session.
 
 - Patch the *accessors*, not `kite_client.fetch_*` — modules do `from kite_client import fetch_historical_by_token` at import time and hold their own reference, so patching the wrapper misses them.
+- **The same binding trap applies to `settings.data_dir`, and it bites harder.** Stores do `from settings import data_dir` at import time, so `monkeypatch.setattr("settings.data_dir", ...)` leaves them pointed at the real `data/`. A theta-decay fixture did exactly that on 2026-08-13 and appended 1,800 synthetic snapshots into the live delta-velocity archive before anyone noticed. Patch the *module under test's* reference — `monkeypatch.setattr(store, "data_dir", lambda: tmp_path)` — and, if a test writes, assert the real file's line count is unchanged afterwards.
 - A test that genuinely needs a broker can use `@pytest.mark.live_kite` (nothing does today).
 - `tests/test_offline_guard.py` asserts the guard is still live, so renaming an accessor fails loudly instead of silently turning it into a no-op.
 
