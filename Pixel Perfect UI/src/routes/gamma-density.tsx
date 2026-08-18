@@ -1,16 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play, RefreshCw, Settings2 } from "lucide-react";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import { api } from "@/lib/api";
 import { pickNearestExpiry, useOptionExpiries } from "@/hooks/useOptionExpiries";
@@ -237,54 +227,6 @@ function StatCard({
         {hint ? <div className="text-[10px] text-muted-foreground">{hint}</div> : null}
       </CardContent>
     </Card>
-  );
-}
-
-function GexProfileChart({ snap, height = 280 }: { snap: GammaSnapshot; height?: number }) {
-  const data = snap.gex_profile ?? [];
-  if (!data.length) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">No GEX(S) profile</p>;
-  }
-  return (
-    <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={data} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-        <XAxis dataKey="spot" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 11 }} />
-        <YAxis
-          tick={{ fontSize: 11 }}
-          tickFormatter={(v) => (v / 1e7).toFixed(1)}
-          label={{ value: "GEX(S) ₹Cr", angle: -90, position: "insideLeft", fontSize: 11 }}
-        />
-        <Tooltip
-          formatter={(v: number) => [`${(v / 1e7).toFixed(2)} Cr`, "GEX"]}
-          labelFormatter={(l) => `Spot ${l}`}
-        />
-        <ReferenceLine y={0} stroke="currentColor" className="text-muted-foreground" />
-        <ReferenceLine
-          x={snap.spot}
-          stroke={SPOT_LINE}
-          strokeWidth={2}
-          label={{ value: "Spot", fontSize: 10, fill: SPOT_LINE, position: "top" }}
-        />
-        {snap.flip_level != null ? (
-          <ReferenceLine
-            x={snap.flip_level}
-            stroke={FLIP_LINE}
-            strokeDasharray="4 4"
-            label={{ value: "Flip SS", fontSize: 10, fill: FLIP_LINE, position: "top" }}
-          />
-        ) : null}
-        {snap.flip_sticky_delta != null ? (
-          <ReferenceLine
-            x={snap.flip_sticky_delta}
-            stroke="#ec4899"
-            strokeDasharray="2 3"
-            label={{ value: "Flip SD", fontSize: 10, fill: "#ec4899", position: "insideTopRight" }}
-          />
-        ) : null}
-        <Line type="monotone" dataKey="gex" stroke="#0ea5e9" strokeWidth={2} dot={false} name="GEX(S)" />
-      </LineChart>
-    </ResponsiveContainer>
   );
 }
 
@@ -635,7 +577,7 @@ function GammaDensityPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">3ST Algo Desk — Gamma Density</h1>
           <p className="text-sm text-muted-foreground">
-            Dealer-hedging map: Net GEX plus HHI shape, conviction, pin, flip, hedge flow, Vanna strip.
+            Dealer-hedging map: Net GEX plus HHI shape, conviction, pin, flip, Vanna strip.
           </p>
           {metaLine ? <p className="mt-1 text-xs text-muted-foreground">{metaLine}</p> : null}
         </div>
@@ -1227,60 +1169,9 @@ function GammaDensityPage() {
                 />
               </CardContent>
             </Card>
-            <Card>
-              <CardHeader className="py-3">
-                <CardTitle className="text-sm">
-                  GEX(S) profile · sticky-strike / sticky-delta flips
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <GexProfileChart snap={snapshot} height={300} />
-              </CardContent>
-            </Card>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
-              <CardHeader className="py-3">
-                <CardTitle className="text-sm">Hedge flow (est. dealer futures)</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="text-xs">
-                      <TableHead>Move</TableHead>
-                      <TableHead>Direction</TableHead>
-                      <TableHead className="text-right">Fut lots</TableHead>
-                      <TableHead className="text-right">Notional Cr</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(snapshot.hedge_flow ?? []).map((h) => (
-                      <TableRow key={h.move_pts} className="text-xs font-mono">
-                        <TableCell>
-                          {h.move_pts > 0 ? "+" : ""}
-                          {h.move_pts} pts
-                        </TableCell>
-                        <TableCell
-                          className={
-                            h.direction === "dealers_buy"
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : h.direction === "dealers_sell"
-                                ? "text-red-600 dark:text-red-400"
-                                : ""
-                          }
-                        >
-                          {h.direction.replace("dealers_", "")}
-                        </TableCell>
-                        <TableCell className="text-right">{h.futures_lots.toFixed(1)}</TableCell>
-                        <TableCell className="text-right">{h.notional_cr.toFixed(2)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-
             <Card>
               <CardHeader className="py-3">
                 <CardTitle className="text-sm">
@@ -1326,40 +1217,6 @@ function GammaDensityPage() {
                 </Table>
               </CardContent>
             </Card>
-          </div>
-
-          <div className="grid gap-6 lg:grid-cols-2">
-            <Card>
-              <CardHeader className="py-3">
-                <CardTitle className="text-sm">Top convexity zones</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="text-xs">
-                      <TableHead>Strike</TableHead>
-                      <TableHead className="text-right">Γ×OI</TableHead>
-                      <TableHead className="text-right">Magnet</TableHead>
-                      <TableHead className="text-right">Net GEX</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {snapshot.convexity_zones.map((z) => (
-                      <TableRow key={z.strike} className="text-xs font-mono">
-                        <TableCell>{z.strike}</TableCell>
-                        <TableCell className="text-right">{(z.total_density / 1e6).toFixed(2)}M</TableCell>
-                        <TableCell className="text-right">{z.magnet != null ? z.magnet.toFixed(1) : "—"}</TableCell>
-                        <TableCell
-                          className={`text-right ${z.net_gex >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
-                        >
-                          {gexCrore(z.net_gex)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
 
             <Card>
               <CardHeader className="py-3">
@@ -1398,10 +1255,43 @@ function GammaDensityPage() {
             </Card>
           </div>
 
+          <div className="flex flex-col gap-6">
+            <Card>
+              <CardHeader className="py-3">
+                <CardTitle className="text-sm">Top convexity zones</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="text-xs">
+                      <TableHead>Strike</TableHead>
+                      <TableHead className="text-right">Γ×OI</TableHead>
+                      <TableHead className="text-right">Magnet</TableHead>
+                      <TableHead className="text-right">Net GEX</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {snapshot.convexity_zones.map((z) => (
+                      <TableRow key={z.strike} className="text-xs font-mono">
+                        <TableCell>{z.strike}</TableCell>
+                        <TableCell className="text-right">{(z.total_density / 1e6).toFixed(2)}M</TableCell>
+                        <TableCell className="text-right">{z.magnet != null ? z.magnet.toFixed(1) : "—"}</TableCell>
+                        <TableCell
+                          className={`text-right ${z.net_gex >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+                        >
+                          {gexCrore(z.net_gex)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </div>
+
           <p className="text-[10px] text-muted-foreground">
-            Mid IV when spread ≤12%; else LTP. Gamma uses BSM with dividend yield q. Flip from GEX(S) scan
-            (sticky-strike + sticky-delta). Magnet walls = density / |K−S|. EM prefers ATM straddle.
-            Hedge flow = Γ_units × ΔS / lot. Multi-expiry weights ∝ 1/√TTE. Spot path = day minute
+            Mid IV when spread ≤12%; else LTP. Gamma uses BSM with dividend yield q. Magnet walls =
+            density / |K−S|. EM prefers ATM straddle. Multi-expiry weights ∝ 1/√TTE. Spot path = day minute
             candles; GEX ticks only while desk polls in-session (no post-close append). Reversals =
             spot swing extremes with ≥~0.15% reclaim, optional GEX regime confirm.
           </p>
