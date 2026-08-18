@@ -13,6 +13,9 @@ from config import INDEX_OPTIONS
 from instruments import CACHE_FILE, load_instruments, resolve_instrument
 
 _EXPIRIES_CACHE: dict[str, tuple[float, list[str]]] = {}
+# (underlying, expiry) -> (instruments-cache mtime, chain). Same mtime guard as
+# _EXPIRIES_CACHE: the dump changes once a day, the pandas scan behind it does not.
+_CHAIN_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 _LTP_TIMEOUT_SEC = 10.0
 
 
@@ -85,8 +88,45 @@ def warm_expiries_cache() -> None:
             pass
 
 
+def _copy_chain(chain: dict[str, Any]) -> dict[str, Any]:
+    """Private copy of a cached chain so no caller can mutate the cache.
+
+    ~19 call sites consume get_chain and several enrich leg dicts in place.
+    Rebuilding the nested dicts costs well under a millisecond against the
+    0.4-1.0s pandas scan it replaces.
+    """
+    out = dict(chain)
+    strikes: list[dict[str, Any]] = []
+    for row in chain.get("strikes") or []:
+        copied = dict(row)
+        for side in ("ce", "pe"):
+            leg = copied.get(side)
+            if isinstance(leg, dict):
+                copied[side] = dict(leg)
+        strikes.append(copied)
+    out["strikes"] = strikes
+    return out
+
+
 def get_chain(underlying: str, expiry: str) -> dict[str, Any]:
-    """Return CE/PE rows grouped by strike for one expiry."""
+    """Return CE/PE rows grouped by strike for one expiry.
+
+    Memoised against the instruments-cache mtime. The scan in _build_chain
+    costs 0.4-1.0s and used to run on every poll of every desk that touches a
+    chain; the instrument dump it reads changes once a day.
+    """
+    key = (underlying.upper(), str(expiry))
+    mtime = CACHE_FILE.stat().st_mtime if CACHE_FILE.exists() else 0.0
+    cached = _CHAIN_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return _copy_chain(cached[1])
+
+    chain = _build_chain(underlying, expiry)
+    _CHAIN_CACHE[key] = (mtime, chain)
+    return _copy_chain(chain)
+
+
+def _build_chain(underlying: str, expiry: str) -> dict[str, Any]:
     opts = _underlying_options_df(underlying)
     if opts.empty:
         return {"underlying": underlying, "expiry": expiry, "strikes": []}

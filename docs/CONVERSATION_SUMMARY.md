@@ -1,12 +1,68 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-13  
+**Last updated:** 2026-08-18  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Theta Decay desk — burn rate and decay capture over the Delta Velocity archive
+**Session focus:** Net GEX chart — price-level overlays, then read-path latency (client + chain memoisation)
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-18 — Net GEX read-path latency · it was never the feed
+
+Asked to improve "data feed latency" on the Net GEX session chart. Profiling said the feed was
+the *smallest* part of the problem. `/gamma-density/snapshot` measured **5.2–6.0s**, polled by the
+UI every 60s, so the chart ran 30–66s stale — but only **~0.46s** of that was actual Kite
+request/response time.
+
+### The Kite client was rebuilt on every single call
+
+`kite_auth._kite()` constructed a fresh `KiteConnect` per call, so every market-data read got a new
+`requests.Session`, a new connection pool, a fresh TLS handshake, and a re-read of the CA bundle.
+cProfile put **0.95s of tottime in `load_verify_locations` alone**, and ~1.4s of each snapshot in
+connection setup. Measured directly: **465 ms/call fresh vs 189 ms/call reused.**
+
+`read_only_kite_client()` memoises it — but **only for reads**. `get_kite_client()` and the login
+flow still construct fresh clients against `kite_egress_plan()`. That split is deliberate and is the
+whole safety argument: reads are always direct egress (CLAUDE.md), so the cached client carries no
+egress state and can never be handed to an order path where it would bypass the IP whitelisted on
+developers.kite.trade. `tests/test_kite_client_cache.py::test_read_client_never_carries_order_egress`
+pins it: with the staticip proxy selected, the read client must still come back unproxied.
+
+Invalidated on `save_session()` / `clear_session()` so a re-login is never masked. Callers still
+call `set_access_token` per call, so a new token applies immediately regardless of cache state.
+
+### `get_chain` re-scanned a daily-static file on every poll
+
+`options/chain.py` ran a pandas `.apply` over the instruments dump on every call — **894 ms**,
+against a file that changes once a day, from **~19 call sites** across the desk. Now memoised
+against the instruments-cache mtime, the same guard `_EXPIRIES_CACHE` already used. Callers get a
+structural copy (`_copy_chain`); several enrich leg dicts in place, and poisoning a shared cache
+across 19 consumers is not a bug worth discovering in production.
+
+Note the invalidation contract: the chain cache is only as fresh as the instruments dump. Strikes
+added intraday appear when the dump is refreshed, exactly as expiry lists already behaved.
+
+### Result
+
+Repeat `get_chain` **894 ms → 0 ms**. The offline test suite, which is an apples-to-apples workload,
+went **36.0s → 19.2s**. The endpoint itself measured ~2.0s afterwards, but that reading is *not*
+comparable to the 5.5s baseline — the clock crossed into a new trading day mid-session, so the
+post-change call had no session candles or history to fetch. Re-measure during market hours.
+
+### Still open — the actual feed
+
+`execution/ltp_cache.py` is a working Aio-Trader KiteFeed WebSocket client with `/ws/ltp` wired in
+`api/main.py`, defaulted on via `LTP_CACHE_WS=1` — but **`aio_trader` is not installed**, so it
+silently falls back to REST everywhere. The package source is sitting in `_review/Aio-Trader/`.
+`KiteFeed.MODE_FULL` carries OI, so subscribing the chain in full mode would remove the 210-key
+quote batch entirely. The gamma desk does not consume `ltp_cache` at all today.
+
+Also: `options/analytics_scheduler.py` already computes a full snapshot every 30s and throws it
+away after persisting a history tick, while the UI recomputes the identical thing 60s later.
+Serving the endpoint from that cached snapshot is the next cheap win.
 
 ---
 

@@ -6,6 +6,7 @@ import json
 import logging
 import socket
 import sys
+import threading
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -324,6 +325,58 @@ def _kite(*, use_proxy: bool | None = None) -> KiteConnect:
     return kite
 
 
+# Memoised read-only client. Reads are always direct egress (no proxy, no
+# source bind) per the egress split in CLAUDE.md, so this cache carries no
+# egress state and can never be handed to an order path -- get_kite_client()
+# and the login flow keep constructing fresh clients against the egress plan.
+#
+# Rebuilding KiteConnect per call cost ~276 ms of pure setup: a new
+# requests.Session meant a new connection pool, a fresh TLS handshake and a
+# re-read of the CA bundle (load_verify_locations) on every single call.
+_READ_CLIENT: KiteConnect | None = None
+_READ_CLIENT_API_KEY: str | None = None
+_READ_CLIENT_LOCK = threading.Lock()
+
+
+def reset_kite_client_cache() -> None:
+    """Drop the memoised read client (re-login, logout, credential change)."""
+    global _READ_CLIENT, _READ_CLIENT_API_KEY
+    with _READ_CLIENT_LOCK:
+        _READ_CLIENT = None
+        _READ_CLIENT_API_KEY = None
+
+
+def read_only_kite_client() -> KiteConnect:
+    """Shared direct-egress KiteConnect for market-data reads.
+
+    Callers still set the access token themselves each call, so a re-login is
+    picked up without waiting for cache invalidation. Never use this to place
+    or cancel orders: it deliberately ignores kite_egress_plan(), so it is not
+    bound to the whitelisted IP.
+    """
+    global _READ_CLIENT, _READ_CLIENT_API_KEY
+    client = _READ_CLIENT
+    if client is not None and _READ_CLIENT_API_KEY == _cached_api_key():
+        return client
+
+    with _READ_CLIENT_LOCK:
+        api_key = _cached_api_key()
+        if _READ_CLIENT is not None and _READ_CLIENT_API_KEY == api_key:
+            return _READ_CLIENT
+        fresh = _kite(use_proxy=False)
+        _READ_CLIENT = fresh
+        _READ_CLIENT_API_KEY = api_key
+        return fresh
+
+
+def _cached_api_key() -> str | None:
+    """API key as currently loaded, without re-reading .env from disk."""
+    try:
+        return kite_credentials().get("api_key")
+    except Exception:
+        return None
+
+
 def _is_proxy_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     needles = ("proxy", "staticip", "getaddrinfo failed", "name resolution", "max retries exceeded")
@@ -427,6 +480,7 @@ def load_session() -> dict[str, Any] | None:
 
 
 def save_session(payload: dict[str, Any]) -> None:
+    reset_kite_client_cache()
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     out = _session_payload(payload)
     json_bytes = json.dumps(out).encode("utf-8")
@@ -435,6 +489,7 @@ def save_session(payload: dict[str, Any]) -> None:
 
 
 def clear_session() -> None:
+    reset_kite_client_cache()
     if SESSION_FILE.exists():
         SESSION_FILE.unlink()
 
