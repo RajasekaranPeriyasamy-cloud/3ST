@@ -939,7 +939,7 @@ export function GexSessionPlotly({
         y: posY,
         xaxis: "x",
         yaxis: "y",
-        line: { color: POS_GREEN, width: 2.2, shape: "hv" },
+        line: { color: POS_GREEN, width: 2.2, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>+VE GEX %{y:.2f} Cr<extra></extra>",
       } as Data);
       coreTraces.push({
@@ -950,7 +950,7 @@ export function GexSessionPlotly({
         y: negY,
         xaxis: "x",
         yaxis: "y",
-        line: { color: NEG_RED, width: 2.2, shape: "hv" },
+        line: { color: NEG_RED, width: 2.2, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>−VE GEX %{y:.2f} Cr<extra></extra>",
       } as Data);
     }
@@ -964,26 +964,44 @@ export function GexSessionPlotly({
         y: netY,
         xaxis: "x",
         yaxis: "y",
-        line: { color: NET_AMBER, width: 2.4, shape: "hv" },
+        line: { color: NET_AMBER, width: 2.4, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>Net Gamma %{y:.2f} Cr<extra></extra>",
       } as Data);
     }
 
-    if (sampleX.length > 0) {
+    // Sign-flip markers only. A dot per sample put ~400 markers on the pane and
+    // buried the amber Net Gamma line under them; the only reading that changes
+    // is where net gamma crosses zero, so mark the first sample of each regime.
+    const flipX: Date[] = [];
+    const flipY: number[] = [];
+    const flipColors: string[] = [];
+    const flipLabels: string[] = [];
+    for (let i = 1; i < sampleNetY.length; i++) {
+      const curr = sampleNetY[i]!;
+      const prev = sampleNetY[i - 1]!;
+      if ((curr >= 0) === (prev >= 0)) continue;
+      flipX.push(sampleX[i]!);
+      flipY.push(curr);
+      flipColors.push(curr >= 0 ? POS_GREEN : NEG_RED);
+      flipLabels.push(curr >= 0 ? "+VE" : "−VE");
+    }
+
+    if (flipX.length > 0) {
       coreTraces.push({
         type: "scatter",
         mode: "markers",
-        name: "GEX sample",
-        x: sampleX,
-        y: sampleNetY,
+        name: "Sign flip",
+        x: flipX,
+        y: flipY,
+        text: flipLabels,
         xaxis: "x",
         yaxis: "y",
         marker: {
-          size: 5,
-          color: sampleNetY.map((v) => (v >= 0 ? POS_GREEN : NEG_RED)),
-          line: { color: "#fff", width: 0.5 },
+          size: 9,
+          color: flipColors,
+          line: { color: "#fff", width: 1 },
         },
-        hovertemplate: "%{x|%H:%M:%S}<br>Sample %{y:.2f} Cr<extra></extra>",
+        hovertemplate: "%{x|%H:%M:%S}<br>Net Gamma turns %{text}<br>%{y:.2f} Cr<extra></extra>",
       } as Data);
     }
 
@@ -1955,6 +1973,8 @@ export function GexSessionPlotly({
         first recorded sample; earlier session / gaps stay empty). Blue = spot (right
         axis). Pink = ATM IV % (own axis; forward-filled after first sample only).
         Violet = Fut POC (session futures volume point of control; dotted on Spot axis).
+        Dot on the Net Gamma line = sign flip (green = turned +VE, red = turned
+        −VE); no dot means the regime held.
         {levelDefs.length
           ? " Levels draw at their current snapshot value (flat for the whole session, not an intraday trail) — orange = call wall, teal = put wall, indigo = gamma flip, slate = pin, stone = ±1σ, grey = prev day / week."
           : ""}
