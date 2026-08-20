@@ -17,6 +17,7 @@ This file provides guidance to Claude (Claude Code / Cowork) when working with c
 | Delta Velocity | `/delta-velocity` | `analysis/delta_velocity/` (API prefix `/velocity`) |
 | Theta Decay | `/theta-decay` | `analysis/theta_decay/` (API prefix `/decay`) |
 | RRG, OI Tracker, OI VAR, Gamma Density, Vanna Exposure, Vol Surface, IV Smile, Pricing Engine, Calendar Arb, OI Profile, Analogue Paths | various | `analysis/`, `options/` |
+| Volume Footprint | `/volume-footprint` | `analysis/volume_profile/` + `vendor/volume_footprint/` |
 
 Legacy **Streamlit** UI (`app.py`) still exists but is not actively developed — treat `Pixel Perfect UI` + FastAPI as canonical.
 
@@ -109,6 +110,10 @@ options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG
                   archived IV is solved at q=0, and mixing them shifts ATM theta ~5%. Read
                   features.py's docstring before trusting capture_ratio — burn rate is solid,
                   decay capture is a session-scale statistic with a quality gate.
+vendor/         Third-party code, verbatim, each subpackage with its own LICENSE.
+                — vendor/volume_footprint/ (added 2026-08-20): MPL-2.0 Pine port behind the
+                  Volume Footprint desk. Do NOT edit in place — it is kept diffable against
+                  upstream; 3ST-side wiring belongs in analysis/volume_profile/.
 strategy_3st.py, backtest_engine.py   Core indicator + backtest engine
 tests/          40+ pytest files — good coverage of strategy parity, risk limits,
                 reconcile, bar-churn, exit-grace edge cases

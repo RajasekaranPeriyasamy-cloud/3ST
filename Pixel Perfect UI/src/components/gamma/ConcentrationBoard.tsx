@@ -7,6 +7,7 @@ import type {
   GammaConcentrationSummary,
   GammaConcentrationSummaryItem,
   GammaMassBasis,
+  GammaPinWindow,
   GammaSnapshot,
   GammaStrikeRow,
   GammaTopContributor,
@@ -26,7 +27,9 @@ import { HhiBuilders, type TopNOption } from "@/components/gamma/concentration/H
 import { HhiHero } from "@/components/gamma/concentration/HhiHero";
 import { HhiSessionsChart } from "@/components/gamma/concentration/HhiSessionsChart";
 import { OiChangePanel } from "@/components/gamma/concentration/OiChangePanel";
+import { PinStrengthPanel } from "@/components/gamma/concentration/PinStrengthPanel";
 import { SideHhiCards } from "@/components/gamma/concentration/SideHhiCards";
+import { VolumeConfluencePanel } from "@/components/gamma/concentration/VolumeConfluencePanel";
 import {
   CLIFF_LINE,
   PIN_LINE,
@@ -580,6 +583,8 @@ export function ConcentrationBoard({
   summaryRefreshToken,
   massBasis,
   onMassBasisChange,
+  pinWindow,
+  onPinWindowChange,
 }: {
   snap: GammaSnapshot;
   selectedUnderlying?: OiUnderlying;
@@ -589,6 +594,9 @@ export function ConcentrationBoard({
   /** Per-strike mass the HHI is built from. Changing it refetches the snapshot. */
   massBasis?: GammaMassBasis;
   onMassBasisChange?: (b: GammaMassBasis) => void;
+  /** Trailing window for pin strength. Changing it refetches the snapshot. */
+  pinWindow?: GammaPinWindow;
+  onPinWindowChange?: (w: GammaPinWindow) => void;
 }) {
   const conc = snap.concentration;
   const [topN, setTopN] = useState<TopNOption>(5);
@@ -611,6 +619,16 @@ export function ConcentrationBoard({
   }, [conc?.put_hhi, snap.strikes]);
 
   const cliffStrike = useMemo(() => cliffFromSnapshot(snap), [snap]);
+
+  /** Spacing between adjacent strikes; the payload has no explicit step field. */
+  const strikeStep = useMemo(() => {
+    const ks = [...(snap.strikes ?? [])].map((r) => r.strike).sort((a, b) => a - b);
+    for (let i = 1; i < ks.length; i += 1) {
+      const d = ks[i] - ks[i - 1];
+      if (d > 0) return d;
+    }
+    return 50;
+  }, [snap.strikes]);
 
   const bandForSide = (v: number | null): GammaConcentrationBand | null => {
     if (v == null) return null;
@@ -665,6 +683,17 @@ export function ConcentrationBoard({
           <OiChangePanel snap={snap} />
         </div>
         <div className="flex flex-col gap-4 lg:col-span-5">
+          <PinStrengthPanel
+            pinLock={snap.pin_lock}
+            window={pinWindow}
+            onWindowChange={onPinWindowChange}
+          />
+          <VolumeConfluencePanel
+            vp={snap.volume_profile}
+            conc={conc}
+            pinLock={snap.pin_lock}
+            strikeStep={strikeStep}
+          />
           <StructurePanel snap={snap} cliffStrike={cliffStrike} />
           <IntradayHhiPanel snap={snap} />
         </div>

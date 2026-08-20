@@ -23,6 +23,7 @@ Sidebar categories map to folders below. Deep conversation notes currently live 
 | Pricing Engine | `/pricing-engine` | [pricing-engine/](pricing-engine/) |
 | Calendar Arb | `/arbitrage` | [calendar-arb/](calendar-arb/) |
 | OI Profile | `/oi-profile` | [oi-profile/](oi-profile/) |
+| Volume Footprint | `/volume-footprint` | [volume-footprint/](volume-footprint/) |
 | Straddle Watch | `/straddle-watch` | [straddle-watch/](straddle-watch/) |
 | Algo Execution | `/execution` | [algo-execution/](algo-execution/) |
 | Rolling Straddle | `/rolling-straddle` | [rolling-straddle/](rolling-straddle/) |

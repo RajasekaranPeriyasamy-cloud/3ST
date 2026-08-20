@@ -1537,3 +1537,100 @@ def test_hhi_percentile_sessions_math() -> None:
     pct0, n0 = hhi_percentile_sessions([], 0.40, n=30)
     assert n0 == 0
     assert pct0 is None
+
+
+def _pin_kwargs(**over):
+    base = dict(
+        pin=24600.0,
+        pin_source="dominant",
+        pin_share=0.29,
+        spot=24615.0,
+        total_gex=1.2e12,
+        gamma_regime="positive",
+        hhi=0.19,
+        flip_level=24807.0,
+        sigma1_pts=62.0,
+        strike_step=50.0,
+    )
+    base.update(over)
+    return base
+
+
+def test_record_pin_sample_throttles_and_tracks_close(tmp_path, monkeypatch) -> None:
+    """Bounded samples, and close_spot refreshed on every write."""
+    import options.gamma_density_history as gdh
+
+    monkeypatch.setattr(gdh, "HISTORY_FILE", tmp_path / "gamma_density_history.json")
+    t0 = datetime(2026, 7, 30, 10, 0, tzinfo=IST)
+
+    gdh.record_pin_sample("NIFTY", when=t0, **_pin_kwargs())
+    # 10 minutes later: inside the 30-min throttle → no new sample...
+    gdh.record_pin_sample(
+        "NIFTY", when=t0 + timedelta(minutes=10), **_pin_kwargs(spot=24630.0)
+    )
+    rows = gdh.get_daily_pin_series("NIFTY")
+    assert len(rows) == 1
+    assert len(rows[0]["samples"]) == 1
+    # ...but the close is still refreshed, since the last write approximates it.
+    assert rows[0]["close_spot"] == 24630.0
+
+    # 35 minutes on → past the throttle, a second checkpoint lands.
+    gdh.record_pin_sample(
+        "NIFTY", when=t0 + timedelta(minutes=35), **_pin_kwargs(pin=24650.0)
+    )
+    samples = gdh.get_daily_pin_series("NIFTY")[0]["samples"]
+    assert len(samples) == 2
+    assert samples[1]["pin"] == 24650.0
+    assert samples[1]["pin_source"] == "dominant"
+
+
+def test_record_pin_sample_skips_outside_session(tmp_path, monkeypatch) -> None:
+    import options.gamma_density_history as gdh
+
+    monkeypatch.setattr(gdh, "HISTORY_FILE", tmp_path / "gamma_density_history.json")
+    after = datetime(2026, 7, 30, 16, 45, tzinfo=IST)
+    assert gdh.record_pin_sample("NIFTY", when=after, **_pin_kwargs()) == []
+    assert gdh.get_daily_pin_series("NIFTY") == []
+
+
+def test_record_pin_sample_leaves_other_buckets_alone(tmp_path, monkeypatch) -> None:
+    """daily_pin writes must not disturb series / reversals / daily_hhi."""
+    import options.gamma_density_history as gdh
+
+    monkeypatch.setattr(gdh, "HISTORY_FILE", tmp_path / "gamma_density_history.json")
+    during = datetime(2026, 7, 30, 11, 0, tzinfo=IST)
+    gdh.upsert_daily_hhi("NIFTY", 0.22, when=during, basis="gross", strike_window=20)
+    gdh.record_pin_sample("NIFTY", when=during, **_pin_kwargs())
+
+    assert gdh.get_daily_hhi_series("NIFTY")[0]["hhi"] == 0.22
+    assert len(gdh.get_daily_pin_series("NIFTY")) == 1
+    assert gdh.get_daily_pin_series("BANKNIFTY") == []
+
+
+def test_pin_hold_outcomes_derives_held_at_read_time() -> None:
+    """Verdicts are derived, so changing the tolerance re-reads history."""
+    from options.gamma_density_history import pin_hold_outcomes
+
+    series = [
+        {
+            "date": "2026-07-30",
+            "strike_step": 50.0,
+            "close_spot": 24620.0,
+            "samples": [
+                {"t": "2026-07-30T10:00:00+05:30", "pin": 24600.0, "pin_source": "dominant"},
+                {"t": "2026-07-30T14:00:00+05:30", "pin": 24500.0, "pin_source": "atm"},
+                {"t": "2026-07-30T15:00:00+05:30", "pin": None, "pin_source": None},
+            ],
+        },
+        # No close recorded → unknown outcome, must not be scored as a failure.
+        {"date": "2026-07-31", "strike_step": 50.0, "samples": [{"pin": 24700.0}]},
+    ]
+    out = pin_hold_outcomes(series, hold_steps=1.0)
+    assert len(out) == 2  # null pin and the closeless session are both skipped
+    assert out[0]["held"] is True  # |24620 - 24600| = 20 <= 50
+    assert out[0]["distance_at_close"] == 20.0
+    assert out[1]["held"] is False  # |24620 - 24500| = 120 > 50
+
+    # A wider tolerance re-reads the same rows to a different verdict.
+    wider = pin_hold_outcomes(series, hold_steps=3.0)
+    assert [r["held"] for r in wider] == [True, True]

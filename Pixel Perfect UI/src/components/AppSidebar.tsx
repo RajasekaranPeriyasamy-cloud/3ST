@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  AlignVerticalDistributeCenter,
   Activity,
   ArrowLeftRight,
   BarChart3,
@@ -59,6 +60,7 @@ const items = [
   { title: "Vol Surface", url: "/vol-surface", icon: Grid3x3 },
   { title: "IV Skew", url: "/iv-skew", icon: Blend },
   { title: "OI Profile", url: "/oi-profile", icon: CandlestickChart },
+  { title: "Volume Footprint", url: "/volume-footprint", icon: AlignVerticalDistributeCenter },
   { title: "Equity Report", url: "/equity-report", icon: FileSearch },
   { title: "Algo Execution", url: "/execution", icon: Cpu },
   { title: "Straddle Watch", url: "/straddle-watch", icon: ChartNoAxesCombined },

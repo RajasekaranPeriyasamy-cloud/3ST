@@ -8,6 +8,7 @@ import type {
   GammaConfig,
   GammaMomentum,
   GammaMassBasis,
+  GammaPinWindow,
   GammaSnapshot,
   OiUnderlying,
 } from "@/lib/types";
@@ -126,6 +127,35 @@ function gexCrore(v: number | null | undefined): string {
   return (v / 1e7).toFixed(2);
 }
 
+/**
+ * Lead with `pin_source`, because the tile's number alone is ambiguous.
+ *
+ * `pin_strike` is picked by three different rules and only `dominant` is a real
+ * gamma pin. The `atm` fallback sits next to spot by construction, so the old
+ * hint reported it as "stable" precisely when no pin existed — a false positive
+ * on the tab that stays open all session. Stability is only claimed for a pin
+ * that is actually a pin; otherwise the tile says what it really is.
+ */
+function pinCandidateHint(snapshot: GammaSnapshot): string {
+  const conc = snapshot.concentration;
+  if (conc?.pin_strike == null) return "no pin";
+
+  const source = conc.pin_source;
+  if (source === "atm") return "ATM placeholder — not a gamma pin";
+  if (source === "wall_mid") return "wall midpoint — inferred, not a gamma pin";
+
+  const share =
+    conc.pin_share != null ? `${(conc.pin_share * 100).toFixed(0)}%` : "—";
+  const held = snapshot.pin_lock?.gates?.passed;
+  const prefix = source === "dominant" ? "gamma pin" : "pin";
+  if (held === true) return `${prefix} · pinned · share ${share}`;
+  if (held === false) return `${prefix} · not pinned · share ${share}`;
+  if (conc.pin_stable === true) return `${prefix} · stable · share ${share}`;
+  if (conc.pin_stable === false)
+    return `${prefix} · moving · ${conc.pin_stability_pct ?? "—"}% stable`;
+  return `${prefix} · share ${share}`;
+}
+
 const MOMENTUM_COMPONENT_LABELS: { key: keyof GammaMomentum["components"]; label: string }[] = [
   { key: "gex", label: "GEX" },
   { key: "squeeze", label: "Squeeze" },
@@ -221,10 +251,20 @@ function StatCard({
         : "text-foreground";
   return (
     <Card>
-      <CardContent className="py-3">
-        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
-        <div className={`font-mono text-lg font-semibold ${color}`}>{value}</div>
-        {hint ? <div className="text-[10px] text-muted-foreground">{hint}</div> : null}
+      <CardContent className="py-3.5">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {label}
+        </div>
+        {/* tabular-nums stops digits jittering as the value refreshes; break-words
+            keeps a long GEX figure inside the card instead of overflowing it. */}
+        <div
+          className={`font-mono text-2xl font-bold tabular-nums break-words leading-tight ${color}`}
+        >
+          {value}
+        </div>
+        {hint ? (
+          <div className="mt-0.5 text-[11px] font-medium text-muted-foreground">{hint}</div>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -405,6 +445,8 @@ function GammaDensityPage() {
   // HHI mass basis for the Concentration tab: gross = |CE γ| + |PE γ| (default),
   // net = |CE γ + PE γ| (legacy — cancels balanced strikes out of the index).
   const [massBasis, setMassBasis] = useState<GammaMassBasis>("gross");
+  // Trailing window for the pin-strength gates/components.
+  const [pinWindow, setPinWindow] = useState<GammaPinWindow>("30m");
   const [snapshot, setSnapshot] = useState<GammaSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [authError, setAuthError] = useState(false);
@@ -491,6 +533,7 @@ function GammaDensityPage() {
       q.set("reversal_gex_mode", reversalGexMode);
       q.set("reversal_oi_gate", reversalOiGate ? "true" : "false");
       q.set("mass_basis", massBasis);
+      q.set("pin_window", pinWindow);
       const data = await api.get<GammaSnapshot>(`/gamma-density/snapshot?${q}`);
       // Drop late responses so a slow Crude poll cannot overwrite Nifty (or vice versa).
       if (reqId !== snapshotReqId.current) return;
@@ -514,6 +557,7 @@ function GammaDensityPage() {
     reversalGexMode,
     reversalOiGate,
     massBasis,
+    pinWindow,
   ]);
 
   useEffect(() => {
@@ -847,19 +891,7 @@ function GammaDensityPage() {
             <StatCard
               label="Pin Candidate"
               value={fmt(snapshot.concentration?.pin_strike)}
-              hint={
-                snapshot.concentration?.pin_stable === true
-                  ? `stable · share ${
-                      snapshot.concentration.pin_share != null
-                        ? `${(snapshot.concentration.pin_share * 100).toFixed(0)}%`
-                        : "—"
-                    }`
-                  : snapshot.concentration?.pin_stable === false
-                    ? `moving · ${snapshot.concentration.pin_stability_pct ?? "—"}% stable`
-                    : snapshot.concentration?.pin_share != null
-                      ? `share ${(snapshot.concentration.pin_share * 100).toFixed(0)}%`
-                      : "structural pin — not a guarantee"
-              }
+              hint={pinCandidateHint(snapshot)}
               tone="muted"
             />
             <StatCard
@@ -882,60 +914,68 @@ function GammaDensityPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2.5 text-sm">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                     Previous day
                   </p>
                   <div className="grid grid-cols-3 gap-2 font-mono tabular-nums">
                     <div>
-                      <p className="text-[10px] text-muted-foreground">High</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_day_high, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">High</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_day_high, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Low</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_day_low, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Low</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_day_low, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Close</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_day_close, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Close</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_day_close, 2)}</p>
                     </div>
                   </div>
                 </div>
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2.5 text-sm">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                     Previous week
                   </p>
                   <div className="grid grid-cols-3 gap-2 font-mono tabular-nums">
                     <div>
-                      <p className="text-[10px] text-muted-foreground">High</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_week_high, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">High</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_week_high, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Low</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_week_low, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Low</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_week_low, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Close</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_week_close, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Close</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_week_close, 2)}</p>
                     </div>
                   </div>
                 </div>
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2.5 text-sm">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                     Key levels
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    <Badge variant="outline">Flip {fmt(snapshot.flip_level)}</Badge>
-                    <Badge variant="outline" className="border-emerald-500/50">
+                    <Badge variant="outline" className="text-sm font-semibold tabular-nums">
+                      Flip {fmt(snapshot.flip_level)}
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className="border-emerald-500/50 text-sm font-semibold tabular-nums"
+                    >
                       Call wall {fmt(snapshot.call_wall)}
                     </Badge>
-                    <Badge variant="outline" className="border-red-500/50">
+                    <Badge
+                      variant="outline"
+                      className="border-red-500/50 text-sm font-semibold tabular-nums"
+                    >
                       Put wall {fmt(snapshot.put_wall)}
                     </Badge>
-                    <Badge variant="outline">
+                    <Badge variant="outline" className="text-sm font-semibold tabular-nums">
                       Dom {fmt(snapshot.concentration?.dominant_strike)}
                     </Badge>
-                    <Badge variant="outline">
+                    <Badge variant="outline" className="text-sm font-semibold tabular-nums">
                       Pin {fmt(snapshot.concentration?.pin_strike)}
                     </Badge>
                   </div>
@@ -1305,6 +1345,8 @@ function GammaDensityPage() {
               summaryRefreshToken={summaryRefreshToken}
               massBasis={massBasis}
               onMassBasisChange={setMassBasis}
+              pinWindow={pinWindow}
+              onPinWindowChange={setPinWindow}
             />
           </TabsContent>
         </Tabs>

@@ -255,6 +255,13 @@ def compute_session_poc_detail(
     if bars is not None or not use_cache:
         return _compute_uncached(u, when=when, bars=bars)
 
+    # One POC on the desk: the footprint mixture supersedes the binned
+    # typical-price POC whenever it is already cached. Peek only — see
+    # _footprint_poc — so this stays as cheap as it has always been.
+    preferred = _footprint_poc(u)
+    if preferred is not None:
+        return preferred
+
     now_mono = time.monotonic()
     with _CACHE_LOCK:
         hit = _CACHE.get(u)
@@ -287,3 +294,32 @@ def compute_session_poc(
     """
     detail = compute_session_poc_detail(underlying, when=when, bars=bars, use_cache=use_cache)
     return detail if detail.get("poc") is not None else None
+
+
+def _footprint_poc(underlying: str) -> dict[str, Any] | None:
+    """Footprint POC if one is already cached — peek only, never computes.
+
+    The volume-footprint mixture POC supersedes this module's binned
+    typical-price POC wherever both exist, so the desk shows one number. It is a
+    *peek*: paying the ~200 ms integration from here would push it onto the thin
+    multi-index snapshots that deliberately avoid it. When nothing is cached this
+    returns ``None`` and the binned POC below answers, unchanged.
+    """
+    try:
+        from analysis.volume_profile import peek_volume_profile
+
+        payload = peek_volume_profile(underlying)
+    except Exception:
+        return None
+    if not payload or payload.get("poc") is None:
+        return None
+    return {
+        "poc": float(payload["poc"]),
+        "reason": None,
+        "source": "footprint",
+        "vah": payload.get("vah"),
+        "val": payload.get("val"),
+        "asof": payload.get("asof"),
+        "bars": payload.get("bars"),
+        "price_axis": payload.get("price_axis"),
+    }

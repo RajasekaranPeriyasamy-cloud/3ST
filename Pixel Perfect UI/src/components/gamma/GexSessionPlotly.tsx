@@ -67,6 +67,9 @@ const SPOT_BLUE = "#2563eb";
 /** ATM IV — darker pink for contrast on white (distinct from Spot / GEX). */
 const ATM_IV_PINK = "#db2777";
 /** Session futures POC — violet on white legend + light plot. */
+/** GEX zero (sign boundary). Slate-400 — the theme zeroline #cbd5e1 is
+ *  near-invisible against the #eef1f4 grid on a white plot. */
+const GEX_ZERO = "#94a3b8";
 const FUT_POC = "#7c3aed";
 const CALL_OI = "#ef4444";
 const PUT_OI = "#22c55e";
@@ -1264,20 +1267,38 @@ export function GexSessionPlotly({
 
     const pocLevel = snap.session_poc?.poc;
     const hasPoc = pocLevel != null && Number.isFinite(pocLevel);
-    const baseShapes: Partial<Shape>[] = hasPoc
-      ? [
-          {
-            type: "line",
-            xref: "paper",
-            yref: "y2",
-            x0: 0,
-            x1: 1,
-            y0: pocLevel,
-            y1: pocLevel,
-            line: { color: FUT_POC, width: 1.5, dash: "dot" },
-          },
-        ]
-      : [];
+    const baseShapes: Partial<Shape>[] = [
+      // GEX zero — the sign boundary, so it has to read at a glance. Plotly's
+      // built-in zeroline takes a colour and a width but no dash, so this is a
+      // shape instead and yaxis.zeroline stays off (otherwise a faint solid line
+      // sits under the dotted one). Lives in baseShapes so the incremental
+      // relayout path keeps it too.
+      {
+        type: "line",
+        xref: "paper",
+        yref: "y",
+        x0: 0,
+        x1: 1,
+        y0: 0,
+        y1: 0,
+        line: { color: GEX_ZERO, width: 2, dash: "dot" },
+        layer: "below",
+      },
+      ...(hasPoc
+        ? ([
+            {
+              type: "line",
+              xref: "paper",
+              yref: "y2",
+              x0: 0,
+              x1: 1,
+              y0: pocLevel,
+              y1: pocLevel,
+              line: { color: FUT_POC, width: 1.5, dash: "dot" },
+            },
+          ] as Partial<Shape>[])
+        : []),
+    ];
     const baseAnnotations: Partial<Annotations>[] = [
       {
         text: `${underlying} · +VE / −VE / Net Gamma`,
@@ -1345,9 +1366,9 @@ export function GexSessionPlotly({
       yaxis: {
         title: { text: "GEX (Cr)", font: { size: 11, color: axis } },
         gridcolor: grid,
-        zeroline: true,
-        zerolinecolor: zeroline,
-        zerolinewidth: 1,
+        // Drawn as a dotted shape in baseShapes instead — Plotly zerolines
+        // cannot be dashed, and a solid one underneath would show through.
+        zeroline: false,
         linecolor: grid,
         tickfont: { color: axis, size: 10 },
         separatethousands: true,

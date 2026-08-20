@@ -146,6 +146,12 @@ def _compact_row(row: pd.Series) -> dict[str, Any]:
         "instrument_type": str(row.get("instrument_type", "")),
         "lot_size": int(row["lot_size"]) if pd.notna(row.get("lot_size")) else 1,
     }
+    # Authoritative price increment for the contract — varies more than you would
+    # guess (NIFTY 0.10, SENSEX 0.05, CRUDEOIL 1.00), so the volume-profile price
+    # lattice reads it here rather than hardcoding a per-underlying map.
+    tick = row.get("tick_size")
+    if pd.notna(tick):
+        out["tick_size"] = float(tick)
     if pd.notna(expiry):
         out["expiry"] = expiry.isoformat() if hasattr(expiry, "isoformat") else str(expiry)
     if pd.notna(strike):

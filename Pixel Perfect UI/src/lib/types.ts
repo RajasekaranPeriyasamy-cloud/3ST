@@ -979,6 +979,12 @@ export interface GammaConcentration {
   dominant_share: number | null;
   pin_strike: number | null;
   pin_share: number | null;
+  /**
+   * Which rule produced the pin. Only `dominant` is a real gamma pin —
+   * `wall_mid` is inferred and `atm` sits next to spot by construction, so it
+   * looks steady precisely when no pin exists. Gate pin-strength reads on this.
+   */
+  pin_source?: "dominant" | "wall_mid" | "atm" | "fallback" | string | null;
   pin_stable: boolean | null;
   pin_stability_pct: number | null;
   call_hhi?: number | null;
@@ -1026,6 +1032,147 @@ export interface GammaConcentration {
    * rows written before basis tagging existed.
    */
   hhi_session_assumed_count?: number | null;
+}
+
+/**
+ * Session volume profile from the vendored footprint engine.
+ *
+ * `estimate` is always true and must be surfaced: the buy/sell split is inferred
+ * from candle geometry, not measured from an aggressor feed, so `tilt_pp`,
+ * `overlap_pct` and imbalance are structural readings. `residual_label` reports
+ * the health of the *arithmetic*, not of the market.
+ */
+export interface VolumeProfileSnapshot {
+  underlying: string;
+  available: boolean;
+  reason: string | null;
+  asof: string;
+  engine: string;
+  estimate: boolean;
+  bars: number;
+  compute_ms?: number;
+  mintick?: number;
+  /** `index` once the basis is removed; `future` for MCX, where none is needed. */
+  price_axis?: "index" | "future" | string;
+  basis?: {
+    mode: "per_bar" | "none" | string;
+    matched_bars: number;
+    median: number | null;
+    last: number | null;
+    reason: string | null;
+  };
+  fut_symbol?: string | null;
+  fut_token?: number | null;
+  poc?: number | null;
+  vah?: number | null;
+  val?: number | null;
+  value_area_pts?: number | null;
+  /** Percentage points, + = buy side carried the session. */
+  tilt_pp?: number | null;
+  /** Overlap coefficient 0–100; ≥75 reads as balanced/rotational. */
+  overlap_pct?: number | null;
+  balance_verdict?: string | null;
+  residual_ppm?: number | null;
+  residual_label?: "EXACT" | "DRIFT" | string;
+  total_buy?: number | null;
+  total_sell?: number | null;
+  price_lo?: number | null;
+  price_hi?: number | null;
+  curve?: { price: number; buy: number; sell: number }[];
+  contract?: {
+    expiry?: string | null;
+    tradingsymbol?: string | null;
+    instrument_token?: number | null;
+    requested?: string | null;
+  };
+}
+
+/** Session volume attributed to each strike band (exact, not resampled). */
+export interface GammaStrikeVolume {
+  available: boolean;
+  reason: string | null;
+  bands: { strike: number; buy: number; sell: number; total: number }[];
+  max_total?: number;
+  covered?: number;
+  /** Mass outside the strike window — surfaced, never normalised away. */
+  off_frame?: number;
+  off_frame_pct?: number | null;
+}
+
+/** One futures contract available to the Volume Footprint desk. */
+export interface VolumeFootprintContract {
+  expiry: string;
+  tradingsymbol: string;
+  instrument_token: number;
+  tick_size?: number | null;
+  rank?: number;
+  /** `near` = front month, `far` = next, then `+2`, `+3`. */
+  label?: string;
+}
+
+/**
+ * GEX reference levels overlaid on the profile chart. Same price axis as the
+ * profile: index for cash indices (basis-shifted), futures for MCX.
+ */
+export interface VolumeFootprintLevels {
+  underlying: string;
+  available: boolean;
+  reason: string | null;
+  asof?: string;
+  expiry?: string | null;
+  spot?: number | null;
+  call_wall?: number | null;
+  put_wall?: number | null;
+  flip?: number | null;
+  pin?: number | null;
+  /** Only `dominant` is a real gamma pin. */
+  pin_source?: string | null;
+  pos_gamma_peak?: number | null;
+  neg_gamma_peak?: number | null;
+  gamma_regime?: string | null;
+}
+
+export type GammaPinWindow = "15m" | "30m" | "60m" | "session";
+
+/**
+ * Pin strength: hard gates plus components, deliberately with **no blended
+ * score** — the weights are not calibrated yet. `null` on any field means "could
+ * not be measured", which is different from a failed gate.
+ */
+export interface GammaPinLock {
+  window: GammaPinWindow | string;
+  window_minutes: number | null;
+  pin: number | null;
+  /** Modal pin across the window — the anchor, not the latest tick's pin. */
+  pin_mode: number | null;
+  pin_source?: string | null;
+  gates: {
+    /** Only a `dominant` pin is a real gamma pin. */
+    pin_is_dominant: boolean | null;
+    dealers_long_gamma: boolean | null;
+    long_gamma_share: number | null;
+    passed: boolean | null;
+  };
+  components: {
+    stability_pct: number | null;
+    /** Share of *minutes* spent within `containment_steps` of the pin. */
+    containment_pct: number | null;
+    containment_steps: number;
+    crossings: number | null;
+    crossings_per_hour: number | null;
+    flip_room_sigma: number | null;
+    flip_room_ok: boolean | null;
+    pin_doi: number | null;
+    pin_doi_direction: "writing" | "unwinding" | "flat" | string | null;
+  };
+  breaker: {
+    level: number | null;
+    direction: "above" | "below" | string | null;
+    label: string;
+  };
+  samples: { ticks: number; minutes: number };
+  /** Plain-language reasons the gates did not pass. */
+  reasons: string[];
 }
 
 export interface GammaConviction {
@@ -1104,6 +1251,9 @@ export interface GammaSnapshot {
   primary_weight?: number;
   vanna_strip?: GammaVannaStrip | null;
   concentration?: GammaConcentration | null;
+  pin_lock?: GammaPinLock | null;
+  volume_profile?: VolumeProfileSnapshot | null;
+  strike_volume?: GammaStrikeVolume | null;
   conviction?: GammaConviction | null;
   momentum?: GammaMomentum | null;
   market_read?: GammaMarketRead | null;

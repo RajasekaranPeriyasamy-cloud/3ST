@@ -23,6 +23,28 @@ _STORE_LOCK = threading.RLock()
 DAILY_HHI_MAX_DAYS = 40
 DAILY_HHI_PERCENTILE_N = 30
 
+# Per-session pin sampling. The intraday ``series`` trail is pruned to today on
+# every write, so nothing survives to answer "when the pin looked strong at
+# midday, did it hold to close?". These bounded samples are the calibration set
+# for that question; without them any pin-strength threshold is a prior, not a
+# finding. Deliberately stores raw inputs and no verdict — held/strength are
+# derived at read time so a threshold change does not invalidate history.
+DAILY_PIN_MAX_DAYS = 60
+DAILY_PIN_SAMPLE_MIN = 30
+# Sample fields kept per checkpoint (bounded ~13/session on a cash underlying).
+PIN_SAMPLE_FIELDS = (
+    "t",
+    "pin",
+    "pin_source",
+    "pin_share",
+    "spot",
+    "total_gex",
+    "gamma_regime",
+    "hhi",
+    "flip_level",
+    "sigma1_pts",
+)
+
 _T = TypeVar("_T")
 
 
@@ -75,13 +97,14 @@ def _canonical_reversal(rev: dict[str, Any]) -> dict[str, Any]:
 
 
 def _empty_store() -> dict[str, Any]:
-    return {"series": {}, "reversals": {}, "daily_hhi": {}}
+    return {"series": {}, "reversals": {}, "daily_hhi": {}, "daily_pin": {}}
 
 
 def _normalize_store(data: dict[str, Any]) -> dict[str, Any]:
     data.setdefault("series", {})
     data.setdefault("reversals", {})
     data.setdefault("daily_hhi", {})
+    data.setdefault("daily_pin", {})
     return data
 
 
@@ -552,6 +575,176 @@ def upsert_daily_hhi(
         return _update_store(_mutate)
     except (json.JSONDecodeError, OSError, ValueError):
         return get_daily_hhi_series(underlying)
+
+
+def _daily_pin_key(underlying: str) -> str:
+    return underlying.upper()
+
+
+def get_daily_pin_series(underlying: str) -> list[dict[str, Any]]:
+    """Persisted per-session pin samples for ``underlying`` (oldest → newest)."""
+    with _STORE_LOCK:
+        data = _load(strict=False)
+        raw = (data.get("daily_pin") or {}).get(_daily_pin_key(underlying))
+        rows = [r for r in (raw or []) if isinstance(r, dict) and r.get("date")]
+        rows.sort(key=lambda r: str(r["date"]))
+        return rows
+
+
+def _pin_sample(when: datetime, **fields: Any) -> dict[str, Any]:
+    sample: dict[str, Any] = {"t": when.isoformat(timespec="seconds")}
+    for key in PIN_SAMPLE_FIELDS:
+        if key == "t":
+            continue
+        val = fields.get(key)
+        if val is None:
+            sample[key] = None
+        elif key in ("pin_source", "gamma_regime"):
+            sample[key] = str(val)
+        else:
+            try:
+                sample[key] = round(float(val), 4)
+            except (TypeError, ValueError):
+                sample[key] = None
+    return sample
+
+
+def record_pin_sample(
+    underlying: str,
+    *,
+    pin: float | None,
+    pin_source: str | None,
+    pin_share: float | None,
+    spot: float | None,
+    total_gex: float | None,
+    gamma_regime: str | None,
+    hhi: float | None,
+    flip_level: float | None,
+    sigma1_pts: float | None,
+    strike_step: float | None,
+    when: datetime | None = None,
+    sample_every_min: int = DAILY_PIN_SAMPLE_MIN,
+    max_days: int = DAILY_PIN_MAX_DAYS,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """Append a bounded per-session pin checkpoint; refresh the session's close.
+
+    A sample is added only when the last one is older than ``sample_every_min``,
+    so a fast poll loop cannot bloat the file. ``close_spot`` is refreshed on
+    every call — the last in-session write approximates the close, the same
+    convention :func:`upsert_daily_hhi` uses.
+
+    Stores inputs only. Whether a pin "held" is a question about a threshold, so
+    it is computed at read time (:func:`pin_hold_outcomes`) and a change of
+    threshold re-reads history rather than invalidating it.
+
+    Only touches ``daily_pin[UNDERLYING]``; never clears series/reversals/hhi.
+    """
+    now = when or datetime.now(tz=IST)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=IST)
+    else:
+        now = now.astimezone(IST)
+
+    if not force and not in_session(underlying, now):
+        return get_daily_pin_series(underlying)
+
+    day = now.date().isoformat()
+    key = _daily_pin_key(underlying)
+    sample = _pin_sample(
+        now,
+        pin=pin,
+        pin_source=pin_source,
+        pin_share=pin_share,
+        spot=spot,
+        total_gex=total_gex,
+        gamma_regime=gamma_regime,
+        hhi=hhi,
+        flip_level=flip_level,
+        sigma1_pts=sigma1_pts,
+    )
+
+    def _mutate(data: dict[str, Any]) -> list[dict[str, Any]]:
+        store = data.setdefault("daily_pin", {})
+        rows = [r for r in (store.get(key) or []) if isinstance(r, dict) and r.get("date")]
+        row = next((r for r in rows if str(r.get("date")) == day), None)
+        if row is None:
+            row = {"date": day, "samples": []}
+            rows.append(row)
+        samples: list[dict[str, Any]] = list(row.get("samples") or [])
+
+        last_t = _parse_ts(samples[-1].get("t")) if samples else None
+        if last_t is None or (now - last_t).total_seconds() >= sample_every_min * 60:
+            samples.append(sample)
+        row["samples"] = samples
+
+        # Refreshed every call: last in-session write ≈ session close.
+        if spot is not None:
+            try:
+                row["close_spot"] = round(float(spot), 2)
+                row["close_t"] = now.isoformat(timespec="seconds")
+            except (TypeError, ValueError):
+                pass
+        if strike_step is not None:
+            try:
+                row["strike_step"] = round(float(strike_step), 4)
+            except (TypeError, ValueError):
+                pass
+        row["updated_at"] = now.isoformat(timespec="seconds")
+
+        rows.sort(key=lambda r: str(r["date"]))
+        if max_days > 0 and len(rows) > max_days:
+            rows = rows[-max_days:]
+        store[key] = rows
+        return rows
+
+    try:
+        return _update_store(_mutate)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return get_daily_pin_series(underlying)
+
+
+def pin_hold_outcomes(
+    series: list[dict[str, Any]] | None,
+    *,
+    hold_steps: float = 1.0,
+    default_step: float = 50.0,
+) -> list[dict[str, Any]]:
+    """Flatten pin samples into ``{…sample, close_spot, held}`` rows for calibration.
+
+    ``held`` is |close − pin| ≤ ``hold_steps`` × the session's strike step. Sessions
+    with no recorded close, and samples with no pin, are skipped — an unknown
+    outcome must not be scored as a failure.
+    """
+    out: list[dict[str, Any]] = []
+    for row in series or []:
+        close = row.get("close_spot")
+        if close is None:
+            continue
+        try:
+            close_f = float(close)
+            step = float(row.get("strike_step") or default_step)
+        except (TypeError, ValueError):
+            continue
+        tol = max(step, 1.0) * float(hold_steps)
+        for sample in row.get("samples") or []:
+            pin = sample.get("pin")
+            if pin is None:
+                continue
+            try:
+                pin_f = float(pin)
+            except (TypeError, ValueError):
+                continue
+            out.append(
+                {
+                    **sample,
+                    "date": row.get("date"),
+                    "close_spot": close_f,
+                    "distance_at_close": round(close_f - pin_f, 2),
+                    "held": abs(close_f - pin_f) <= tol + 1e-9,
+                }
+            )
+    return out
 
 
 def hhi_percentile_sessions(

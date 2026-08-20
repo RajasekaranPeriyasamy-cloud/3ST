@@ -1,12 +1,152 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-18  
+**Last updated:** 2026-08-20  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Net GEX chart — price-level overlays, then read-path latency (client + chain memoisation)
+**Session focus:** Volume Footprint desk · volume × gamma confluence
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-20 (later) — Volume Footprint desk · volume × gamma
+
+Vendored an existing footprint engine, wired it to Kite, and merged it into the Gamma
+Concentration tab. Analysis only — nothing under `broker/` / `execution/` / `risk/`.
+
+### The finding that justified the whole basis decision
+
+Volume can only come from the front-month **future** (cash-index candles carry no volume);
+gamma strikes are on the **index**. Measured live on 2026-08-20, the NIFTY basis was
+**71.55 points — 1.4 strike steps**. Overlaying futures volume on the strike ladder unadjusted
+would have put the POC a strike and a half from where business actually happened, and looked
+entirely plausible. Each bar is now shifted by its own `fut_close − index_close`;
+`basis.matched_bars` reports how many minutes had an index partner (364/374 live).
+
+MCX is the easy case, not the hard one: options there are written on the future, flagged by the
+**pre-existing** `spot_source: "future"` in `INDEX_OPTIONS`, so no correction is applied and
+none is needed. It doubles as a control group.
+
+### Shipped
+
+1. **`vendor/volume_footprint/`** — the MPL-2.0 Pine port, moved verbatim with its LICENSE
+   (fetched canonical, not reproduced from memory). New top-level `vendor/` with an `__init__`
+   explaining the convention. Its 37 tests moved into `tests/` and now gate CI; the single
+   divergence from upstream is an explicit import instead of a `sys.path` insert.
+2. **`analysis/volume_profile/service.py`** — Kite fetch, per-bar basis alignment, 45s cache,
+   normalised payload. Session-anchored with an explicit `minutes_since_session_open`: the
+   default is 40 bars, which would have silently profiled the last 40 minutes.
+3. **`/volume-footprint`** desk + sidebar entry — profile chart, POC/VA/tilt/OVL, and a
+   "how to read this" panel carrying the caveats.
+4. **Concentration tab** — `VolumeConfluencePanel` (POC vs γ peak vs pin, VA vs the containment
+   band) and a per-strike **volume tint** on the Γ ladder via `band_mass()`, which is exact
+   aggregation rather than resampling.
+5. **One POC on the desk** — `session_poc` now prefers the footprint mixture POC when one is
+   already cached, via a **peek-only** accessor. Paying the integration from there would push it
+   onto the thin multi-index snapshots that deliberately avoid it; with no cache it falls back to
+   the binned POC unchanged, so the Gamma chart never loses its level.
+6. **`instruments._compact_row` now carries `tick_size`** — authoritative and it varies more than
+   you would guess (NIFTY 0.10, SENSEX 0.05, CRUDEOIL 1.00), so the price lattice reads it
+   rather than hardcoding a map.
+
+### Three rules the code holds, each pinned by a test
+
+- **No measurement is claimed that was not made.** Only the Geometric engine is reachable —
+  no tick feed exists in this repo (confirmed: `KiteTicker` appears only in two execution
+  modules and `.venv/autobahn`). Every payload carries `estimate: true`.
+- **`null` is unmeasured, never zero.** Thin sessions return `available: false` with a bar
+  count instead of a POC fitted to the opening minutes.
+- **Off-frame mass is surfaced, not normalised away.** A ±20-strike ladder can miss a large
+  share of a trending session; the ladder says so above 1%.
+
+### Cost — measured, not assumed
+
+Integration is ~O(bars²) and scales with the lattice, so tick size matters as much as bar count:
+NIFTY 374 bars @ 0.1 tick = **430 ms**; CRUDEOIL 627 bars @ 1.0 tick = **106 ms**; synthetic 870
+bars @ 0.1 = **920 ms**. `compute_ms` rides on every payload. The Concentration tab computes only
+on the full desk poll, never on the multi-index strip.
+
+### Test status
+
+Full suite **818 passed, 0 failed** — 769 before, +37 vendored engine, +12 adapter.
+
+## Session 2026-08-20 — Pin strength: `pin_source`, `daily_pin`, and the measure
+
+Steps 1–2 of a plan to answer "is the pin holding?" on the Gamma Density desk. Analysis
+only — nothing under `broker/` / `execution/` / `risk/`.
+
+### The finding
+
+`compute_gamma_concentration` picks `pin_strike` by three different rules — dominant strike
+(`top1_share ≥ 0.18`), else the call/put **wall midpoint**, else the **ATM strike** — and all
+three emitted a bare number. The ATM placeholder sits next to spot by construction, so
+`pin_stable` reported it as rock-steady precisely when no pin existed: a false positive in the
+only case that matters. A synthetic check makes it concrete — a peaked book, a flat book with
+walls, and a flat book without walls all return `pin = 24600.0`, now separable as
+`dominant` / `wall_mid` / `atm`.
+
+### Shipped
+
+1. **`pin_source`** on the concentration payload (`dominant` | `wall_mid` | `atm` | `fallback`)
+   plus the TS type. Pin-strength logic must gate on it.
+2. **`daily_pin` store** (`record_pin_sample`, `get_daily_pin_series`, `pin_hold_outcomes`) —
+   bounded per-session checkpoints, default one per 30 min, 60 sessions retained, written from
+   the snapshot under its own try/except so a store failure never costs the caller a snapshot.
+
+**Why a new store rather than reusing `series`:** `append_history_point` prunes the intraday
+trail to today on every write, so no multi-day intraday history exists. Without a surviving
+record, "when the pin looked strong at midday, did it hold?" is unanswerable and every
+threshold is a prior. Recording starts now so the measure can be calibrated rather than guessed.
+
+**Stores inputs, not verdicts.** `held` is derived by `pin_hold_outcomes(hold_steps=…)` at read
+time, so changing the tolerance re-reads history instead of invalidating it. Sessions with no
+recorded close are skipped, never scored as failures.
+
+### Shipped — the measure (`options/pin_lock.py`)
+
+Pure functions, no I/O, no store imports. On the snapshot as `pin_lock`; window via
+`?pin_window=15m|30m|60m|session` (default `30m`), selectable from the Concentration tab.
+
+Two hard gates (`pin_source == "dominant"`, dealers long gamma for ≥80% of window ticks) then
+five components — stability vs the **modal** pin, containment, crossings, flip room in σ, ΔOI on
+the pin strike — plus a `breaker` level and plain-language `reasons`.
+
+Three rules the implementation holds to, each worth keeping:
+
+- **No blended score.** Weights are unjustifiable until `daily_pin` can fit them.
+  `test_no_blended_score_is_emitted` pins that decision so it cannot drift in later.
+- **`null` means unmeasured, never failed.** Gates return `None`, not `False`, when there is
+  nothing to judge — otherwise a quiet desk reads as a broken pin.
+- **Containment/crossings use `chart_series` minutes, not GEX ticks.** The tick trail is
+  deliberately gappy, so scoring it would understate time spent away from the pin.
+
+The window anchors on the newest sample present rather than wall clock, so a stale snapshot
+yields an empty window instead of scoring old data as current.
+
+**Placement:** full panel on the **Concentration** tab (next to HHI and the Γ ladder, where the
+inputs live); on **Profile**, the `PIN CANDIDATE` tile now leads with `pin_source` — an `atm` pin
+reads *"ATM placeholder — not a gamma pin"* instead of "stable". That tile was the live
+falsehood: it claimed stability most confidently exactly when no pin existed.
+
+### Superseded, not deleted
+
+`_pin_stability` (`pin_stable` / `pin_stability_pct`) predates this and is **not** the measure:
+it compares the last **12 ticks** to the *current* pin, so it is tick-counted rather than
+time-boxed — a polling gap stretches the window silently — and a pin that just moved reads
+unstable while the new one establishes. Left in place because the Profile tile and
+`ConcentrationBoard` still read it; `pin_lock` is the one to trust.
+
+**Still open:** thresholds (`PIN_LONG_GAMMA_SHARE` 0.8, `PIN_CONTAINMENT_STEPS` 1.0,
+`PIN_FLIP_ROOM_SIGMA` 1.0) are provisional. Revisit once `daily_pin` has ~20 sessions and
+`pin_hold_outcomes()` can say which readings actually preceded a pin that held.
+
+### Test status
+
+Full suite **769 passed, 0 failed** (`tests/test_pin_lock.py` adds 11) — the date-drifted fixtures that failed on 2026-08-10/11 are
+now fixed, so there is no tolerated-failure list. New coverage: `pin_source` across all four
+rules in `test_gamma_hhi.py`; sample throttling, close tracking, session gating, bucket
+isolation and read-time outcome derivation in `test_gamma_density_history.py`.
 
 ---
 

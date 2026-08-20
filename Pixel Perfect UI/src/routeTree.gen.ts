@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WidgetDeskRouteImport } from './routes/widget-desk'
 import { Route as WaveRouteImport } from './routes/wave'
+import { Route as VolumeFootprintRouteImport } from './routes/volume-footprint'
 import { Route as VolSurfaceRouteImport } from './routes/vol-surface'
 import { Route as VannaExposureRouteImport } from './routes/vanna-exposure'
 import { Route as TradeSuggestionsRouteImport } from './routes/trade-suggestions'
@@ -50,6 +51,11 @@ const WidgetDeskRoute = WidgetDeskRouteImport.update({
 const WaveRoute = WaveRouteImport.update({
   id: '/wave',
   path: '/wave',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VolumeFootprintRoute = VolumeFootprintRouteImport.update({
+  id: '/volume-footprint',
+  path: '/volume-footprint',
   getParentRoute: () => rootRouteImport,
 } as any)
 const VolSurfaceRoute = VolSurfaceRouteImport.update({
@@ -234,6 +240,7 @@ export interface FileRoutesByFullPath {
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
+  '/volume-footprint': typeof VolumeFootprintRoute
   '/wave': typeof WaveRoute
   '/widget-desk': typeof WidgetDeskRoute
 }
@@ -268,6 +275,7 @@ export interface FileRoutesByTo {
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
+  '/volume-footprint': typeof VolumeFootprintRoute
   '/wave': typeof WaveRoute
   '/widget-desk': typeof WidgetDeskRoute
 }
@@ -303,6 +311,7 @@ export interface FileRoutesById {
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
+  '/volume-footprint': typeof VolumeFootprintRoute
   '/wave': typeof WaveRoute
   '/widget-desk': typeof WidgetDeskRoute
 }
@@ -339,6 +348,7 @@ export interface FileRouteTypes {
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
+    | '/volume-footprint'
     | '/wave'
     | '/widget-desk'
   fileRoutesByTo: FileRoutesByTo
@@ -373,6 +383,7 @@ export interface FileRouteTypes {
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
+    | '/volume-footprint'
     | '/wave'
     | '/widget-desk'
   id:
@@ -407,6 +418,7 @@ export interface FileRouteTypes {
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
+    | '/volume-footprint'
     | '/wave'
     | '/widget-desk'
   fileRoutesById: FileRoutesById
@@ -442,6 +454,7 @@ export interface RootRouteChildren {
   TradeSuggestionsRoute: typeof TradeSuggestionsRoute
   VannaExposureRoute: typeof VannaExposureRoute
   VolSurfaceRoute: typeof VolSurfaceRoute
+  VolumeFootprintRoute: typeof VolumeFootprintRoute
   WaveRoute: typeof WaveRoute
   WidgetDeskRoute: typeof WidgetDeskRoute
 }
@@ -460,6 +473,13 @@ declare module '@tanstack/react-router' {
       path: '/wave'
       fullPath: '/wave'
       preLoaderRoute: typeof WaveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/volume-footprint': {
+      id: '/volume-footprint'
+      path: '/volume-footprint'
+      fullPath: '/volume-footprint'
+      preLoaderRoute: typeof VolumeFootprintRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/vol-surface': {
@@ -706,6 +726,7 @@ const rootRouteChildren: RootRouteChildren = {
   TradeSuggestionsRoute: TradeSuggestionsRoute,
   VannaExposureRoute: VannaExposureRoute,
   VolSurfaceRoute: VolSurfaceRoute,
+  VolumeFootprintRoute: VolumeFootprintRoute,
   WaveRoute: WaveRoute,
   WidgetDeskRoute: WidgetDeskRoute,
 }

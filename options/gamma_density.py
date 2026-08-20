@@ -1185,6 +1185,7 @@ def compute_gamma_concentration(
         "dominant_share": None,
         "pin_strike": None,
         "pin_share": None,
+        "pin_source": None,
         "pin_stable": None,
         "pin_stability_pct": None,
         "call_hhi": None,
@@ -1250,20 +1251,29 @@ def compute_gamma_concentration(
     dominant_share = ranked[0][1]
     threshold = float(pin_threshold if pin_threshold is not None else PIN_SHARE_THRESHOLD)
 
+    # Which rule produced the pin matters as much as the number. Only ``dominant``
+    # is an actual gamma pin; ``wall_mid`` is an inference and ``atm`` is a
+    # placeholder that sits next to spot by construction — so it reads rock-steady
+    # whenever spot is quiet, which is precisely when there is no pin. Downstream
+    # pin-strength logic must gate on this rather than on the bare strike.
     if top1_share >= threshold:
         pin_strike = dominant_strike
         pin_share = top1_share
+        pin_source = "dominant"
     elif call_wall is not None and put_wall is not None:
         step = max(float(strike_step), 1.0)
         mid = (float(call_wall) + float(put_wall)) / 2.0
         pin_strike = round(mid / step) * step
         pin_share = next((s for k, s, _ in shares if abs(k - pin_strike) < 1e-9), top1_share)
+        pin_source = "wall_mid"
     elif atm_strike is not None:
         pin_strike = float(atm_strike)
         pin_share = next((s for k, s, _ in shares if abs(k - pin_strike) < 1e-9), top1_share)
+        pin_source = "atm"
     else:
         pin_strike = dominant_strike
         pin_share = top1_share
+        pin_source = "fallback"
 
     pin_stable, pin_stability_pct = _pin_stability(history, pin_strike, strike_step)
     eff = (1.0 / hhi) if hhi > 0 else None
@@ -1325,6 +1335,7 @@ def compute_gamma_concentration(
         "dominant_share": round(dominant_share, 4),
         "pin_strike": pin_strike,
         "pin_share": round(float(pin_share), 4) if pin_share is not None else None,
+        "pin_source": pin_source,
         "pin_stable": pin_stable,
         "pin_stability_pct": pin_stability_pct,
         "call_hhi": call_hhi,
@@ -1773,6 +1784,7 @@ def build_gamma_snapshot(
     reversal_gex_mode: str | None = "live",
     reversal_oi_gate: bool = False,
     mass_basis: str | None = None,
+    pin_window: str | None = None,
 ) -> dict[str, Any]:
     if underlying not in INDEX_OPTIONS:
         raise ValueError(f"Unknown underlying '{underlying}'. Use {list(INDEX_OPTIONS)}")
@@ -2171,6 +2183,31 @@ def build_gamma_snapshot(
             concentration.update(_daily_hhi_stats(recent, hhi_now, basis=basis))
         except Exception:
             pass
+
+    if include_history:
+        # Calibration trail for pin strength. Its own try/except: the intraday
+        # ``series`` trail is pruned to today, so this is the only record that
+        # survives to answer "did a pin that looked strong at midday hold?" —
+        # but a store failure must never cost the caller its snapshot.
+        try:
+            from options.gamma_density_history import record_pin_sample
+
+            record_pin_sample(
+                underlying,
+                pin=concentration.get("pin_strike"),
+                pin_source=concentration.get("pin_source"),
+                pin_share=concentration.get("pin_share"),
+                spot=spot,
+                total_gex=total_gex,
+                gamma_regime=gamma_regime,
+                hhi=concentration.get("hhi"),
+                flip_level=scan["flip"],
+                sigma1_pts=(bands or {}).get("sigma1_pts"),
+                strike_step=float(strike_step),
+            )
+        except Exception:
+            pass
+
     conviction = compute_gamma_conviction(
         total_gex=total_gex,
         gamma_regime=gamma_regime,
@@ -2404,6 +2441,49 @@ def build_gamma_snapshot(
         except Exception:
             pass
 
+    # Pin strength. Needs chart_series (minute spot) for containment, so it runs
+    # after the history block. Soft-fails to None — a desk must not lose its
+    # snapshot because one derived read could not be computed.
+    pin_lock_block = None
+    try:
+        from options.pin_lock import compute_pin_lock
+
+        pin_lock_block = compute_pin_lock(
+            pin_strike=concentration.get("pin_strike"),
+            pin_source=concentration.get("pin_source"),
+            spot=spot,
+            strike_step=float(strike_step),
+            history=history,
+            chart_series=chart_series,
+            strikes=strikes,
+            flip_level=scan["flip"],
+            sigma1_pts=(bands or {}).get("sigma1_pts"),
+            window=pin_window,
+        )
+    except Exception:
+        pin_lock_block = None
+
+    # Session volume profile + per-strike volume, for the Concentration tab's
+    # confluence readout and the Γ ladder's row tint. Gated on the full desk poll:
+    # the multi-index strip runs thin snapshots and must not trigger one profile
+    # integration per underlying (~200 ms each on a full NIFTY session).
+    volume_profile_block = None
+    strike_volume_block = None
+    if build_session_chart:
+        try:
+            from analysis.volume_profile import get_volume_profile, strike_band_volume
+
+            volume_profile_block = get_volume_profile(underlying)
+            if volume_profile_block.get("available"):
+                strike_volume_block = strike_band_volume(
+                    underlying,
+                    [float(r["strike"]) for r in strikes],
+                    float(strike_step),
+                )
+        except Exception:
+            volume_profile_block = None
+            strike_volume_block = None
+
     cas_block = None
     try:
         from options.cas_indicative import cas_for_snapshot
@@ -2475,6 +2555,9 @@ def build_gamma_snapshot(
         "primary_weight": round(primary_weight, 4),
         "vanna_strip": vanna_strip,
         "concentration": concentration,
+        "pin_lock": pin_lock_block,
+        "volume_profile": volume_profile_block,
+        "strike_volume": strike_volume_block,
         "conviction": conviction,
         "momentum": momentum,
         "market_read": market_read,

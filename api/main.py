@@ -2276,6 +2276,90 @@ def oi_var_snapshot(
         raise _err(e) from e
 
 
+@app.get("/volume-footprint/config")
+def volume_footprint_config() -> dict[str, Any]:
+    from analysis.volume_profile import MIN_PROFILE_BARS, PROFILE_CACHE_TTL_SEC
+
+    return {
+        "underlyings": list(INDEX_OPTIONS.keys()),
+        "engine": "geometric",
+        # Surfaced so the page can state plainly that the buy/sell split is
+        # inferred from candle geometry, not measured from an aggressor feed.
+        "estimate": True,
+        "min_profile_bars": MIN_PROFILE_BARS,
+        "cache_ttl_sec": PROFILE_CACHE_TTL_SEC,
+        "value_area_pct": 70.0,
+        "imbalance_pct": 300.0,
+        "tilt_dead_zone_pp": 5.0,
+    }
+
+
+@app.get("/volume-footprint/contracts")
+def volume_footprint_contracts(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+) -> dict[str, Any]:
+    """Futures contracts available for the near/far selector, nearest first."""
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import list_contracts
+
+        _require_kite_session()
+        return {"underlying": u, "contracts": list_contracts(u)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/volume-footprint/levels")
+def volume_footprint_levels(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+) -> dict[str, Any]:
+    """GEX reference levels for the profile chart: spot, walls, flip, pin, γ peaks.
+
+    Its own endpoint rather than part of the snapshot, for two reasons: the page
+    can fetch both in parallel and still draw the profile if the option chain is
+    unavailable, and ``include_history=False`` keeps this off the session trail —
+    calling the full gamma snapshot from a second page would double-write history
+    ticks and pin samples.
+    """
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import gamma_levels
+
+        _require_kite_session()
+        return gamma_levels(u)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/volume-footprint/snapshot")
+def volume_footprint_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+    expiry: str | None = Query(
+        None, description="Futures contract expiry (YYYY-MM-DD); default front month"
+    ),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import get_volume_profile
+
+        _require_kite_session()
+        return get_volume_profile(u, expiry=expiry)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
 @app.get("/gamma-density/config")
 def gamma_density_config() -> dict[str, Any]:
     return gamma_config()
@@ -2306,6 +2390,10 @@ def gamma_density_snapshot(
         None,
         description="gross (|CE γ|+|PE γ|, default) | net (|CE γ+PE γ|) — HHI mass basis",
     ),
+    pin_window: str | None = Query(
+        None,
+        description="15m | 30m (default) | 60m | session — trailing window for pin strength",
+    ),
 ) -> dict[str, Any]:
     try:
         u = underlying.upper()
@@ -2326,6 +2414,7 @@ def gamma_density_snapshot(
             reversal_gex_mode=reversal_gex_mode,
             reversal_oi_gate=reversal_oi_gate,
             mass_basis=mass_basis,
+            pin_window=pin_window,
         )
     except HTTPException:
         raise
