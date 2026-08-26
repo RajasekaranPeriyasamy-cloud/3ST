@@ -1,12 +1,115 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-20  
+**Last updated:** 2026-08-26  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Volume Footprint desk · volume × gamma confluence
+**Session focus:** Volume Footprint — strike OI ladder (spot, session-open OI, ΔOI)
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-26 — Volume Footprint: strike OI ladder (spot, session-open OI, ΔOI)
+
+Added a per-strike OI ladder beside the session volume profile:
+`/volume-footprint/oi-ladder` → `analysis/volume_profile.strike_oi_ladder()` →
+`Pixel Perfect UI/src/components/volume/OiLadderCard.tsx`.
+
+### It costs no extra Kite call, and that is the whole design
+
+The gamma snapshot **already** computes everything this desk needed.
+`attach_strike_oi_baselines()` (`options/gamma_density.py:1549`, called
+unconditionally at `:1911`) attaches `ce/pe_oi_base` (session-open OI, prev-close
+fallback), `ce/pe_doi` and `ce/pe_oi_base_source` to every strike row — and it is
+**not** gated on `include_history`, so the history-free snapshot `gamma_levels()`
+was already pulling carried all three, unread.
+
+So `gamma_levels()` and `strike_oi_ladder()` now share one `_levels_and_ladder()`
+build behind one cache entry. Opening the page is the same single option-chain
+pull it always was. `include_history=False` still holds, for the original reason:
+a second page calling the full snapshot would double-write the session trail and
+record a page visit as a pin sample.
+
+`ensure_session_open_oi()` *is* reached through that snapshot, but it is
+idempotent — persists once per day, returns the stored map thereafter — so
+serving this page cannot move a baseline the gamma desk already recorded.
+
+### The ladder derives nothing
+
+Every OI column is read straight off the snapshot. This module deliberately does
+**not** re-derive a baseline: if it did, the ladder and the gamma desk could
+disagree about what "session open" means on the same strike, and there would be
+no way to tell which was right.
+
+### Null discipline, and why the put side is full of dashes
+
+Verified live on 2026-08-26 (NIFTY, spot 24,290): every strike ≥ 24,500 shows `—`
+on the put side. That is correct, not a dropped column. Those deep-ITM puts were
+never gamma-resolved by the chain build, so `pe_oi` keeps its `0` default and
+`pe_oi_base` is `None`. Confirmed identical in the raw
+`/gamma-density/snapshot` payload.
+
+The rule, held in both the service and the card:
+
+- `None` → **could not be measured**, renders as an em dash and an empty bar track.
+- `0` → measured, and the strike genuinely did not move.
+
+`net_doi` is null unless **both** sides are measured. An earlier draft returned
+the measured side when only one had a baseline; that prints a confident net for a
+strike half of which was never observed. `test_oi_ladder_keeps_an_uncaptured_baseline_null_never_zero`
+pins the corrected behaviour.
+
+### ΔOI % sits beside the absolute, and the bars ignore it
+
+Each side shows ΔOI over a small percentage of its own baseline —
+`doi / baseline * 100`, the same formula as
+`oi_movers.build_session_change_boards`, so the two desks cannot print different
+numbers for the same strike. Null on a zero baseline: a strike that opened empty
+has no percentage, and one would turn the first contract written into an
+infinite move. Clamped to `>999%` for display only.
+
+**The bars stay on absolute contracts.** A 700% build on a thin far strike is
+real, and worth reading, but it is not a larger trade than a 20% build on a
+heavy ATM strike — scaling the bars by percentage would say it was. Verified
+live on 2026-08-26: CE percentages spanned −15.7% to +708.3% across 41 strikes,
+all of them legitimate.
+
+### Display rules worth keeping
+
+- **One bar scale across both sides** (`max_abs_doi`), so a call bar and a put bar
+  of equal length mean equal contracts. Per-column scaling would make a quiet side
+  look as busy as an active one.
+- A **"mixed baseline" badge** appears when `oi_baseline_prev_close_count > 0` —
+  the column header says "session open", and it must not imply a uniform 09:20
+  capture when part of the ladder fell back to previous close.
+- Strike step is the **modal** gap between adjacent strikes, not the mean: the
+  snapshot carries no top-level `strike_step`, and one missing strike would widen
+  every band if averaged.
+
+### Route note
+
+`/volume-footprint` is **not** in `_API_PREFIXES`, so an unmatched subpath under it
+falls through to the SPA and returns the HTML shell with **200**, not a JSON 404.
+While verifying, that made a missing route look like a working one — check the
+body, not the status code. (The API here runs without `--reload`; the route only
+appeared after a restart.)
+
+### Verified
+
+`pytest tests/` — 939 passed. Seven new tests in `tests/test_volume_profile.py`
+cover the pass-through, the null discipline, thin-session degradation, the modal
+strike step, the shared-snapshot contract, the percentage formula, and gamma failure not
+taking the profile down. API restarted and `npm run build` run (API stopped first); ladder
+confirmed on port 8001 including a direct URL load.
+
+### Docs moved
+
+`docs/volume-footprint/` → `volume Profile Gaucessian/` (commit `fbf66c1`). The
+folder was the desk's original working directory, emptied on 2026-08-20 and left
+behind; it is now the documentation home. Code stayed put — in particular
+`vendor/volume_footprint/` can never move there, because a directory name with
+spaces cannot be a Python package root.
 
 ---
 

@@ -7,11 +7,13 @@ import type {
   OiUnderlying,
   VolumeFootprintContract,
   VolumeFootprintLevels,
+  VolumeFootprintOiLadder,
   VolumeProfileSnapshot,
 } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { OiLadderCard } from "@/components/volume/OiLadderCard";
 import {
   Select,
   SelectContent,
@@ -319,6 +321,7 @@ function VolumeFootprintPage() {
   const [expiry, setExpiry] = useState<string>("");
   const [snap, setSnap] = useState<VolumeProfileSnapshot | null>(null);
   const [levels, setLevels] = useState<VolumeFootprintLevels | null>(null);
+  const [ladder, setLadder] = useState<VolumeFootprintOiLadder | null>(null);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const reqId = useRef(0);
@@ -348,17 +351,23 @@ function VolumeFootprintPage() {
     const id = ++reqId.current;
     setLoading(true);
     const q = expiry ? `&expiry=${expiry}` : "";
-    // Profile and levels in parallel: the chart must still draw if the option
-    // chain is unavailable, and vice versa.
-    const [profileRes, levelsRes] = await Promise.allSettled([
+    // All three in parallel: the chart must still draw if the option chain is
+    // unavailable, and the OI ladder must still draw if the session is too thin
+    // to shape a profile. Levels and the ladder share one snapshot server-side,
+    // so this is still a single option-chain pull.
+    const [profileRes, levelsRes, ladderRes] = await Promise.allSettled([
       api.get<VolumeProfileSnapshot>(`/volume-footprint/snapshot?underlying=${underlying}${q}`),
       api.get<VolumeFootprintLevels>(`/volume-footprint/levels?underlying=${underlying}`, {
+        silent: true,
+      }),
+      api.get<VolumeFootprintOiLadder>(`/volume-footprint/oi-ladder?underlying=${underlying}`, {
         silent: true,
       }),
     ]);
     if (id !== reqId.current) return;
     setSnap(profileRes.status === "fulfilled" ? profileRes.value : null);
     setLevels(levelsRes.status === "fulfilled" ? levelsRes.value : null);
+    setLadder(ladderRes.status === "fulfilled" ? ladderRes.value : null);
     setLoading(false);
   }, [underlying, expiry]);
 
@@ -518,7 +527,9 @@ function VolumeFootprintPage() {
               </CardContent>
             </Card>
 
-            <Card className="lg:col-span-4">
+            <OiLadderCard ladder={ladder} className="lg:col-span-4" />
+
+            <Card className="lg:col-span-12">
               <CardHeader className="py-3">
                 <CardTitle className="text-sm">How to read this</CardTitle>
               </CardHeader>

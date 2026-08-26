@@ -1132,6 +1132,54 @@ export interface VolumeFootprintLevels {
   gamma_regime?: string | null;
 }
 
+/** One strike in the OI ladder beside the volume profile. */
+export interface VolumeFootprintOiRow {
+  strike: number;
+  /** OI at the session-open capture (09:20 IST), or the prev-close fallback. */
+  ce_open_oi: number | null;
+  pe_open_oi: number | null;
+  ce_oi: number | null;
+  pe_oi: number | null;
+  /** Current minus baseline. `null` means no baseline was captured — not zero. */
+  ce_doi: number | null;
+  pe_doi: number | null;
+  /** ΔOI as a share of the baseline. `null` on a zero or missing baseline. */
+  ce_doi_pct: number | null;
+  pe_doi_pct: number | null;
+  /** Null unless BOTH sides are measured. */
+  net_doi: number | null;
+  /** "open" | "prev_close" | null — which baseline this side actually used. */
+  ce_oi_base_source: string | null;
+  pe_oi_base_source: string | null;
+  /** Session volume in this strike's band. Null when the session is too thin. */
+  volume: number | null;
+  buy_volume: number | null;
+  sell_volume: number | null;
+}
+
+export interface VolumeFootprintOiLadder {
+  underlying: string;
+  available: boolean;
+  reason: string | null;
+  asof?: string;
+  expiry?: string | null;
+  spot?: number | null;
+  atm_strike?: number | null;
+  strike_step?: number;
+  rows: VolumeFootprintOiRow[];
+  oi_baseline_mode?: string | null;
+  oi_baseline_note?: string | null;
+  oi_baseline_open_count?: number | null;
+  oi_baseline_prev_close_count?: number | null;
+  total_ce_doi?: number | null;
+  total_pe_doi?: number | null;
+  /** Shared bar scale across both sides, so equal lengths mean equal contracts. */
+  max_abs_doi?: number | null;
+  volume_available?: boolean;
+  volume_reason?: string | null;
+  price_axis?: string;
+}
+
 export type GammaPinWindow = "15m" | "30m" | "60m" | "session";
 
 /**

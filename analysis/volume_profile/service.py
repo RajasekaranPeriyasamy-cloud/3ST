@@ -472,32 +472,200 @@ def strike_band_volume(
     }
 
 
-_LEVELS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+#: ``(ts, levels, ladder)`` — one gamma snapshot feeds both, so the OI ladder
+#: never costs a second chain pull.
+_LEVELS_CACHE: dict[str, tuple[float, dict[str, Any], dict[str, Any]]] = {}
 
 
-def gamma_levels(underlying: str) -> dict[str, Any]:
-    """GEX reference levels to overlay on the profile chart.
+def _infer_strike_step(strikes: list[dict[str, Any]]) -> float:
+    """Modal gap between adjacent strikes.
 
-    Built from a **history-free** gamma snapshot: ``include_history=False`` so
-    this never appends to the session trail or upserts ``daily_hhi`` /
-    ``daily_pin``. Calling the full snapshot from a second page would double-write
-    both, and the pin sampler would end up recording a page visit as a session
-    checkpoint.
+    The snapshot does not carry ``strike_step`` at top level, and the modal gap
+    is exact on a regular lattice — which every index chain here is. Taking the
+    mode rather than the mean keeps one missing strike from widening the bands.
+    """
+    gaps: dict[float, int] = {}
+    prev: float | None = None
+    for row in strikes:
+        try:
+            k = float(row.get("strike"))
+        except (TypeError, ValueError):
+            continue
+        if prev is not None:
+            gap = round(k - prev, 4)
+            if gap > 0:
+                gaps[gap] = gaps.get(gap, 0) + 1
+        prev = k
+    if not gaps:
+        return 50.0
+    return max(gaps.items(), key=lambda kv: kv[1])[0]
 
-    Cached on the same TTL as the profile so the pair stay roughly in step.
 
-    Both the profile and these levels sit on the **index** price axis for cash
-    indices (the profile having been basis-shifted to get there) and on the
-    futures axis for MCX, so they are directly comparable either way.
+def _oi_ladder_from_snapshot(u: str, snap: dict[str, Any]) -> dict[str, Any]:
+    """Per-strike session-open OI, current OI and ΔOI, on the profile's price axis.
+
+    Every OI column is read straight off the gamma snapshot, which already ran
+    ``attach_strike_oi_baselines``. This module does not re-derive a baseline
+    and must not, or the ladder and the gamma desk could disagree about what
+    "session open" means on the same strike.
+
+    ``ce_doi`` / ``pe_doi`` stay ``None`` when no baseline was captured. That is
+    deliberate and matches the rest of this module: ``None`` means *could not be
+    measured*, never zero. A strike that genuinely did not move shows ``0``.
+
+    Volume is merged in from :func:`strike_band_volume`, so a row's ΔOI sits
+    against the volume actually traded in that strike's band. When the session
+    is too thin to shape a profile the OI half still renders and ``volume`` is
+    ``None`` throughout — the two halves fail independently on purpose.
+    """
+    strikes = snap.get("strikes") or []
+    if not strikes:
+        return {
+            "underlying": u,
+            "available": False,
+            "reason": "no_strikes",
+            "rows": [],
+        }
+
+    step = _infer_strike_step(strikes)
+    ks = [float(r["strike"]) for r in strikes if r.get("strike") is not None]
+
+    # Thin session → no bands. The OI columns are still worth showing.
+    vol = strike_band_volume(u, ks, step)
+    by_strike: dict[float, dict[str, Any]] = {}
+    if vol.get("available"):
+        for band in vol.get("bands") or []:
+            by_strike[float(band["strike"])] = band
+
+    def _as_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _pct(doi: int | None, base: int | None) -> float | None:
+        """ΔOI as a share of the baseline.
+
+        Same formula as ``oi_movers.build_session_change_boards`` so the two
+        desks cannot disagree about the number. ``None`` on a zero baseline —
+        a strike that opened empty has no percentage, and printing one would
+        turn the first contract written into an infinite move.
+        """
+        if doi is None or not base:
+            return None
+        return round(doi / base * 100.0, 1)
+
+    rows: list[dict[str, Any]] = []
+    tot_ce_doi = 0
+    tot_pe_doi = 0
+    saw_doi = False
+    for row in strikes:
+        raw_k = row.get("strike")
+        if raw_k is None:
+            continue
+        k = float(raw_k)
+        ce_doi = _as_int(row.get("ce_doi"))
+        pe_doi = _as_int(row.get("pe_doi"))
+        if ce_doi is not None:
+            tot_ce_doi += ce_doi
+            saw_doi = True
+        if pe_doi is not None:
+            tot_pe_doi += pe_doi
+            saw_doi = True
+        band = by_strike.get(k) or {}
+        rows.append(
+            {
+                "strike": k,
+                "ce_open_oi": _as_int(row.get("ce_oi_base")),
+                "pe_open_oi": _as_int(row.get("pe_oi_base")),
+                "ce_oi": _as_int(row.get("ce_oi")),
+                "pe_oi": _as_int(row.get("pe_oi")),
+                "ce_doi": ce_doi,
+                "pe_doi": pe_doi,
+                "ce_doi_pct": _pct(ce_doi, _as_int(row.get("ce_oi_base"))),
+                "pe_doi_pct": _pct(pe_doi, _as_int(row.get("pe_oi_base"))),
+                # Null unless *both* sides are measured. Netting a known side
+                # against an unmeasured one would print a confident number for
+                # a strike half of which was never observed.
+                "net_doi": (
+                    ce_doi + pe_doi
+                    if (ce_doi is not None and pe_doi is not None)
+                    else None
+                ),
+                "ce_oi_base_source": row.get("ce_oi_base_source"),
+                "pe_oi_base_source": row.get("pe_oi_base_source"),
+                "volume": band.get("total"),
+                "buy_volume": band.get("buy"),
+                "sell_volume": band.get("sell"),
+            }
+        )
+
+    # Shared bar scale for both sides, so a CE bar and a PE bar of equal length
+    # mean equal contracts.
+    max_abs_doi = max(
+        (
+            abs(v)
+            for r in rows
+            for v in (r["ce_doi"], r["pe_doi"])
+            if v is not None
+        ),
+        default=0,
+    )
+
+    return {
+        "underlying": u,
+        "available": True,
+        "reason": None,
+        "asof": _now_ist().isoformat(timespec="seconds"),
+        "expiry": snap.get("expiry"),
+        "spot": snap.get("spot"),
+        "atm_strike": snap.get("atm_strike"),
+        "strike_step": step,
+        "rows": rows,
+        # Straight from the gamma snapshot so both desks tell the same story
+        # about whether today's baseline is a real 09:20 capture or a fallback.
+        "oi_baseline_mode": snap.get("oi_baseline_mode"),
+        "oi_baseline_note": snap.get("oi_baseline_note"),
+        "oi_baseline_open_count": snap.get("oi_baseline_open_count"),
+        "oi_baseline_prev_close_count": snap.get("oi_baseline_prev_close_count"),
+        "total_ce_doi": tot_ce_doi if saw_doi else None,
+        "total_pe_doi": tot_pe_doi if saw_doi else None,
+        "max_abs_doi": max_abs_doi or None,
+        "volume_available": bool(vol.get("available")),
+        "volume_reason": vol.get("reason"),
+        "price_axis": "future" if _is_future_settled(u) else "index",
+    }
+
+
+def _levels_and_ladder(underlying: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build both payloads from **one** history-free gamma snapshot, cached together.
+
+    ``include_history=False`` so this never appends to the session trail or
+    upserts ``daily_hhi`` / ``daily_pin``. Calling the full snapshot from a
+    second page would double-write both, and the pin sampler would end up
+    recording a page visit as a session checkpoint.
+
+    Session-open OI capture (``ensure_session_open_oi``) *is* reached through
+    this snapshot, but it is idempotent — it persists once per day and returns
+    the stored map on every later call — so serving this page cannot move a
+    baseline the gamma desk already recorded.
+
+    Cached on the same TTL as the profile so all three stay roughly in step.
     """
     u = underlying.strip().upper()
     now = time.time()
     with _CACHE_LOCK:
         hit = _LEVELS_CACHE.get(u)
         if hit and now - hit[0] < PROFILE_CACHE_TTL_SEC:
-            return hit[1]
+            return hit[1], hit[2]
 
-    out: dict[str, Any] = {"underlying": u, "available": False, "reason": None}
+    levels: dict[str, Any] = {"underlying": u, "available": False, "reason": None}
+    ladder: dict[str, Any] = {
+        "underlying": u,
+        "available": False,
+        "reason": None,
+        "rows": [],
+    }
     try:
         from options.gamma_density import build_gamma_snapshot
 
@@ -509,7 +677,7 @@ def gamma_levels(underlying: str) -> dict[str, Any]:
             build_session_chart=False,
         )
         conc = snap.get("concentration") or {}
-        out = {
+        levels = {
             "underlying": u,
             "available": True,
             "reason": None,
@@ -526,13 +694,37 @@ def gamma_levels(underlying: str) -> dict[str, Any]:
             "neg_gamma_peak": conc.get("neg_gamma_peak_strike"),
             "gamma_regime": snap.get("gamma_regime"),
         }
+        ladder = _oi_ladder_from_snapshot(u, snap)
     except Exception as exc:
         log_event(_log, logging.WARNING, "gamma_levels_failed", underlying=u, error=str(exc)[:200])
-        out["reason"] = "gamma_unavailable"
+        levels["reason"] = "gamma_unavailable"
+        ladder["reason"] = "gamma_unavailable"
 
     with _CACHE_LOCK:
-        _LEVELS_CACHE[u] = (now, out)
-    return out
+        _LEVELS_CACHE[u] = (now, levels, ladder)
+    return levels, ladder
+
+
+def gamma_levels(underlying: str) -> dict[str, Any]:
+    """GEX reference levels to overlay on the profile chart.
+
+    Both these levels and the profile sit on the **index** price axis for cash
+    indices (the profile having been basis-shifted to get there) and on the
+    futures axis for MCX, so they are directly comparable either way.
+
+    See :func:`_levels_and_ladder` for why the snapshot behind this is
+    history-free, and how it is shared with the OI ladder.
+    """
+    return _levels_and_ladder(underlying)[0]
+
+
+def strike_oi_ladder(underlying: str) -> dict[str, Any]:
+    """Session-open OI, current OI and ΔOI per strike, merged with session volume.
+
+    Shares one gamma snapshot with :func:`gamma_levels`, so opening this desk
+    costs the same single chain pull it always did.
+    """
+    return _levels_and_ladder(underlying)[1]
 
 
 def reset_cache() -> None:

@@ -226,3 +226,190 @@ def test_cache_is_scoped_to_the_contract() -> None:
         assert vp._CACHE.get(far) is None
     # peek is deliberately front-month only — it backs session_poc and the strip.
     assert vp.peek_volume_profile("NIFTY")["poc"] == 24600.0
+
+
+# --- OI ladder -------------------------------------------------------------
+#
+# The ladder derives nothing: every OI column is read off the gamma snapshot,
+# which has already run ``attach_strike_oi_baselines``. These pin that promise,
+# the null discipline around a missing baseline, and the single-snapshot
+# contract that keeps this desk at one option-chain pull.
+
+
+def _snap(strikes, **over):
+    out = {
+        "expiry": "2026-08-27",
+        "spot": 24610.0,
+        "atm_strike": 24600.0,
+        "strikes": strikes,
+        "oi_baseline_mode": "session_open",
+        "oi_baseline_note": "session open · 6 legs",
+        "oi_baseline_open_count": 6,
+        "oi_baseline_prev_close_count": 0,
+    }
+    out.update(over)
+    return out
+
+
+def _srow(strike, *, ce_oi=None, pe_oi=None, ce_base=None, pe_base=None, src="open"):
+    return {
+        "strike": strike,
+        "ce_oi": ce_oi,
+        "pe_oi": pe_oi,
+        "ce_oi_base": ce_base,
+        "pe_oi_base": pe_base,
+        "ce_doi": None if (ce_oi is None or ce_base is None) else ce_oi - ce_base,
+        "pe_doi": None if (pe_oi is None or pe_base is None) else pe_oi - pe_base,
+        "ce_oi_base_source": src,
+        "pe_oi_base_source": src,
+    }
+
+
+def test_oi_ladder_carries_open_current_and_delta_off_the_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(
+        vp,
+        "strike_band_volume",
+        lambda *_a, **_k: {
+            "available": True,
+            "bands": [
+                {"strike": 24550.0, "buy": 10.0, "sell": 5.0, "total": 15.0},
+                {"strike": 24600.0, "buy": 40.0, "sell": 60.0, "total": 100.0},
+            ],
+        },
+    )
+    snap = _snap(
+        [
+            _srow(24550, ce_oi=1200, pe_oi=900, ce_base=1000, pe_base=1000),
+            _srow(24600, ce_oi=5000, pe_oi=8000, ce_base=4000, pe_base=6000),
+        ]
+    )
+
+    out = vp._oi_ladder_from_snapshot("NIFTY", snap)
+
+    assert out["available"] is True
+    assert out["strike_step"] == 50.0
+    lo, hi = out["rows"]
+
+    # Open OI, current OI and ΔOI are passed through, not recomputed.
+    assert (lo["ce_open_oi"], lo["ce_oi"], lo["ce_doi"]) == (1000, 1200, 200)
+    assert (lo["pe_open_oi"], lo["pe_oi"], lo["pe_doi"]) == (1000, 900, -100)
+    assert lo["net_doi"] == 100
+
+    # Volume is merged onto the same strike, so ΔOI reads against what traded.
+    assert (hi["volume"], hi["buy_volume"], hi["sell_volume"]) == (100.0, 40.0, 60.0)
+
+    assert out["total_ce_doi"] == 200 + 1000
+    assert out["total_pe_doi"] == -100 + 2000
+    # One shared bar scale across both sides — the largest absolute move.
+    assert out["max_abs_doi"] == 2000
+    assert out["oi_baseline_note"] == "session open · 6 legs"
+    assert out["spot"] == 24610.0
+    assert out["price_axis"] == "index"
+
+
+def test_oi_ladder_keeps_an_uncaptured_baseline_null_never_zero(monkeypatch) -> None:
+    """``None`` means *could not be measured*; ``0`` means genuinely unchanged."""
+    monkeypatch.setattr(vp, "strike_band_volume", lambda *_a, **_k: {"available": False})
+    snap = _snap(
+        [
+            # No baseline on either side — nothing can be said about the move.
+            _srow(24600, ce_oi=5000, pe_oi=8000, ce_base=None, pe_base=None, src=None),
+            # Baseline captured and the strike genuinely did not move.
+            _srow(24650, ce_oi=3000, pe_oi=None, ce_base=3000, pe_base=None),
+        ]
+    )
+
+    blind, flat = vp._oi_ladder_from_snapshot("NIFTY", snap)["rows"]
+
+    assert blind["ce_doi"] is None and blind["pe_doi"] is None
+    assert blind["net_doi"] is None, "no baseline on either side must not read as flat"
+    assert flat["ce_doi"] == 0, "a measured, unmoved strike is 0 — not null"
+    # One side measured, the other not: the *net* is still unmeasurable.
+    assert flat["pe_doi"] is None
+    assert flat["net_doi"] is None
+
+
+def test_oi_ladder_renders_when_the_session_is_too_thin_for_a_profile(monkeypatch) -> None:
+    """The OI half and the volume half fail independently, on purpose."""
+    monkeypatch.setattr(
+        vp,
+        "strike_band_volume",
+        lambda *_a, **_k: {"available": False, "reason": "thin_session", "bands": []},
+    )
+    out = vp._oi_ladder_from_snapshot(
+        "NIFTY", _snap([_srow(24600, ce_oi=5000, pe_oi=8000, ce_base=4000, pe_base=6000)])
+    )
+
+    assert out["available"] is True
+    assert out["volume_available"] is False
+    assert out["volume_reason"] == "thin_session"
+    row = out["rows"][0]
+    assert row["volume"] is None
+    assert row["ce_doi"] == 1000
+
+
+def test_strike_step_is_the_modal_gap_so_one_gap_cannot_widen_the_bands() -> None:
+    # 24700 missing: mean gap is 62.5, the mode is still 50.
+    strikes = [{"strike": k} for k in (24550, 24600, 24650, 24750)]
+    assert vp._infer_strike_step(strikes) == 50.0
+    assert vp._infer_strike_step([]) == 50.0
+
+
+def test_levels_and_ladder_come_from_one_snapshot_and_one_cache(monkeypatch) -> None:
+    """Opening this desk must not cost a second option-chain pull."""
+    calls = {"n": 0}
+
+    def _fake(underlying, **kwargs):
+        calls["n"] += 1
+        # History-free, or this page would double-write the session trail and
+        # record a page visit as a pin sample.
+        assert kwargs["include_history"] is False
+        return _snap([_srow(24600, ce_oi=5000, pe_oi=8000, ce_base=4000, pe_base=6000)])
+
+    monkeypatch.setattr("options.gamma_density.build_gamma_snapshot", _fake)
+    monkeypatch.setattr(vp, "strike_band_volume", lambda *_a, **_k: {"available": False})
+
+    levels = vp.gamma_levels("NIFTY")
+    ladder = vp.strike_oi_ladder("NIFTY")
+
+    assert calls["n"] == 1, "levels and ladder must share one snapshot"
+    assert levels["available"] is True and levels["spot"] == 24610.0
+    assert ladder["available"] is True and ladder["rows"][0]["ce_doi"] == 1000
+
+    vp.reset_cache()
+    vp.gamma_levels("NIFTY")
+    assert calls["n"] == 2, "reset_cache must clear the shared entry"
+
+
+def test_ladder_reports_gamma_failure_without_taking_the_profile_down(monkeypatch) -> None:
+    def _boom(*_a, **_k):
+        raise RuntimeError("no option chain")
+
+    monkeypatch.setattr("options.gamma_density.build_gamma_snapshot", _boom)
+
+    ladder = vp.strike_oi_ladder("NIFTY")
+    assert ladder["available"] is False
+    assert ladder["reason"] == "gamma_unavailable"
+    assert ladder["rows"] == []
+    assert vp.gamma_levels("NIFTY")["reason"] == "gamma_unavailable"
+
+
+def test_oi_ladder_percentage_matches_the_oi_tracker_formula(monkeypatch) -> None:
+    """``doi / baseline * 100`` — the same number the session-change boards print."""
+    monkeypatch.setattr(vp, "strike_band_volume", lambda *_a, **_k: {"available": False})
+    snap = _snap(
+        [
+            _srow(24600, ce_oi=5000, pe_oi=4500, ce_base=4000, pe_base=6000),
+            # Opened empty: a percentage here would turn the first contract
+            # written into an infinite move.
+            _srow(24650, ce_oi=800, pe_oi=None, ce_base=0, pe_base=None),
+        ]
+    )
+
+    moved, from_empty = vp._oi_ladder_from_snapshot("NIFTY", snap)["rows"]
+
+    assert moved["ce_doi_pct"] == 25.0  # +1000 on 4000
+    assert moved["pe_doi_pct"] == -25.0  # -1500 on 6000
+    assert from_empty["ce_doi"] == 800
+    assert from_empty["ce_doi_pct"] is None, "a zero baseline has no percentage"
+    assert from_empty["pe_doi_pct"] is None

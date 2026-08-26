@@ -2339,6 +2339,31 @@ def volume_footprint_levels(
         raise _err(e) from e
 
 
+@app.get("/volume-footprint/oi-ladder")
+def volume_footprint_oi_ladder(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+) -> dict[str, Any]:
+    """Per-strike session-open OI, current OI and ΔOI, merged with session volume.
+
+    Shares one history-free gamma snapshot with ``/volume-footprint/levels``, so
+    fetching both costs a single option-chain pull. Kept a separate endpoint for
+    the same reason ``levels`` is: the profile must still draw when the chain is
+    unavailable.
+    """
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import strike_oi_ladder
+
+        _require_kite_session()
+        return strike_oi_ladder(u)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
 @app.get("/volume-footprint/snapshot")
 def volume_footprint_snapshot(
     underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),

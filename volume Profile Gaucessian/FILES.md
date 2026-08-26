@@ -23,13 +23,14 @@ convention requires it; moving them breaks the desk:
 | --- | --- |
 | `vendor/volume_footprint/*.py` | Third-party MPL-2.0 package (decision 5). Importable as `vendor.volume_footprint`; a path with spaces or a docs subtree is not a Python package root |
 | `analysis/volume_profile/service.py` | First-party adapter. `analysis/` is the repo's convention for desk engines, and it must import cleanly under uvicorn, pytest and the schedulers |
-| `api/main.py` → `/volume-footprint/{config,snapshot}` | 3ST has one FastAPI app; routes cannot live outside it |
+| `api/main.py` → `/volume-footprint/{config,contracts,levels,oi-ladder,snapshot}` | 3ST has one FastAPI app; routes cannot live outside it |
 | `Pixel Perfect UI/src/routes/volume-footprint.tsx` | TanStack Router is **file-based** — the route only exists because the file is in `src/routes/`. Moving it deletes the page |
+| `Pixel Perfect UI/src/components/volume/OiLadderCard.tsx` | The strike OI ladder rendered beside the profile; imported by the route file through the `@/components` alias |
 | `Pixel Perfect UI/src/components/gamma/concentration/VolumeConfluencePanel.tsx` | Imported by `ConcentrationBoard.tsx`; belongs with the tab it renders on |
 | `Pixel Perfect UI/src/components/gamma/concentration/GammaLadder.tsx` | Row tint lives inside the existing ladder — it is a modification, not a new file |
 | `Pixel Perfect UI/src/components/AppSidebar.tsx` | The pinned sidebar entry |
 | `tests/test_volume_footprint.py` | 37 upstream engine tests. In `tests/` so `pytest tests/` and CI run them (decision 6) |
-| `tests/test_volume_profile.py` | 12 adapter tests — basis alignment, thin-session guard, exact strike bands, peek-only cache contract |
+| `tests/test_volume_profile.py` | 20 adapter tests — basis alignment, thin-session guard, exact strike bands, the peek-only cache contract, and the OI ladder (pass-through, null discipline, shared snapshot, ΔOI %) |
 | `options/session_poc.py` | Prefers the footprint POC via peek (decision 11); it is a pre-existing module this desk modifies |
 | `instruments.py` | `_compact_row` now carries `tick_size`, which the price lattice reads |
 | `options/gamma_density.py` | Attaches `volume_profile` + `strike_volume` to the snapshot, gated on the full desk poll |

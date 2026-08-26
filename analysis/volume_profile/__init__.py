@@ -22,6 +22,7 @@ from analysis.volume_profile.service import (
     list_contracts,
     peek_volume_profile,
     strike_band_volume,
+    strike_oi_ladder,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "list_contracts",
     "peek_volume_profile",
     "strike_band_volume",
+    "strike_oi_ladder",
 ]
