@@ -340,8 +340,300 @@ def compute_volume_profile(
         "price_lo": prof.price_lo if prof else None,
         "price_hi": prof.price_hi if prof else None,
         "curve": _sample_curve(res),
+        # Price-axis gridline spacing: the configured strike lattice, so a line
+        # lands on a strike rather than an arbitrary round number.
+        "grid_step": _grid_step(u),
+        # Where each side's own mass peaks. Not the POC — that is the peak of the
+        # *combined* profile, and on a one-sided session the two can be far apart.
+        "buy_peak": _side_peak(res, "buy"),
+        "sell_peak": _side_peak(res, "sell"),
+        # Top peaks per side by prominence, each carrying both readings of "how
+        # did this level trade": band_tilt_pp from the fitted mixture, and
+        # flow_tilt_pp from the bars that actually traded through it. [0] is the
+        # tallest, so it is the same level buy_peak / sell_peak names.
+        "buy_peaks": _side_peaks(res, series.bars, "buy", strike_step=_grid_step(u)),
+        "sell_peaks": _side_peaks(res, series.bars, "sell", strike_step=_grid_step(u)),
     }
     return payload, res
+
+
+def _grid_step(underlying: str) -> float | None:
+    """Strike step for ``underlying`` — NIFTY 50, SENSEX/BANKNIFTY 100, NG 5.
+
+    Read from ``INDEX_OPTIONS`` rather than inferred from the price range: it is
+    the lattice the options actually trade on, so a gridline is a strike and the
+    profile can be read against the ladder beside it.
+    """
+    meta = INDEX_OPTIONS.get(underlying.strip().upper()) or {}
+    try:
+        step = float(meta.get("strike_step") or 0)
+    except (TypeError, ValueError):
+        return None
+    return step if step > 0 else None
+
+
+def _side_peak(res: FootprintResult, side: str) -> dict[str, float] | None:
+    """Price at which one side's density is greatest, and that density.
+
+    Read off the **full-resolution** arrays, never ``curve`` — the sampled curve
+    exists only for drawing and its ~120 points can miss a sharp peak by several
+    ticks. This is the same rule POC and the value area already follow.
+
+    ``None`` when the side carried no volume: a peak of an empty side is not a
+    price, and returning the axis minimum would draw a confident line at the
+    bottom of the chart.
+    """
+    prices = res.profile_prices
+    vals = res.profile_buy if side == "buy" else res.profile_sell
+    if not prices or not vals:
+        return None
+    best_i = max(range(min(len(prices), len(vals))), key=lambda i: vals[i])
+    if float(vals[best_i]) <= 0.0:
+        return None
+    return {"price": round(float(prices[best_i]), 2), "density": round(float(vals[best_i]), 4)}
+
+
+#: A bump smaller than this share of the side's tallest peak is fitting noise,
+#: not a level. Without it a local-max scan returns a dozen wobbles and the
+#: chart ends up labelling its own smoothing artefacts.
+MIN_PROMINENCE_SHARE = 0.08
+
+#: Peaks closer than half a strike step are the same level twice; the taller wins.
+#: Keeps labels off each other and keeps peaks comparable to the OI ladder.
+PEAK_MIN_SEPARATION_STEPS = 0.5
+
+#: Peaks reported per side, most prominent first.
+MAX_PEAKS_PER_SIDE = 4
+
+#: A peak whose middle-50% of volume landed inside this many minutes really did
+#: form at a time, and saying so is honest. Wider than this and naming a moment
+#: would be a fiction — today's NIFTY POC drew from 244 bars across 10:21-15:27.
+CONCENTRATED_IQR_MIN = 45
+
+
+def _prominence_peaks(
+    prices: list[float],
+    vals: list[float],
+) -> list[dict[str, Any]]:
+    """Local maxima with topographic prominence and the basin each one owns.
+
+    Prominence is height above the higher of the two saddles that separate a
+    peak from any taller neighbour — the standard definition. A tall spike on
+    the shoulder of a taller spike scores low, which is what stops the second
+    label landing two ticks from the first.
+
+    Walks the **full-resolution** arrays, never the sampled draw curve: the curve
+    keeps ~1 point in N and both invents and hides bumps at this scale.
+    """
+    n = min(len(prices), len(vals))
+    out: list[dict[str, Any]] = []
+    for i in range(1, n - 1):
+        if not (vals[i] > vals[i - 1] and vals[i] >= vals[i + 1]):
+            continue
+        # Walk out each way to the first higher point, tracking the low water
+        # mark. Running off the end means no taller neighbour that side.
+        left_min = vals[i]
+        j = i - 1
+        while j >= 0 and vals[j] <= vals[i]:
+            left_min = min(left_min, vals[j])
+            j -= 1
+        lo_idx = j + 1
+        right_min = vals[i]
+        k = i + 1
+        while k < n and vals[k] <= vals[i]:
+            right_min = min(right_min, vals[k])
+            k += 1
+        hi_idx = k - 1
+        prom = vals[i] - max(left_min, right_min)
+        if prom <= 0:
+            continue
+        out.append(
+            {
+                "index": i,
+                "price": float(prices[i]),
+                "density": float(vals[i]),
+                "prominence": float(prom),
+                "lo_idx": lo_idx,
+                "hi_idx": hi_idx,
+            }
+        )
+    return out
+
+
+def _select_peaks(
+    peaks: list[dict[str, Any]],
+    *,
+    min_separation: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Most prominent first, dropping anything too close to one already kept."""
+    kept: list[dict[str, Any]] = []
+    for p in sorted(peaks, key=lambda d: -d["prominence"]):
+        if any(abs(p["price"] - q["price"]) < min_separation for q in kept):
+            continue
+        kept.append(p)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
+def _band_tilt(
+    buys: list[float],
+    sells: list[float],
+    lo_idx: int,
+    hi_idx: int,
+) -> tuple[float | None, float, float]:
+    """Option A — tilt of the fitted mixture inside one peak's price band.
+
+    The session tilt formula restricted in price, so a level that traded 70% buy
+    reads +40pp regardless of what the rest of the session did. This is the
+    number that answers "was *this* level buy-led", and it is unrelated to the
+    current session tilt.
+    """
+    b = sum(buys[lo_idx : hi_idx + 1])
+    s = sum(sells[lo_idx : hi_idx + 1])
+    total = b + s
+    if total <= 0:
+        return None, b, s
+    return round(100.0 * (b - s) / total, 2), b, s
+
+
+def _flow_at_band(
+    bars: list[Any],
+    band_lo: float,
+    band_hi: float,
+) -> dict[str, Any]:
+    """Option C — the bars that actually traded through this band, and when.
+
+    Uses each bar's own engine-assigned buy/sell split rather than the fitted
+    mixture, so this and :func:`_band_tilt` genuinely differ: one weights by
+    where the model placed the mass, the other by raw bar volume.
+
+    The time fields are a **window, not a moment**. A profile peak is a
+    price-domain feature; the volume under it can accumulate across the whole
+    session in many separate visits, so ``concentrated`` says whether naming a
+    time would be honest at all.
+    """
+    hits: list[tuple[str, float, float, float]] = []
+    for bar in bars:
+        if bar.high < band_lo or bar.low > band_hi:
+            continue
+        when = str(bar.time or "")
+        hits.append(
+            (
+                when[11:16] if len(when) >= 16 else when,
+                float(bar.volume or 0.0),
+                float(bar.buy_volume or 0.0),
+                float(bar.sell_volume or 0.0),
+            )
+        )
+    if not hits:
+        return {"flow_tilt_pp": None, "bar_count": 0, "first": None, "last": None,
+                "q1": None, "q3": None, "concentrated": False}
+
+    buy = sum(h[2] for h in hits)
+    sell = sum(h[3] for h in hits)
+    tot = buy + sell
+    tilt = round(100.0 * (buy - sell) / tot, 2) if tot > 0 else None
+
+    vol_total = sum(h[1] for h in hits)
+    q1 = q3 = None
+    if vol_total > 0:
+        cum = 0.0
+        for hhmm, vol, _b, _s in hits:
+            cum += vol
+            if q1 is None and cum >= 0.25 * vol_total:
+                q1 = hhmm
+            if q3 is None and cum >= 0.75 * vol_total:
+                q3 = hhmm
+                break
+
+    def _mins(hhmm: str | None) -> int | None:
+        if not hhmm or ":" not in hhmm:
+            return None
+        try:
+            h, m = hhmm.split(":")[:2]
+            return int(h) * 60 + int(m)
+        except ValueError:
+            return None
+
+    a, b_ = _mins(q1), _mins(q3)
+    concentrated = a is not None and b_ is not None and (b_ - a) <= CONCENTRATED_IQR_MIN
+
+    return {
+        "flow_tilt_pp": tilt,
+        "bar_count": len(hits),
+        "first": hits[0][0],
+        "last": hits[-1][0],
+        "q1": q1,
+        "q3": q3,
+        "concentrated": bool(concentrated),
+    }
+
+
+def _side_peaks(
+    res: FootprintResult,
+    bars: list[Any],
+    side: str,
+    *,
+    strike_step: float | None,
+) -> list[dict[str, Any]]:
+    """Top peaks of one side, each with its band tilt, flow tilt and window."""
+    prices = res.profile_prices
+    vals = res.profile_buy if side == "buy" else res.profile_sell
+    buys, sells = res.profile_buy, res.profile_sell
+    if not prices or not vals:
+        return []
+    peak_max = max(vals)
+    if peak_max <= 0:
+        return []
+
+    found = _prominence_peaks(list(prices), list(vals))
+    found = [p for p in found if p["prominence"] / peak_max >= MIN_PROMINENCE_SHARE]
+    step = float(strike_step or 0) or 50.0
+    kept = _select_peaks(
+        found,
+        min_separation=step * PEAK_MIN_SEPARATION_STEPS,
+        limit=MAX_PEAKS_PER_SIDE,
+    )
+
+    half = step / 2.0
+    out: list[dict[str, Any]] = []
+    for p in kept:
+        # Basin, clipped to half a strike step so one broad peak cannot swallow
+        # the neighbours it is being compared against.
+        band_lo = max(float(prices[p["lo_idx"]]), p["price"] - half)
+        band_hi = min(float(prices[p["hi_idx"]]), p["price"] + half)
+        lo_idx = max(p["lo_idx"], _nearest_index(prices, band_lo))
+        hi_idx = min(p["hi_idx"], _nearest_index(prices, band_hi))
+        tilt, mass_buy, mass_sell = _band_tilt(list(buys), list(sells), lo_idx, hi_idx)
+        row = {
+            "price": round(p["price"], 2),
+            "density": round(p["density"], 4),
+            "prominence_pct": round(100.0 * p["prominence"] / peak_max, 1),
+            "band_lo": round(band_lo, 2),
+            "band_hi": round(band_hi, 2),
+            "band_tilt_pp": tilt,
+            "band_buy": round(mass_buy, 2),
+            "band_sell": round(mass_sell, 2),
+        }
+        row.update(_flow_at_band(bars, band_lo, band_hi))
+        out.append(row)
+    # Tallest first so the chart's primary marker is index 0.
+    out.sort(key=lambda r: -r["density"])
+    return out
+
+
+def _nearest_index(prices: Any, target: float) -> int:
+    lo, hi = 0, len(prices) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if prices[mid] < target:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
 
 
 def _sample_curve(res: FootprintResult) -> list[dict[str, float]]:

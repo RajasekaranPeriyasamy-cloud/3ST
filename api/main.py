@@ -2364,6 +2364,34 @@ def volume_footprint_oi_ladder(
         raise _err(e) from e
 
 
+@app.get("/volume-footprint/tilt-history")
+def volume_footprint_tilt_history(
+    underlying: str = Query("NIFTY", description="NIFTY | SENSEX"),
+    window: int = Query(30, ge=5, le=120, description="prior sessions to rank against"),
+) -> dict[str, Any]:
+    """Today's session tilt ranked against prior sessions at the same session minute.
+
+    Never ranks a partial session against completed ones: both sides of the
+    comparison are read at the same elapsed-minute checkpoint. See
+    ``analysis/volume_profile/tilt_history.py`` for why that matters.
+    """
+    try:
+        u = underlying.upper()
+        from analysis.volume_profile.tilt_history import (
+            TILT_HISTORY_UNDERLYINGS,
+            tilt_comparison,
+        )
+
+        if u not in TILT_HISTORY_UNDERLYINGS:
+            raise RuntimeError(f"Tilt history is sampled for {list(TILT_HISTORY_UNDERLYINGS)} only")
+        _require_kite_session()
+        return tilt_comparison(u, window=window)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
 @app.get("/volume-footprint/snapshot")
 def volume_footprint_snapshot(
     underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),

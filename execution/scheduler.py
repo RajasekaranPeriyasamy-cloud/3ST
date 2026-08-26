@@ -97,6 +97,22 @@ def _run_sync_loop() -> None:
         except Exception:
             pass
 
+        # Session tilt curve — the comparison window only accrues if the point is
+        # captured while the session is running, and nobody keeps the page open
+        # all day. Cheap: reuses the profile the desk already cached when fresh.
+        try:
+            from analysis.volume_profile.tilt_history import (
+                maybe_sample_tilt_history_periodic,
+            )
+
+            _safe_tick(
+                "volume_tilt_history",
+                maybe_sample_tilt_history_periodic,
+                lambda _k, _m: None,
+            )
+        except Exception:
+            pass
+
         sleep_sec = min(intervals) if intervals else 30
         _stop_event.wait(sleep_sec)
 

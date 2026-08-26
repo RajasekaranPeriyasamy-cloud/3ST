@@ -1042,6 +1042,38 @@ export interface GammaConcentration {
  * `overlap_pct` and imbalance are structural readings. `residual_label` reports
  * the health of the *arithmetic*, not of the market.
  */
+/**
+ * One prominent peak in the session profile, with two readings of how its price
+ * band traded — neither of which is the current session tilt.
+ *
+ * Both tilts describe the **band**, not the side: a buy peak and a sell peak at
+ * the same price report the same numbers. The side only decides which peaks get
+ * detected.
+ */
+export interface VolumeProfilePeak {
+  price: number;
+  density: number;
+  /** Height above the separating saddle, as a share of this side's tallest peak. */
+  prominence_pct: number;
+  band_lo: number;
+  band_hi: number;
+  /** Option A - tilt of the fitted mixture inside the band. */
+  band_tilt_pp: number | null;
+  band_buy: number;
+  band_sell: number;
+  /** Option C - tilt of the bars that actually traded through the band. */
+  flow_tilt_pp: number | null;
+  bar_count: number;
+  /** Formation window, never a moment. HH:MM. */
+  first: string | null;
+  last: string | null;
+  /** Middle 50% of the band's volume. */
+  q1: string | null;
+  q3: string | null;
+  /** True when that middle 50% fits in 45 minutes - only then is naming a time honest. */
+  concentrated: boolean;
+}
+
 export interface VolumeProfileSnapshot {
   underlying: string;
   available: boolean;
@@ -1079,6 +1111,18 @@ export interface VolumeProfileSnapshot {
   price_lo?: number | null;
   price_hi?: number | null;
   curve?: { price: number; buy: number; sell: number }[];
+  /** Price-axis gridline spacing — the strike step (NIFTY 50, SENSEX 100, NG 5). */
+  grid_step?: number | null;
+  /**
+   * Peak of each side's own density, from the full-resolution arrays.
+   * Distinct from `poc`, which is the peak of the combined profile.
+   * `null` when that side carried no volume.
+   */
+  buy_peak?: { price: number; density: number } | null;
+  sell_peak?: { price: number; density: number } | null;
+  /** Top peaks per side by prominence, tallest first. [0] is `buy_peak`/`sell_peak`. */
+  buy_peaks?: VolumeProfilePeak[];
+  sell_peaks?: VolumeProfilePeak[];
   contract?: {
     expiry?: string | null;
     tradingsymbol?: string | null;
@@ -1155,6 +1199,40 @@ export interface VolumeFootprintOiRow {
   volume: number | null;
   buy_volume: number | null;
   sell_volume: number | null;
+}
+
+/** One prior session in the tilt comparison window. */
+export interface TiltHistoryPoint {
+  date: string;
+  tilt_pp: number;
+  /** "live" = sampled as the session ran; "backfill" = recomputed later. */
+  source: string;
+}
+
+export interface VolumeFootprintTiltHistory {
+  underlying: string;
+  available: boolean;
+  /** "too_early" | "no_history" | "window_too_thin" | a profile reason. */
+  reason: string | null;
+  /** Elapsed session minute both sides of the comparison are read at. */
+  checkpoint_min: number | null;
+  current_tilt_pp: number | null;
+  current_bars?: number | null;
+  balance_verdict?: string | null;
+  contract?: string | null;
+  dead_zone_pp?: number;
+  /** Prior sessions in the window. Never render a percentile without it. */
+  n: number;
+  window: number;
+  percentile?: number;
+  median?: number;
+  min?: number;
+  max?: number;
+  /** How many of the n are recomputed rather than observed live. */
+  backfilled?: number;
+  first_date?: string;
+  last_date?: string;
+  series?: TiltHistoryPoint[];
 }
 
 export interface VolumeFootprintOiLadder {

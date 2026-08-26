@@ -413,3 +413,136 @@ def test_oi_ladder_percentage_matches_the_oi_tracker_formula(monkeypatch) -> Non
     assert from_empty["ce_doi"] == 800
     assert from_empty["ce_doi_pct"] is None, "a zero baseline has no percentage"
     assert from_empty["pe_doi_pct"] is None
+
+
+# --- price grid and per-side peaks ------------------------------------------
+
+
+def test_grid_step_is_the_configured_strike_lattice_not_a_guess() -> None:
+    """A gridline should land on a strike, so the chart reads against the ladder."""
+    assert vp._grid_step("NIFTY") == 50.0
+    assert vp._grid_step("SENSEX") == 100.0
+    assert vp._grid_step("BANKNIFTY") == 100.0
+    assert vp._grid_step("NATURALGAS") == 5.0
+    assert vp._grid_step("NOT_A_SYMBOL") is None
+
+
+def test_side_peaks_come_from_full_resolution_not_the_draw_curve() -> None:
+    payload, res = vp.compute_volume_profile("NIFTY", bars=_bars(160), mintick=0.1)
+    assert payload["available"] is True
+
+    buy, sell = payload["buy_peak"], payload["sell_peak"]
+    assert buy is not None and sell is not None
+    assert payload["price_lo"] <= buy["price"] <= payload["price_hi"]
+    assert payload["price_lo"] <= sell["price"] <= payload["price_hi"]
+
+    # Each peak is that side's true maximum over the full arrays. The sampled
+    # curve keeps only ~1 in N points and can miss a sharp peak by several ticks,
+    # which is why POC and the value area never read it either.
+    # abs=1e-4 because the payload rounds density to 4 dp for transport; the
+    # peak *price* is what the chart marks and that is exact.
+    assert buy["density"] == pytest.approx(max(res.profile_buy), abs=1e-4)
+    assert sell["density"] == pytest.approx(max(res.profile_sell), abs=1e-4)
+    best_buy = max(range(len(res.profile_buy)), key=lambda i: res.profile_buy[i])
+    assert buy["price"] == round(res.profile_prices[best_buy], 2)
+    assert max(c["buy"] for c in payload["curve"]) <= buy["density"] + 1e-6
+
+
+def test_a_side_that_carried_no_volume_has_no_peak() -> None:
+    """None, not the axis minimum — an empty side's peak is not a price."""
+
+    class _Empty:
+        profile_prices = [100.0, 101.0, 102.0]
+        profile_buy = [0.0, 0.0, 0.0]
+        profile_sell = [1.0, 4.0, 2.0]
+
+    assert vp._side_peak(_Empty(), "buy") is None
+    assert vp._side_peak(_Empty(), "sell") == {"price": 101.0, "density": 4.0}
+
+
+# --- prominent peaks, and the two tilts that describe each one ---------------
+
+
+def test_prominence_ignores_a_bump_on_a_taller_peak_shoulder() -> None:
+    """A shoulder wobble is fitting noise, not a level worth labelling."""
+    prices = [float(i) for i in range(11)]
+    #             0    1    2     3    4    5    6    7    8    9   10
+    vals = [0.0, 2.0, 6.0, 10.0, 6.5, 7.0, 3.0, 0.5, 4.0, 1.0, 0.0]
+    peaks = {p["index"]: p["prominence"] for p in vp._prominence_peaks(prices, vals)}
+
+    # The 10.0 summit stands clear of everything.
+    assert peaks[3] == pytest.approx(10.0)
+    # The 7.0 at index 5 sits on the big peak's shoulder: it only rises 0.5
+    # above the saddle at 6.5, so it scores far below the 4.0 at index 8 which
+    # rises 3.5 above its own saddle.
+    assert peaks[5] == pytest.approx(0.5)
+    assert peaks[8] == pytest.approx(3.5)
+    assert peaks[8] > peaks[5]
+
+
+def test_selection_keeps_the_taller_of_two_peaks_that_are_too_close() -> None:
+    peaks = [
+        {"price": 24300.0, "prominence": 10.0},
+        {"price": 24310.0, "prominence": 8.0},  # inside the separation window
+        {"price": 24400.0, "prominence": 5.0},
+    ]
+    kept = vp._select_peaks(peaks, min_separation=25.0, limit=4)
+    assert [p["price"] for p in kept] == [24300.0, 24400.0]
+
+    # limit is honoured even when everything is far apart.
+    spread = [{"price": 24000.0 + 100 * i, "prominence": 10.0 - i} for i in range(6)]
+    assert len(vp._select_peaks(spread, min_separation=25.0, limit=4)) == 4
+
+
+def test_band_tilt_describes_the_band_not_the_whole_session() -> None:
+    buys = [0.0, 10.0, 90.0, 10.0, 0.0]
+    sells = [0.0, 10.0, 10.0, 10.0, 0.0]
+    tilt, b, s = vp._band_tilt(buys, sells, 1, 3)
+    assert (b, s) == (110.0, 30.0)
+    assert tilt == pytest.approx(57.14, abs=0.01)
+
+    # An empty band is unmeasurable, not balanced.
+    assert vp._band_tilt([0.0, 0.0], [0.0, 0.0], 0, 1)[0] is None
+
+
+class _FakeBar:
+    def __init__(self, hhmm, low, high, vol, buy, sell):
+        self.time = f"2026-08-26T{hhmm}+05:30"
+        self.low, self.high, self.volume = low, high, vol
+        self.buy_volume, self.sell_volume = buy, sell
+
+
+def test_flow_window_is_a_window_and_only_claims_a_time_when_earned() -> None:
+    """A profile peak is a price feature; its volume can span the whole session."""
+    # Tight: everything traded inside ten minutes.
+    tight = [_FakeBar(f"11:{m:02d}", 100.0, 101.0, 10.0, 7.0, 3.0) for m in range(30, 40)]
+    out = vp._flow_at_band(tight, 100.0, 101.0)
+    assert out["bar_count"] == 10
+    assert out["flow_tilt_pp"] == pytest.approx(40.0)
+    assert out["first"] == "11:30" and out["last"] == "11:39"
+    assert out["concentrated"] is True
+
+    # Spread: the same band revisited from open to close.
+    spread = [_FakeBar(f"{h:02d}:00", 100.0, 101.0, 10.0, 7.0, 3.0) for h in range(10, 16)]
+    out2 = vp._flow_at_band(spread, 100.0, 101.0)
+    assert out2["concentrated"] is False, "6 hours must never be reported as a moment"
+    assert out2["first"] == "10:00" and out2["last"] == "15:00"
+
+    # A band nothing traded through reports no tilt rather than zero.
+    miss = vp._flow_at_band(tight, 500.0, 501.0)
+    assert miss["bar_count"] == 0 and miss["flow_tilt_pp"] is None
+
+
+def test_peaks_are_ranked_tallest_first_and_agree_with_the_singular_peak() -> None:
+    payload, _ = vp.compute_volume_profile("NIFTY", bars=_bars(200), mintick=0.1)
+    for side in ("buy", "sell"):
+        peaks = payload[f"{side}_peaks"]
+        assert peaks, f"{side} side should find at least one peak"
+        assert len(peaks) <= vp.MAX_PEAKS_PER_SIDE
+        densities = [p["density"] for p in peaks]
+        assert densities == sorted(densities, reverse=True)
+        # [0] is the same level the singular key names.
+        assert peaks[0]["price"] == pytest.approx(payload[f"{side}_peak"]["price"], abs=0.5)
+        for p in peaks:
+            assert p["band_lo"] <= p["price"] <= p["band_hi"]
+            assert 0 < p["prominence_pct"] <= 100.0

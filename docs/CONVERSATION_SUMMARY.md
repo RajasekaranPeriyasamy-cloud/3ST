@@ -10,6 +10,251 @@ This file captures recent development context from Cursor agent sessions. Full c
 
 ---
 
+## Session 2026-08-26 (later) — Volume Footprint: overlay toggles
+
+The legend below the chart became a row of toggle switches above it. Eleven
+overlays (7 GEX levels, POC, Peaks, Grid) each switch on and off, with a
+show-all / hide-all control.
+
+**The legend was already there doing nothing.** A colour swatch that only names a
+line is wasted space; making it the control is the same pixels doing real work.
+It is also the honest answer to label crowding on a busy session: rather than the
+chart guessing which of eleven overlays matters today, the operator turns off what
+they are not reading. That request came directly from a screenshot where a peak
+tag rendered through the POC label.
+
+Choice persists in `localStorage` under `3st.volume-footprint.hidden-overlays`,
+wrapped in try/catch — a private window or blocked site data throws on access
+rather than returning null, and losing a display preference is not worth
+surfacing.
+
+### A batching bug the first version shipped with
+
+`toggleOverlay` was a `useCallback` closed over `hidden`. React batches state
+updates, so three quick clicks all read the *same stale set* and overwrote each
+other — toggling POC, Peaks and Grid together left only Grid off, and
+`localStorage` held `["grid"]`. Found by clicking three switches in one tick
+during verification, not by reading the code.
+
+Fixed with a functional update (`setHidden(prev => ...)`) and persistence moved
+into a `useEffect` on `hidden`, which also keeps a storage write out of a state
+updater. Re-verified: three toggles in one tick now all stick, survive a reload,
+and show-all clears them.
+
+### Also this round
+
+Peak tags flip inward when they would land in a label column's gutter
+(`GUTTER_W`), which is what caused the reported `-15pp` / `POC 24,278` overlap.
+The tag keeps its own price rather than being nudged off it.
+
+---
+
+## Session 2026-08-26 (later) — Volume Footprint: prominent peaks, tagged with how each level traded
+
+Each side now reports its top peaks by prominence, and every peak carries two
+readings of how its price band traded. Neither is the session tilt.
+
+### A profile peak does not form at a time
+
+The request was to tag "the tilt when the peak formed". Measured first, on the
+live NIFTY session: the POC band was touched by **244 of 385 bars, spanning
+10:21-15:27**, with the middle 50% of its volume landing between 12:13 and 14:28.
+
+A volume profile is a distribution over **price**, not time. Volume under a peak
+accumulates across many separate visits, so for most peaks there is no moment to
+name — and printing one would be a fiction that looks authoritative.
+
+So the chart names a time **only when the peak earns it**: `concentrated` is true
+when the middle 50% of a band's volume fits inside 45 minutes. Today that flags
+the 15:30 closing-auction spike (12 bars, 15:28-15:39) and the opening peak at
+24,348, and correctly refuses for the POC. The full window is in the tooltip
+either way.
+
+### Two tilts, and they genuinely differ
+
+* **`band_tilt_pp`** — the session tilt formula restricted to the peak's price
+  band, read off the fitted mixture.
+* **`flow_tilt_pp`** — the same formula over the *bars that actually traded
+  through* the band, using each bar's own engine-assigned split.
+
+One weights by where the model placed the mass, the other by raw bar volume.
+Measured today they diverge by up to 4.6pp (sell peak 24,321: band -13.41 vs flow
+-18.01), so keeping both is not redundancy.
+
+**Both describe the band, not the side.** A buy peak and a sell peak at the same
+price report identical numbers; the side only decides which peaks get detected.
+
+And both differ from the session tilt, which is the point: NIFTY read **-19.16pp**
+overall while its 15:30 peak read **-30.6pp** and its 24,321 peak **-13.4pp**.
+
+### Prominence, not just local maxima
+
+Peaks use topographic prominence — height above the higher of the two saddles
+separating a peak from any taller neighbour. A raw local-max scan returns a dozen
+bumps that are smoothing artefacts; a shoulder wobble on a taller peak scores near
+zero and is dropped. Filters: prominence >= 8% of the side's tallest, minimum
+separation of half a strike step, at most 4 per side. Walked on the
+**full-resolution** arrays, never the sampled draw curve, which at this scale both
+invents and hides bumps.
+
+### Label discipline held
+
+The tag is deliberately compact (`-31pp 15:31`) and sits at the peak's own tip
+rather than joining the label columns — seven more entries in the left column
+would have undone the stacking fix from earlier the same day. Only the tallest
+peak keeps a stub back to the centre line; the rest are dots, or the chart becomes
+a comb. Verified in the DOM: 7 peaks tagged, **zero label collisions**.
+
+### Verified
+
+`pytest tests/` — 961 passed, 5 new. They pin that prominence rejects a shoulder
+bump, that selection keeps the taller of two close peaks, that band tilt is
+unmeasurable rather than balanced on an empty band, and that a six-hour formation
+window is never reported as concentrated.
+
+---
+
+## Session 2026-08-26 (later) — Volume Footprint: price grid and per-side peaks
+
+Three additions to the profile chart: a dotted price grid, per-underlying
+spacing, and each side's own density peak.
+
+### The grid is the strike lattice, not round numbers
+
+`grid_step` comes straight from `INDEX_OPTIONS[u]["strike_step"]` — NIFTY 50,
+SENSEX 100, BANKNIFTY 100, CRUDEOIL/CRUDEOILM 50, NATURALGAS 5. Reading it from
+config rather than inferring it from the price range means a gridline **is** a
+strike, so the profile lines up with the OI ladder beside it. Nothing had to be
+guessed for the other underlyings; the values were already there.
+
+Coarsened when a session's range would draw too many: the chart steps the base
+through 2x / 5x / 10x / 20x / 50x until at most `MAX_GRID_LINES` (14) fit, and
+draws none if even that fails. A wide CRUDEOIL day at 50 points would otherwise
+render a solid block, which is worse than no grid. Measured 2026-08-26: NIFTY 4
+lines over 206 points, SENSEX 5 over 576, NATURALGAS 1 over 6 — all at 1x.
+
+### Peaks are per-side, and are not the POC
+
+`buy_peak` / `sell_peak` give the price at which each side's own density is
+greatest. POC is the peak of the **combined** profile, so on a one-sided session
+the three sit at different prices and that gap is the reading. Live NIFTY on
+2026-08-26: buy peak 24,274, sell peak 24,278, POC 24,278.1 — sell carried the
+POC while buying concentrated four points lower.
+
+Both are read off the **full-resolution** `profile_buy` / `profile_sell` arrays,
+never the sampled `curve`. The curve keeps ~1 point in N purely for drawing and
+can miss a sharp peak by several ticks — the same rule POC and the value area
+already follow. A side that carried no volume returns `null`, not the axis
+minimum, which would draw a confident marker at the bottom of the chart.
+
+They are drawn as a short dashed stub to the tip of their own curve with a dot,
+deliberately not a full-width rule: a horizontal line across the chart reads as
+another level, and these are properties of one side only.
+
+### Verified
+
+`pytest tests/` — 956 passed, 3 new. One pins that the peak equals the max of the
+full array and not of the draw curve; the density assertion uses `abs=1e-4`
+because the payload rounds to 4 dp for transport, while the peak *price* — what
+the chart actually marks — is exact.
+
+---
+
+## Session 2026-08-26 (later) — Volume Footprint: session tilt history
+
+`analysis/volume_profile/tilt_history.py` + `data/volume_tilt_history.json` +
+`scripts/backfill_volume_tilt.py` + `GET /volume-footprint/tilt-history` +
+`components/volume/TiltHistoryCard.tsx`. Sampled for **NIFTY and SENSEX only**.
+
+### Sessions are stored as curves, not closing values
+
+Tilt at 09:30 comes from ~15 bars; a finished session has ~385. Early-session
+tilt is noisy and mean-reverts as volume accumulates, so ranking today-at-09:30
+against thirty *closing* tilts yields a confident number that means nothing.
+
+Every session is therefore a curve keyed by elapsed session minute (15-minute
+checkpoints, ~25 per session), and `compare_current()` only ranks today against
+prior sessions **at the same checkpoint**. The card states the basis in its
+header — "compared at 15:30 · same point of every session" — so nobody assumes
+closing-vs-closing.
+
+This is also why the store shape was decided before anything was written:
+retrofitting a curve onto a scalar store means discarding the accumulated
+history.
+
+### Backfill is a one-shot seed, and NIFTY could not be seeded at all
+
+The profile needs **front-month futures** bars (cash indices carry no volume),
+and Kite delists a contract about a day after expiry. Measured 2026-08-26:
+
+* `NIFTY26AUGFUT` (expired 08-25) → `fetch_historical_by_token` raises
+  **`invalid token`**, even though the locally cached instrument dump still
+  listed it. The dump is not authority on what Kite will serve.
+* `SENSEX26AUGFUT` expires 08-27, so it still resolves — for one more day.
+
+So the reachable window shrinks with every expiry and the same command returns
+fewer sessions next month, silently. **The durable answer is the live sampler**
+(`maybe_sample_tilt_history_periodic`, hooked into `execution/scheduler.py`),
+which records each checkpoint as the session runs — reusing the profile the desk
+has already cached when one is fresh, so a page-open session costs nothing extra.
+
+Seeded 2026-08-26: **SENSEX 18 sessions** (2026-08-03 → 08-26), **NIFTY 1**
+(today only). July was skipped by instruction and is unreachable regardless.
+
+### The volume guard was self-defeating; the calendar guard is not
+
+The first backfill guard skipped a session whose volume was under 25% of the
+window's **median** — and wrote 18 far-month NIFTY sessions anyway. The median is
+computed over a window that is *mostly* far-month, so the far-month level becomes
+the baseline and nothing looks anomalous: 2026-08-03 passed as "72% of median"
+while being 10% of real front-month volume (287k against 2.72M).
+
+Those rows were purged (`--purge`, `tilt_history.purge_underlying`) and the guard
+replaced with a **calendar** test: a contract is front month only from the day
+after its predecessor expired, read off the instrument dump's prior expiry. For
+NIFTY that yields 2026-08-26 exactly — 17 sessions correctly rejected. The volume
+test survives as a fallback for when the predecessor is already delisted, but now
+compares against the **last** session rather than the median, because
+`resolve_future` guarantees the resolved contract is front month today.
+
+Substituting the far month is not a workaround either: `NIFTY26SEPFUT` traded
+312k on 08-05 rising to 5.5M on roll day 08-25. A profile fitted to that measures
+the roll, not the session.
+
+### Null and label discipline
+
+* A session is **excluded from its own comparison** — it cannot be part of the
+  distribution it is ranked against.
+* `available: False` with a named reason for `too_early` (before the first
+  checkpoint), `no_history`, and `window_too_thin` (< 5 prior sessions). Ranking
+  against four sessions is arithmetic, not evidence.
+* **`n` always travels with the percentile.** "6th of 16" and "6th of 30" are
+  different claims and must not render alike.
+* `source` is `live` or `backfill`, counted in the payload and shown as a badge;
+  a live point upgrades a backfilled session, never the reverse, because live
+  points were observed as they happened.
+* Percentile, not z-score: tilt is bounded [-100, +100] and its distribution is
+  not normal, least of all with expiry-day outliers. Ties split at midrank so a
+  flat window cannot read as 0 or 100.
+
+### Clock note
+
+Git Bash's `TZ=Asia/Kolkata date` double-applies the offset on this machine and
+reported 09:23 IST when the real time was 14:53. Python's
+`datetime.now(tz=ZoneInfo("Asia/Kolkata"))` is correct and matches the exchange
+bar timestamps. Trust the Python path — the store's "today" depends on it.
+
+### Verified
+
+`pytest tests/` — 953 passed. 14 new tests in `tests/test_volume_tilt_history.py`,
+including one that pins the partial-vs-complete refusal by seeding sessions that
+drift from positive at 09:30 to negative at the close. The fixture patches the
+module's own `data_dir` reference (not `settings.data_dir`) and the real store
+was confirmed intact at 19 sessions afterwards. API restarted, `npm run build`
+run with the API stopped, both underlyings confirmed on port 8001.
+
+---
+
 ## Session 2026-08-26 — Volume Footprint: strike OI ladder (spot, session-open OI, ΔOI)
 
 Added a per-strike OI ladder beside the session volume profile:
