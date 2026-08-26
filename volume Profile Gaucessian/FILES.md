@@ -48,10 +48,16 @@ pytest tests/test_volume_footprint.py tests/test_volume_profile.py -q
 curl -s "http://127.0.0.1:8001/volume-footprint/snapshot?underlying=NIFTY"
 ```
 
-## Removed
+## History of this folder
 
-`volume Profile Gaucessian/` — the original untracked working folder. Its package
-was vendored byte-identical, its tests moved into `tests/` (import path rewritten),
-its Pine source kept as `vendor/volume_footprint/pine-source-original.txt`, and
-its PDF and presentation moved to `reference/` here. Nothing unique was lost;
-each file was diffed against its destination before the folder was deleted.
+`volume Profile Gaucessian/` started as the original untracked working folder. On
+2026-08-20 its package was vendored byte-identical, its tests moved into `tests/`
+(import path rewritten), its Pine source kept as
+`vendor/volume_footprint/pine-source-original.txt`, and its PDF and presentation
+moved into the docs tree — each file diffed against its destination first, so
+nothing unique was lost. The emptied folder was left behind.
+
+On 2026-08-26 it was re-adopted as this desk's documentation home: `docs/volume-footprint/`
+was moved here wholesale and removed. The code stayed put for the reasons in the
+table above — in particular, a directory name containing spaces cannot be a Python
+package root, so `vendor/volume_footprint/` can never live here.
