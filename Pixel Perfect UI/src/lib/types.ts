@@ -1074,6 +1074,36 @@ export interface VolumeProfilePeak {
   concentrated: boolean;
 }
 
+/** One price the POC held today, merged across every spell it spent there. */
+export interface PocTrailLevel {
+  poc: number;
+  lo: number;
+  hi: number;
+  /** Total minutes this price was the POC. */
+  minutes: number;
+  /** Share of the recorded session — the chart weights the line by it. */
+  dwell_pct: number;
+  /** How many separate times the POC came back here. */
+  spells: number;
+  /** "09:30-14:30" per spell. */
+  windows: string[];
+}
+
+export interface PocTrail {
+  available: boolean;
+  /** "not_sampled" | "no_trail_yet" | "store_unavailable" */
+  reason: string | null;
+  levels?: PocTrailLevel[];
+  /** Chronological runs, kept for the tooltip. */
+  segments?: { poc: number; from: string; to: string; minutes: number }[];
+  /** The band the POC travelled through, for the shaded region. */
+  band_lo?: number;
+  band_hi?: number;
+  first?: string;
+  last?: string;
+  checkpoints?: number;
+}
+
 export interface VolumeProfileSnapshot {
   underlying: string;
   available: boolean;
@@ -1111,6 +1141,8 @@ export interface VolumeProfileSnapshot {
   price_lo?: number | null;
   price_hi?: number | null;
   curve?: { price: number; buy: number; sell: number }[];
+  /** Where the POC has sat today. Stored, not recomputed — tracked underlyings only. */
+  poc_trail?: PocTrail;
   /** Price-axis gridline spacing — the strike step (NIFTY 50, SENSEX 100, NG 5). */
   grid_step?: number | null;
   /**

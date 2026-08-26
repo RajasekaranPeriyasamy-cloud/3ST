@@ -36,7 +36,7 @@ convention requires it; moving them breaks the desk:
 | `Pixel Perfect UI/src/components/gamma/concentration/GammaLadder.tsx` | Row tint lives inside the existing ladder — it is a modification, not a new file |
 | `Pixel Perfect UI/src/components/AppSidebar.tsx` | The pinned sidebar entry |
 | `tests/test_volume_footprint.py` | 37 upstream engine tests. In `tests/` so `pytest tests/` and CI run them (decision 6) |
-| `tests/test_volume_profile.py` | 28 adapter tests — basis alignment, thin-session guard, exact strike bands, the peek-only cache contract, and the OI ladder (pass-through, null discipline, shared snapshot, ΔOI %), the strike-lattice price grid, and prominent peaks with per-band tilt |
+| `tests/test_volume_profile.py` | 32 adapter tests — basis alignment, thin-session guard, exact strike bands, the peek-only cache contract, and the OI ladder (pass-through, null discipline, shared snapshot, ΔOI %), the strike-lattice price grid, and prominent peaks with per-band tilt |
 | `options/session_poc.py` | Prefers the footprint POC via peek (decision 11); it is a pre-existing module this desk modifies |
 | `instruments.py` | `_compact_row` now carries `tick_size`, which the price lattice reads |
 | `options/gamma_density.py` | Attaches `volume_profile` + `strike_volume` to the snapshot, gated on the full desk poll |

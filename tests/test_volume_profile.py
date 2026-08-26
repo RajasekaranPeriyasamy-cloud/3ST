@@ -546,3 +546,114 @@ def test_peaks_are_ranked_tallest_first_and_agree_with_the_singular_peak() -> No
         for p in peaks:
             assert p["band_lo"] <= p["price"] <= p["band_hi"]
             assert 0 < p["prominence_pct"] <= 100.0
+
+
+def test_lookback_still_reaches_the_open_long_after_close() -> None:
+    """The drift bug: a clamped lookback stops anchoring and starts sliding.
+
+    ``fetch_minute_candles`` derives ``from_date = now - count``, so any upper
+    clamp on the count turns the window into a rolling one once the session is
+    older than the clamp. Observed 2026-08-26 at 20:25 IST: the shared
+    600-minute helper produced a profile of 314 bars starting 10:26 instead of
+    385 from 09:15, and POC/tilt/peaks moved on every cache expiry.
+    """
+    late = dt.datetime(2026, 8, 26, 20, 25, tzinfo=IST)
+    lookback = vp.session_lookback_minutes("NIFTY", when=late)
+
+    # now - lookback must land at or before the 09:15 open, never after it.
+    reach = late - dt.timedelta(minutes=lookback)
+    assert reach <= late.replace(hour=9, minute=15), (
+        f"window starts {reach:%H:%M}, after the 09:15 open — the session is truncated"
+    )
+    assert lookback > 600, "a 600-minute clamp is exactly what caused the drift"
+
+    # Still anchored at the far end of the day, and for MCX's longer session.
+    midnight = dt.datetime(2026, 8, 26, 23, 59, tzinfo=IST)
+    assert midnight - dt.timedelta(
+        minutes=vp.session_lookback_minutes("NIFTY", when=midnight)
+    ) <= midnight.replace(hour=9, minute=15)
+    assert vp.session_lookback_minutes("CRUDEOIL", when=midnight) > 600
+
+    # Before the open there is no session to reach back to.
+    pre = dt.datetime(2026, 8, 26, 8, 0, tzinfo=IST)
+    assert vp.session_lookback_minutes("NIFTY", when=pre) == vp.MIN_PROFILE_BARS
+
+
+def test_concentration_boundary_is_inclusive_and_wide_windows_still_refuse() -> None:
+    """The threshold decides moment-vs-range, never something-vs-nothing.
+
+    Raised to 60 because at 45 two peaks with near-identical windows landed on
+    opposite sides — one timed, one blank — which read as arbitrary rather than
+    deliberate. Peaks past the boundary now carry their range instead.
+    """
+    def _band(minutes: int):
+        bars = [
+            _FakeBar(f"{10 + m // 60:02d}:{m % 60:02d}", 100.0, 101.0, 10.0, 6.0, 4.0)
+            for m in range(0, minutes + 1)
+        ]
+        return vp._flow_at_band(bars, 100.0, 101.0)
+
+    # A one-hour window is the boundary and counts as concentrated.
+    assert _band(60)["concentrated"] is True
+    # Comfortably past it, a range is the only honest answer.
+    assert _band(180)["concentrated"] is False
+    # The window itself is reported either way, so the chart always has a range
+    # to fall back on.
+    for m in (60, 180):
+        out = _band(m)
+        assert out["q1"] and out["q3"] and out["first"] and out["last"]
+
+
+# --- POC trail ---------------------------------------------------------------
+
+
+def test_poc_trail_groups_drift_into_levels_and_merges_revisits(monkeypatch) -> None:
+    """Two things the trail has to get right on a real session.
+
+    A stable POC drifts a few points across a morning and must stay ONE level;
+    a POC that leaves and comes back must not become two. Measured 2026-08-26:
+    NIFTY held ~24,346 for 84% of the session then migrated 71 points, and
+    SENSEX oscillated between two prices producing six runs of two levels.
+    """
+    curve = [
+        # A morning level drifting 5 points — one level, not four.
+        {"minute": 15, "poc": 24342.9},
+        {"minute": 30, "poc": 24343.1},
+        {"minute": 45, "poc": 24347.6},
+        {"minute": 60, "poc": 24348.2},
+        # Away and back again — same level, second spell.
+        {"minute": 75, "poc": 24277.0},
+        {"minute": 90, "poc": 24346.0},
+        # A genuine migration.
+        {"minute": 105, "poc": 24277.5},
+        {"minute": 120, "poc": 24278.1},
+    ]
+    monkeypatch.setattr(
+        "analysis.volume_profile.tilt_history.poc_curve", lambda *_a, **_k: curve
+    )
+    out = vp.poc_trail("NIFTY", day="2026-08-26")
+
+    assert out["available"] is True
+    assert len(out["segments"]) == 4, "runs are chronological and must not be merged"
+    assert len(out["levels"]) == 2, "but only two prices were ever in control"
+
+    top = out["levels"][0]
+    assert top["spells"] == 2, "a revisited price is one level with two spells"
+    assert top["minutes"] > out["levels"][1]["minutes"]
+    assert sum(lv["dwell_pct"] for lv in out["levels"]) == pytest.approx(100.0, abs=0.2)
+    assert out["band_lo"] == 24277.0 and out["band_hi"] == 24348.2
+
+
+def test_poc_trail_refuses_rather_than_drawing_a_partial_one(monkeypatch) -> None:
+    # Not one of the sampled underlyings — there is no trail to have.
+    assert vp.poc_trail("BANKNIFTY", day="2026-08-26")["reason"] == "not_sampled"
+
+    # Sampled, but nothing recorded yet: a single point is not a trail.
+    monkeypatch.setattr(
+        "analysis.volume_profile.tilt_history.poc_curve",
+        lambda *_a, **_k: [{"minute": 15, "poc": 24300.0}],
+    )
+    out = vp.poc_trail("NIFTY", day="2026-08-26")
+    assert out["available"] is False
+    assert out["reason"] == "no_trail_yet"
+    assert out["segments"] == []

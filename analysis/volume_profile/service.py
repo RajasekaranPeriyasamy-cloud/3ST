@@ -39,6 +39,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from config import INDEX_OPTIONS
+from options.gamma_density_history import session_window
 from utils.logging import get_logger, log_event
 from vendor.volume_footprint import (
     BarSeries,
@@ -59,6 +60,11 @@ PROFILE_CACHE_TTL_SEC = 45.0
 MIN_PROFILE_BARS = 15
 #: Samples along the returned density curve (display only; POC/VA use the model).
 PROFILE_SAMPLES = 120
+#: Minutes one stored checkpoint stands for, mirroring
+#: ``tilt_history.CHECKPOINT_MIN``. Kept local so this module does not import the
+#: store just to format a dwell time.
+CHECKPOINT_SPAN = 15
+
 #: Fallback when the instrument dump carries no tick_size.
 DEFAULT_MINTICK = 0.05
 
@@ -88,6 +94,35 @@ def _is_future_settled(underlying: str) -> bool:
     """True when options are written on the future, so no basis correction applies."""
     meta = INDEX_OPTIONS.get(underlying.strip().upper()) or {}
     return str(meta.get("spot_source") or "").lower() == "future"
+
+
+def session_lookback_minutes(underlying: str, *, when: datetime | None = None) -> int:
+    """Minutes to request so the fetch window starts at *today's* session open.
+
+    ``fetch_minute_candles`` takes a count and computes ``from_date = now - count``,
+    so the count must track wall-clock. ``gamma_density_history.minutes_since_session_open``
+    clamps it to 600, which is fine while the session is young and silently wrong
+    afterwards: once elapsed-since-open passes the clamp the window stops being
+    anchored and becomes a *rolling* 600 minutes, sliding forward a minute at a
+    time and dropping the open.
+
+    Observed 2026-08-26 at 20:25 IST — 4h45m after close — the NIFTY profile was
+    built from 314 bars starting 10:26 instead of 385 from 09:15, and POC, tilt
+    and every peak drifted on each 45-second cache expiry.
+
+    So this deliberately has **no upper clamp**. ``from_date`` works out to the
+    session open minus 15 minutes on any given day, which is also why it is safe
+    on a weekend or holiday: the window still lands on today, finds no candles,
+    and the caller reports ``no_session_bars`` rather than quietly profiling
+    yesterday.
+    """
+    now = _now_ist(when)
+    start, _end = session_window(underlying)
+    open_dt = datetime.combine(now.date(), start, tzinfo=IST)
+    if now <= open_dt:
+        return MIN_PROFILE_BARS
+    # +15 so the first candle of the session is comfortably inside the window.
+    return max(int((now - open_dt).total_seconds() // 60) + 15, MIN_PROFILE_BARS)
 
 
 def _bar_key(bar: dict[str, Any]) -> str | None:
@@ -249,11 +284,12 @@ def compute_volume_profile(
         try:
             from instruments import resolve_future
             from kite_client import fetch_index_minute_spot, fetch_minute_candles
-            from options.gamma_density_history import minutes_since_session_open
 
             # Session-anchored: never the 40-bar default, which would silently
-            # build the profile from the last 40 minutes and look plausible.
-            minutes = max(int(minutes_since_session_open(u)), MIN_PROFILE_BARS)
+            # build the profile from the last 40 minutes and look plausible, and
+            # not the shared 600-clamped helper, which slides off the open once
+            # the session is more than 600 minutes old.
+            minutes = session_lookback_minutes(u, when=when)
             # expiry=None resolves the front month, so near/far share one path.
             fut_meta = resolve_future(u, expiry=expiry)
             bars = fetch_minute_candles(int(fut_meta["instrument_token"]), minutes=minutes)
@@ -351,6 +387,10 @@ def compute_volume_profile(
         # did this level trade": band_tilt_pp from the fitted mixture, and
         # flow_tilt_pp from the bars that actually traded through it. [0] is the
         # tallest, so it is the same level buy_peak / sell_peak names.
+        # Where the POC has sat today, so the chart can show that a level held
+        # for hours before the close moved it. Empty for underlyings the sampler
+        # does not track — it is a stored trail, not a recomputed one.
+        "poc_trail": poc_trail(u, day=_now_ist(when).date().isoformat()),
         "buy_peaks": _side_peaks(res, series.bars, "buy", strike_step=_grid_step(u)),
         "sell_peaks": _side_peaks(res, series.bars, "sell", strike_step=_grid_step(u)),
     }
@@ -407,8 +447,15 @@ MAX_PEAKS_PER_SIDE = 4
 
 #: A peak whose middle-50% of volume landed inside this many minutes really did
 #: form at a time, and saying so is honest. Wider than this and naming a moment
-#: would be a fiction — today's NIFTY POC drew from 244 bars across 10:21-15:27.
-CONCENTRATED_IQR_MIN = 45
+#: would be a fiction — today's NIFTY POC drew from 244 bars across 10:21-15:27,
+#: so the chart shows that peak's *range* instead.
+#:
+#: Raised 45 -> 60 on request: "within the hour" is a defensible boundary for
+#: calling something a moment, and at 45 two peaks with near-identical windows
+#: (45 min vs 50 min) fell on opposite sides, which read as arbitrary. Peaks
+#: wider than this are not blank — they carry their window as a range, so the
+#: threshold now only decides *moment vs range*, never *something vs nothing*.
+CONCENTRATED_IQR_MIN = 60
 
 
 def _prominence_peaks(
@@ -652,6 +699,128 @@ def _sample_curve(res: FootprintResult) -> list[dict[str, float]]:
             }
         )
     return out
+
+
+def _hhmm(minute: int, underlying: str) -> str:
+    """Session-elapsed minutes to a clock time on this underlying's session."""
+    start, _end = session_window(underlying)
+    total = start.hour * 60 + start.minute + int(minute)
+    return f"{(total // 60) % 24:02d}:{total % 60:02d}"
+
+
+def poc_trail(underlying: str, *, day: str | None = None) -> dict[str, Any]:
+    """Where the POC has sat through the session, as levels with dwell times.
+
+    The closing POC alone can hide the session. Measured 2026-08-26 on NIFTY: the
+    POC held ~24,348 from 09:29 to 14:29 and then migrated 71 points to ~24,278
+    in the final hour. A reader looking only at the final 24,278 would never know
+    24,348 was the control price for five of the six hours.
+
+    Consecutive checkpoints within **half a strike step** of each other are one
+    level, so the ~5-point drift a stable POC shows across a morning does not
+    fragment into a dozen segments, while a genuine migration to a different
+    strike always starts a new one.
+
+    Read from the tilt-history store rather than recomputed: rebuilding the
+    profile at all 25 checkpoints costs ~2.7s, which is not a page load. That
+    means the trail exists only for the underlyings the sampler tracks, and only
+    from the day it was first recorded — ``available`` says so rather than
+    drawing a partial trail as if it were the whole session.
+    """
+    u = underlying.strip().upper()
+    today = day or _now_ist().date().isoformat()
+    try:
+        from analysis.volume_profile.tilt_history import TILT_HISTORY_UNDERLYINGS, poc_curve
+    except Exception:
+        return {"available": False, "reason": "store_unavailable", "segments": []}
+
+    if u not in TILT_HISTORY_UNDERLYINGS:
+        return {"available": False, "reason": "not_sampled", "segments": []}
+
+    points = poc_curve(u, today)
+    if len(points) < 2:
+        return {"available": False, "reason": "no_trail_yet", "segments": []}
+
+    tol = (_grid_step(u) or 50.0) / 2.0
+    segments: list[dict[str, Any]] = []
+    for pt in points:
+        cur = segments[-1] if segments else None
+        if cur is not None and abs(pt["poc"] - cur["_ref"]) <= tol:
+            cur["to_minute"] = pt["minute"]
+            cur["lo"] = min(cur["lo"], pt["poc"])
+            cur["hi"] = max(cur["hi"], pt["poc"])
+            cur["checkpoints"] += 1
+            continue
+        segments.append(
+            {
+                "_ref": pt["poc"],
+                "poc": pt["poc"],
+                "lo": pt["poc"],
+                "hi": pt["poc"],
+                "from_minute": pt["minute"],
+                "to_minute": pt["minute"],
+                "checkpoints": 1,
+            }
+        )
+
+    out: list[dict[str, Any]] = []
+    for seg in segments:
+        seg.pop("_ref", None)
+        # Mid of the level's own drift reads better than whichever checkpoint
+        # happened to open the segment.
+        seg["poc"] = round((seg["lo"] + seg["hi"]) / 2.0, 2)
+        seg["lo"] = round(seg["lo"], 2)
+        seg["hi"] = round(seg["hi"], 2)
+        seg["from"] = _hhmm(seg["from_minute"], u)
+        seg["to"] = _hhmm(seg["to_minute"], u)
+        seg["minutes"] = seg["to_minute"] - seg["from_minute"] + CHECKPOINT_SPAN
+        out.append(seg)
+
+    # Merge runs that revisit the same price into one level. SENSEX on
+    # 2026-08-26 flipped between ~77,893 and ~77,722 all day: six runs, but only
+    # two control prices. Drawing six lines would overstate a two-level session,
+    # so the chart reads `levels` and the tooltip keeps the run sequence.
+    levels: list[dict[str, Any]] = []
+    for seg in out:
+        hit = next((lv for lv in levels if abs(lv["poc"] - seg["poc"]) <= tol), None)
+        if hit is None:
+            levels.append(
+                {
+                    "poc": seg["poc"],
+                    "lo": seg["lo"],
+                    "hi": seg["hi"],
+                    "minutes": seg["minutes"],
+                    "spells": 1,
+                    "windows": [f"{seg['from']}-{seg['to']}"],
+                }
+            )
+            continue
+        hit["lo"] = min(hit["lo"], seg["lo"])
+        hit["hi"] = max(hit["hi"], seg["hi"])
+        hit["minutes"] += seg["minutes"]
+        hit["spells"] += 1
+        hit["windows"].append(f"{seg['from']}-{seg['to']}")
+    total_min = sum(lv["minutes"] for lv in levels) or 1
+    for lv in levels:
+        lv["poc"] = round((lv["lo"] + lv["hi"]) / 2.0, 2)
+        # Share of the session this price was in control — the chart weights each
+        # line by it, so a five-hour level does not look like a 15-minute blip.
+        lv["dwell_pct"] = round(100.0 * lv["minutes"] / total_min, 1)
+    levels.sort(key=lambda lv: -lv["minutes"])
+
+    lows = [p["poc"] for p in points]
+    return {
+        "available": True,
+        "reason": None,
+        "segments": out,
+        "levels": levels,
+        # The band the POC travelled through today, for the shaded region.
+        "band_lo": round(min(lows), 2),
+        "band_hi": round(max(lows), 2),
+        "first": _hhmm(points[0]["minute"], u),
+        "last": _hhmm(points[-1]["minute"], u),
+        "checkpoints": len(points),
+    }
 
 
 def _cache_key(underlying: str, expiry: str | None) -> str:

@@ -240,6 +240,7 @@ def main() -> int:
                     expiry=str(fut["expiry"]),
                     source="backfill",
                     overlap_pct=payload.get("overlap_pct"),
+                    poc=payload.get("poc"),
                 )
             points += 1
         print(

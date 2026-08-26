@@ -148,6 +148,7 @@ def upsert_point(
     expiry: str | None = None,
     source: str = "live",
     overlap_pct: float | None = None,
+    poc: float | None = None,
 ) -> None:
     """Record one checkpoint of one session. Idempotent per (underlying, day, minute).
 
@@ -180,6 +181,12 @@ def upsert_point(
             row["expiry"] = expiry
         if overlap_pct is not None:
             row["overlap_pct"] = round(float(overlap_pct), 2)
+        # POC at this checkpoint, kept in its own map so old rows stay readable.
+        # Recomputing the trail on demand costs ~2.7s for a full session — far
+        # too slow for a page load — but the sampler and the backfill already
+        # compute the profile at every checkpoint and were discarding this.
+        if poc is not None:
+            row.setdefault("poc_curve", {})[str(cp)] = round(float(poc), 2)
         # A session seeded by backfill and later extended live is live-anchored:
         # the live points are the ones that were observed as they happened.
         if source == "live":
@@ -344,6 +351,7 @@ def maybe_sample_tilt_history_periodic() -> bool:
                 expiry=(snap.get("contract") or {}).get("expiry"),
                 source="live",
                 overlap_pct=snap.get("overlap_pct"),
+                poc=snap.get("poc"),
             )
             wrote = True
         except Exception as exc:
@@ -383,6 +391,24 @@ def purge_underlying(underlying: str) -> int:
             data["sessions"].pop(k, None)
         _save(data)
     return len(keys)
+
+
+def poc_curve(underlying: str, day: str) -> list[dict[str, Any]]:
+    """Raw ``[{minute, poc}]`` for one session, oldest checkpoint first.
+
+    Deliberately raw: grouping consecutive checkpoints into levels needs the
+    underlying's strike step to know what counts as "the same level", and that
+    lives in the service rather than the store.
+    """
+    u = underlying.strip().upper()
+    row = next((r for r in get_sessions(u) if str(r.get("date")) == day), None)
+    if not row:
+        return []
+    curve = row.get("poc_curve") or {}
+    return [
+        {"minute": int(k), "poc": float(v)}
+        for k, v in sorted(curve.items(), key=lambda kv: int(kv[0]))
+    ]
 
 
 def tilt_comparison(underlying: str, *, window: int = 30) -> dict[str, Any]:

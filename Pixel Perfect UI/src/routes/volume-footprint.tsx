@@ -67,6 +67,9 @@ const CHAR_W = 5.4;
  */
 const GUTTER_W = 92;
 
+/** Neutral grey for the POC trail — it is history, not a live level. */
+const TRAIL_GREY = "#64748b";
+
 /**
  * Push overlapping labels apart down the chart — the same stacking the OI ladder
  * uses when two readings share a row.
@@ -297,6 +300,20 @@ function ProfileChart({
   // Each side's own peak. Distinct from POC, which is the peak of the *combined*
   // profile — on a one-sided session the three sit at different prices, and that
   // gap is the reading.
+  // Where the POC used to be. A level that still equals the current POC is
+  // dropped — the solid POC rule already marks it, and drawing both would read
+  // as two different things at one price. What is left is exactly the part the
+  // closing POC hides: on 2026-08-26 NIFTY held 24,346 for 84% of the session
+  // before migrating 71 points in the final hour.
+  const trail = snap.poc_trail;
+  const trailTol = (snap.grid_step ?? 50) / 2;
+  const trailLevels =
+    hidden.has("poctrail") || !trail?.available
+      ? []
+      : (trail.levels ?? []).filter(
+          (lv) => snap.poc == null || Math.abs(lv.poc - snap.poc) > trailTol,
+        );
+
   const showPeaks = !hidden.has("peaks");
   const buyPeak = showPeaks ? snap.buy_peak ?? null : null;
   const sellPeak = showPeaks ? snap.sell_peak ?? null : null;
@@ -360,6 +377,13 @@ function ProfileChart({
     ...(snap.poc != null && !hidden.has("poc")
       ? [{ key: "POC", y: yFor(snap.poc), text: `POC ${fmt(snap.poc, 0)}`, color: POC_LINE, prio: 0 }]
       : []),
+    ...trailLevels.map((lv) => ({
+      key: `trail-${lv.poc}`,
+      y: yFor(lv.poc),
+      text: `was POC ${fmt(lv.poc, 0)} ${lv.windows[0]}${lv.spells > 1 ? ` +${lv.spells - 1}` : ""}`,
+      color: TRAIL_GREY,
+      prio: 2,
+    })),
     ...(sellPeak
       ? [
           {
@@ -386,6 +410,45 @@ function ProfileChart({
           opacity={0.07}
         />
       ) : null}
+
+      {/* The band the POC travelled through today, shaded behind everything. */}
+      {trailLevels.length && trail?.band_lo != null && trail?.band_hi != null ? (
+        <rect
+          x={0}
+          y={Math.min(yFor(trail.band_lo), yFor(trail.band_hi))}
+          width={W}
+          height={Math.abs(yFor(trail.band_lo) - yFor(trail.band_hi))}
+          fill={TRAIL_GREY}
+          opacity={0.06}
+        />
+      ) : null}
+
+      {trailLevels.map((lv) => (
+        <g key={`trail-${lv.poc}`}>
+          <title>
+            {/* floor, not round: Math.round(270/60) is 5 while 270%60 is 30,
+                which printed 270 minutes as "5h30" instead of 4h30. */}
+            {`POC held ${lv.poc.toFixed(0)} for ${Math.floor(lv.minutes / 60)}h${String(
+              lv.minutes % 60,
+            ).padStart(2, "0")} (${lv.dwell_pct}% of the session)
+` +
+              `${lv.spells} spell${lv.spells === 1 ? "" : "s"}: ${lv.windows.join(", ")}
+` +
+              `drifted ${lv.lo.toFixed(0)}-${lv.hi.toFixed(0)}`}
+          </title>
+          <line
+            x1={0}
+            x2={W}
+            y1={yFor(lv.poc)}
+            y2={yFor(lv.poc)}
+            stroke={TRAIL_GREY}
+            strokeWidth={1.5}
+            strokeDasharray="3 3"
+            // Weighted by dwell, so a five-hour level does not look like a blip.
+            opacity={0.25 + 0.55 * (lv.dwell_pct / 100)}
+          />
+        </g>
+      ))}
 
       {gridLines.map((g) => (
         <g key={`grid-${g.price}`}>
@@ -481,11 +544,19 @@ function ProfileChart({
         peaks.map((pk, i) => {
           const x = peakX(side, pk.density);
           const y = yFor(pk.price);
+          // Every peak answers "when" — the only question is whether it earned a
+          // moment or has to give a range. A blank read as arbitrary next to a
+          // timed neighbour; a range is the honest form of the same answer.
+          const when = pk.concentrated
+            ? pk.q1 ?? ""
+            : pk.q1 && pk.q3
+              ? `${pk.q1}-${pk.q3}`
+              : "";
           const tag =
             pk.band_tilt_pp == null
               ? ""
               : `${pk.band_tilt_pp > 0 ? "+" : ""}${pk.band_tilt_pp.toFixed(0)}pp` +
-                (pk.concentrated && pk.q1 ? ` ${pk.q1}` : "");
+                (when ? ` ${when}` : "");
           // Point the tag away from centre by default; flip it inward when that
           // would put it in the label column's gutter.
           const tagW = tag.length * CHAR_W;
@@ -816,6 +887,7 @@ function VolumeFootprintPage() {
                     ...levelDefs(levels),
                     { key: "poc", label: "POC", color: POC_LINE },
                     { key: "peaks", label: "Peaks", color: BUY },
+                    { key: "poctrail", label: "POC trail", color: TRAIL_GREY },
                     { key: "grid", label: "Grid", color: "#94a3b8" },
                   ].map((d) => ({ key: d.key, label: d.label, color: d.color }))}
                   hidden={hidden}
@@ -828,6 +900,7 @@ function VolumeFootprintPage() {
                             ...levelDefs(levels).map((d) => d.key),
                             "poc",
                             "peaks",
+                            "poctrail",
                             "grid",
                           ]),
                     )

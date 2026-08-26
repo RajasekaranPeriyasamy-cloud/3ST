@@ -10,6 +10,152 @@ This file captures recent development context from Cursor agent sessions. Full c
 
 ---
 
+## Session 2026-08-26 (later) — POC trail: where the control price used to be
+
+A shaded grey band plus dotted grey lines on the profile chart showing the levels
+the POC held today, each labelled with its time range. New `POC trail` toggle.
+
+### The closing POC hides the session
+
+Measured 2026-08-26: NIFTY's POC held **~24,346 from 09:30 to 14:30 — 84% of the
+session** — then migrated 71 points to ~24,278 in the final hour. A reader looking
+only at the closing 24,278 would never know 24,346 was the control price for five
+of the six hours. SENSEX was bimodal, flipping between ~77,911 (4h30, 72%) and
+~77,724 (1h45, 28%).
+
+### Stored, not recomputed
+
+Rebuilding the profile at all 25 checkpoints costs **~2.7s**, which is not a page
+load. The sampler and the backfill already compute the profile at every
+checkpoint and were discarding the POC, so it is now kept in `poc_curve`
+alongside the tilt curve — a separate map so pre-existing rows stay readable.
+Backfill re-run for both underlyings to populate it.
+
+Consequence: the trail exists only for sampled underlyings and only from the day
+recording began. `available: false` with `not_sampled` / `no_trail_yet` rather
+than drawing a partial trail as if it were the whole session.
+
+### Runs vs levels
+
+Consecutive checkpoints within **half a strike step** are one level, so a POC
+drifting ~5 points across a morning stays one line instead of fragmenting into
+four. Runs that revisit the same price are then merged into a single level with a
+spell count: SENSEX's six chronological runs collapse to two control prices. The
+chart draws `levels`; the tooltip keeps the run sequence.
+
+**A level equal to the current POC is dropped** — the solid POC rule already
+marks it, and drawing both would read as two different things at one price. What
+remains is exactly the part the closing POC hides.
+
+Line opacity is weighted by dwell share so a five-hour level does not look like a
+15-minute blip.
+
+### A formatting bug caught in verification
+
+The tooltip printed 270 minutes as "5h30". `Math.round(270/60)` is 5 while
+`270 % 60` is 30 — the hours rounded up while the remainder did not. NIFTY's 315
+minutes rendered correctly by luck, which is why reading the code would not have
+caught it. Now `Math.floor`; SENSEX reads 4h30.
+
+### Verified
+
+`pytest tests/` — 965 passed, 2 new: one pins that a drifting POC stays one level
+while a revisited price merges into one level with two spells, the other that the
+trail refuses rather than drawing a partial one. Both underlyings confirmed on
+port 8001, zero label collisions.
+
+---
+
+## Session 2026-08-26 (later) — Peak time tags: every peak answers "when"
+
+Asked why some peaks carried a time and others nothing. They were behaving as
+designed — a time printed only when the middle-50% of a band's volume fit inside
+`CONCENTRATED_IQR_MIN` — but the blank read as arbitrary rather than deliberate,
+which is a fair criticism of where the line sat.
+
+Two changes:
+
+* **Peaks past the threshold now show their range** (`-1pp 14:05-15:10`) instead
+  of nothing. The threshold now decides *moment vs range*, never *something vs
+  nothing*, so there is no unexplained blank to wonder about. The information was
+  always in the tooltip; this puts it inline.
+* **Threshold raised 45 -> 60 minutes.** At 45 two peaks with near-identical
+  windows (45 vs 50 min) landed on opposite sides of the line.
+
+**Stated at the time and worth keeping:** with ranges shown, raising the
+threshold slightly *reduces* precision rather than adding it — a 51-minute peak
+that would have shown an honest `10:26-11:17` now prints a single `10:26`. Live
+SENSEX after the change shows exactly that on its 51- and 58-minute peaks. 60 was
+the operator's call, taken as "within the hour is a defensible moment"; anything
+wider still gives its range rather than a false point.
+
+`test_concentration_boundary_is_inclusive_and_wide_windows_still_refuse` pins the
+boundary as inclusive at 60 and asserts the window fields are populated either
+way, so the chart always has a range to fall back on.
+
+---
+
+## Session 2026-08-26 (later) — BUG: profile readings drifted after 19:15 IST
+
+Reported as "tilt values keep changing". They were, and everything else with
+them — POC, VAH/VAL, peaks — on every 45-second cache expiry.
+
+### Cause: a clamped lookback stops anchoring and starts sliding
+
+`fetch_minute_candles(token, minutes=N)` derives `from_date = now - N`, so N has
+to track wall-clock for the window to stay anchored to the session open.
+`gamma_density_history.minutes_since_session_open()` clamps N at **600**. That is
+harmless while the session is young and silently wrong afterwards: once
+elapsed-since-open passes 600 — 09:15 + 600 = **19:15 IST** — the clamp binds and
+the window becomes a *rolling* 600 minutes, sliding forward a minute at a time
+and dropping the open.
+
+Measured 2026-08-26 at 20:25 IST, 4h45m after close:
+
+| | 18:00 IST | 20:25 IST |
+|---|---|---|
+| bars | 385 | **314** |
+| first candle | 09:15 | **10:26** |
+| tilt | -19.16pp | -17.80pp |
+| POC | 24278.13 | 24277.84 |
+
+The first 71 minutes of the session had silently fallen out of the profile.
+
+### Fix: `service.session_lookback_minutes()`, no upper clamp
+
+Anchored to today's session open with **no ceiling**, so `from_date` always works
+out to the open minus 15 minutes. That is also why it is safe on a weekend or
+holiday: the window still lands on today, finds no candles, and the caller
+reports `no_session_bars` rather than quietly profiling yesterday.
+
+Verified: first candle back to 09:15, 385 bars, and three consecutive recomputes
+byte-identical at tilt -19.16 / POC 24278.125 — matching the 18:00 reading, which
+confirms that one was correct and the drift was pure bug.
+
+### The store was not corrupted, by luck of an existing guard
+
+`maybe_sample_tilt_history_periodic` skips a checkpoint bucket that already
+exists, and today's buckets were all filled by backfill from full-day bars. Both
+2026-08-26 rows are still `source: backfill` with 25 checkpoints. Had the day
+been sampled live and the API restarted after 19:15, a truncated reading could
+have been written into an empty bucket.
+
+### Wider exposure — NOT fixed here
+
+Two other desks call the same clamped helper for candle lookback and will
+truncate the same way after 19:15 IST:
+
+* `options/gamma_density.py:2302` — spot candle lookback
+* `options/oi_movers.py:1073` — chart series lookback
+
+Left alone deliberately: changing them alters live behaviour on desks that were
+not the subject of the report. `tests/test_gamma_density_history.py` already
+carries `test_minutes_since_session_open_mcx_not_capped_at_600`, so the clamp was
+a known concern for MCX before this. Fixing it centrally would close all three at
+once and is the better end state — it just needs to be a deliberate call.
+
+---
+
 ## Session 2026-08-26 (later) — Volume Footprint: overlay toggles
 
 The legend below the chart became a row of toggle switches above it. Eleven
