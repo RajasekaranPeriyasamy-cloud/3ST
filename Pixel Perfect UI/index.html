@@ -19,9 +19,22 @@
     <meta name="twitter:card" content="summary_large_image" />
 
     <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
+    <!--
+      Gamma Density desk only (see src/styles/gamma-desk.css). Editorial serif for
+      display, industrial grotesque for UI, IBM Plex Mono for figures — Plex has
+      genuinely better digit legibility than JetBrains at 10–11px, which is the
+      size most of this desk reads at. `display=swap` so a slow or absent network
+      degrades to the existing stack instead of blocking a live desk.
+    -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap"
     />
 
     <!--
