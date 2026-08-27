@@ -12,10 +12,9 @@ defaults to 3 — the same session then appears at several DTEs and the two can
 be separated.
 
 One minute of archive is ~2.3x its pre-2026-08-27 size after the STRIKE_WIDTH
-widening below (~27 MB/day across the three underlyings). ``store.prune_raw``
-exists for that and is **not** called by the runner — retention is currently
-aspirational, so the archive grows without bound until someone wires it or
-prunes by hand.
+widening below (~27 MB/day across the three underlyings). ``runner._maybe_prune``
+enforces ``RAW_RETENTION_DAYS`` once a calendar day against that, overridable
+with ``DELTA_VELOCITY_RETENTION_DAYS`` (0 disables).
 """
 
 from __future__ import annotations

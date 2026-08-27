@@ -713,3 +713,96 @@ def test_over_ceiling_narrows_every_underlying_not_just_the_last(monkeypatch):
     per_underlying = {u: len(v) for u, v in rebuilt.items()}
     assert set(per_underlying) == set(collector.UNDERLYINGS)
     assert len(set(per_underlying.values())) == 1
+
+
+# ---------------------------------------------------------------------------
+# Raw-archive pruning (wired into the runner 2026-08-27)
+# ---------------------------------------------------------------------------
+
+
+def monkeypatch_env(runner, value: str) -> None:
+    """Set the retention env for one test. The prune_env fixture restores it."""
+    runner.env = lambda key, default="": value
+
+
+@pytest.fixture
+def prune_env(tmp_path, monkeypatch):
+    """Archive under tmp_path with sessions at known ages, runner reset."""
+    from analysis.delta_velocity import runner
+
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(runner, "_last_prune_day", None, raising=False)
+    monkeypatch.setattr(runner.collector, "UNDERLYINGS", ("NIFTY",))
+    monkeypatch.setattr(runner, "env", runner.env)  # restored after the test
+
+    today = date.today()
+    ages = (0, 5, 29, 31, 90)
+    for age in ages:
+        day = today - timedelta(days=age)
+        store.session_file("NIFTY", day).write_text(
+            json.dumps({"ts": day.isoformat(), "session_date": day.isoformat(),
+                        "underlying": "NIFTY", "spot": 1.0, "legs": []}) + "\n",
+            encoding="utf-8",
+        )
+    return runner, today, ages
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("30", 30), ("45", 45), ("0", 0), ("-5", 0), ("3", 7), ("", 30), ("abc", 0)],
+)
+def test_retention_days_parsing(monkeypatch, value, expected):
+    """0 and unparseable both disable: for a scheduled deleter, the fail-safe
+    direction is to keep data, not to guess."""
+    from analysis.delta_velocity import runner
+
+    monkeypatch.setattr(runner, "env", lambda key, default="": value or default)
+    assert runner.retention_days() == expected
+
+
+def test_prune_removes_only_sessions_past_retention(prune_env):
+    runner, today, _ = prune_env
+    monkeypatch_env(runner, "30")
+    runner._maybe_prune(datetime.now(tz=runner.IST))
+    left = {d.isoformat() for d in store.sessions_available("NIFTY")}
+    assert (today - timedelta(days=29)).isoformat() in left   # inside the window
+    assert (today).isoformat() in left                        # today is never touched
+    assert (today - timedelta(days=31)).isoformat() not in left
+    assert (today - timedelta(days=90)).isoformat() not in left
+
+
+def test_prune_disabled_keeps_everything(prune_env):
+    runner, _, ages = prune_env
+    monkeypatch_env(runner, "0")
+    runner._maybe_prune(datetime.now(tz=runner.IST))
+    assert len(store.sessions_available("NIFTY")) == len(ages)
+
+
+def test_prune_runs_once_per_calendar_day(prune_env, monkeypatch):
+    """It walks every session file of every underlying; per-tick would be
+    pointless work every 10 seconds."""
+    runner, _, _ = prune_env
+    monkeypatch_env(runner, "30")
+    calls: list[str] = []
+    monkeypatch.setattr(store, "prune_raw",
+                        lambda u, retention_days=30: calls.append(u) or [])
+    now = datetime.now(tz=runner.IST)
+    runner._maybe_prune(now)
+    runner._maybe_prune(now)
+    runner._maybe_prune(now)
+    assert calls == ["NIFTY"]
+
+
+def test_prune_failure_does_not_kill_the_sampler(prune_env, monkeypatch):
+    """Housekeeping must never take the collector down with it."""
+    runner, _, ages = prune_env
+    monkeypatch_env(runner, "30")
+
+    def boom(*_a, **_k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(store, "prune_raw", boom)
+    runner._maybe_prune(datetime.now(tz=runner.IST))  # must not raise
+    assert len(store.sessions_available("NIFTY")) == len(ages)
+
+

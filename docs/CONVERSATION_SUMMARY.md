@@ -127,6 +127,38 @@ which documents what each file starts out holding.
 
 ---
 
+## Session 2026-08-27 (later) — delta-velocity raw archive is now pruned
+
+`store.prune_raw` had existed since Phase 1 and had never been called, so the raw
+archive grew without bound; widening `STRIKE_WIDTH` to 12 made it grow ~2.3x
+faster (~27 MB/day). `runner._maybe_prune` now enforces the retention window.
+
+Three properties chosen deliberately, because this is a scheduled deleter:
+
+- **Once per calendar day, outside the `in_session` gate.** Pruning is
+  housekeeping, not sampling; gating it on market hours would mean a desk left
+  running over a weekend never reclaims anything. Per-tick would walk every
+  session file of every underlying every 10 seconds.
+- **`DELTA_VELOCITY_RETENTION_DAYS` is the off switch, and 0 means keep
+  everything.** An operator who wants the whole corpus should not have to edit
+  code to keep it. Anything unparseable also disables: for a deleter, the
+  fail-safe direction is to keep data, not to guess. Read through
+  `settings.env()` rather than `os.getenv`, per CLAUDE.md.
+- **A 7-day floor.** A mistyped `DELTA_VELOCITY_RETENTION_DAYS=3` on a scheduled
+  deleter would take most of the corpus before anyone read the log. Requests
+  below the floor are clamped and warned about rather than honoured.
+
+A prune failure is caught per underlying and logged — housekeeping must never
+take the sampler down with it.
+
+**Nothing is deleted yet.** The archive starts 2026-08-10, so the oldest session
+is 17 days old against a 30-day window; the first real deletion falls on
+2026-09-09. Verified after the restart that all 14 sessions per underlying are
+still present, and that the test suite (which exercises the prune paths against
+tmp_path) left the live archive byte-identical.
+
+---
+
 ## Session 2026-08-27 (later) — delta-velocity collector widened to ATM +/- 12
 
 `STRIKE_WIDTH` 5 -> 12 in `analysis/delta_velocity/collector.py`. Leg count is
@@ -158,14 +190,13 @@ pins both the ceiling arithmetic and the even-narrowing behaviour, so raising
 `STRIKE_WIDTH` past the ceiling fails a test instead of silently losing an
 underlying.
 
-### Retention is aspirational — flagged, not fixed
+### Retention — flagged here, wired in the next commit
 
-`store.prune_raw` exists and honours `RAW_RETENTION_DAYS = 30`, but **nothing
-calls it**. The archive has grown unbounded since Phase 1 and this change makes
-it ~2.3x faster (~27 MB/day across the three underlyings, against 164 MB
-accumulated so far). Wiring a pruner deletes the operator's data on a schedule,
-so it is left as a decision rather than a side effect of a width change. Until
-then, prune by hand or accept the growth.
+`store.prune_raw` existed and honoured `RAW_RETENTION_DAYS = 30`, but nothing
+called it, so the archive had grown unbounded since Phase 1 and this change made
+it ~2.3x faster (~27 MB/day). Wiring a pruner deletes the operator's data on a
+schedule, so it was raised as a decision rather than taken as a side effect of a
+width change — and then wired on request; see the entry above.
 
 ---
 
