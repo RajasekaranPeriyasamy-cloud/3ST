@@ -97,6 +97,10 @@ def defaults() -> dict[str, Any]:
         "refresh_seconds": 60,
         "max_widen_legs": MAX_WIDEN_LEGS,
         "archive_strike_width": dv_collector.STRIKE_WIDTH,
+        "pct_thresholds": dict(features.PCT_THRESHOLDS),
+        "cum_pct_threshold": features.CUM_PCT_THRESHOLD,
+        "min_abs_oi": features.MIN_ABS_OI,
+        "alert_ratio": features.ALERT_BREACH_RATIO,
     }
 
 
@@ -401,6 +405,9 @@ def get_grid(
     strike_range: str = "atm10",
     baseline_mode: str = "session_open",
     widen: bool = True,
+    pct_threshold: float | None = None,
+    cum_pct_threshold: float = features.CUM_PCT_THRESHOLD,
+    min_abs_oi: float = features.MIN_ABS_OI,
 ) -> dict[str, Any]:
     """The grid: one row per strike, CE and PE each carrying per-bucket delta-OI."""
     u = _check_underlying(underlying)
@@ -467,6 +474,9 @@ def get_grid(
         baselines=baselines,
         strikes=wanted or None,
         atm=atm,
+        pct_threshold=pct_threshold,
+        cum_pct_threshold=cum_pct_threshold,
+        min_abs_oi=min_abs_oi,
     )
 
     grid.update(
@@ -484,6 +494,10 @@ def get_grid(
                 "rendered_strikes": len(grid["rows"]),
                 "widen": widen_meta or None,
                 "notes": notes,
+                # The page only raises breach alerts for the live session --
+                # toasting about a chain that stopped moving three days ago is
+                # noise, and the grid happily renders any archived day.
+                "is_live": day == _now_ist().date(),
                 "generated_at": _now_ist().isoformat(timespec="seconds"),
             },
         }

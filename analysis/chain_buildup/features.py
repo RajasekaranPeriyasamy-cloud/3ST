@@ -55,6 +55,26 @@ SHORT_BUILDUP = "short_buildup"
 SHORT_COVERING = "short_covering"
 LONG_UNWINDING = "long_unwinding"
 
+#: Per-bucket |delta-OI %| above which a cell counts as breached, by timeframe.
+#: Seeded from ``config.OI_TRACKER_DEFAULTS["pct_thresholds"]`` so the two desks
+#: speak the same language at 5/15/30m; 60m is this desk's own extrapolation.
+PCT_THRESHOLDS: dict[int, float] = {5: 8.0, 15: 15.0, 30: 25.0, 60: 35.0}
+
+#: Cumulative |delta-OI %| against the baseline above which a *strike* counts as
+#: breached. Deliberately not the same number as the per-bucket threshold: a 25%
+#: move inside one bucket is extreme, while 25% accumulated by 15:00 is ordinary.
+CUM_PCT_THRESHOLD = 40.0
+
+#: Absolute floor, in contracts, that a move must clear before any percentage is
+#: allowed to call it a breach. Without it the far wings dominate: a strike
+#: holding 400 OI swings +/-50% on noise, and at "All strikes" the whole edge of
+#: the grid lights up while the strikes that matter look calm.
+MIN_ABS_OI = 25_000
+
+#: Share of a column's live cells that must breach before the desk raises an
+#: alert. Matches OI Tracker's ``alert_breach_ratio``.
+ALERT_BREACH_RATIO = 0.5
+
 #: Short codes the grid stamps in the cell corner.
 CLASS_CODES = {
     LONG_BUILDUP: "LB",
@@ -77,6 +97,24 @@ def classify(d_oi: float | None, d_price: float | None) -> str | None:
     if d_oi > 0:
         return LONG_BUILDUP if d_price > 0 else SHORT_BUILDUP
     return SHORT_COVERING if d_price > 0 else LONG_UNWINDING
+
+
+def is_breach(
+    pct: float | None,
+    absolute: float | None,
+    *,
+    pct_threshold: float,
+    min_abs_oi: float = MIN_ABS_OI,
+) -> bool:
+    """True when a move clears both the percentage *and* the absolute floor.
+
+    Both, not either. A percentage alone flags noise on thin strikes; an
+    absolute alone flags every ATM tick on a liquid one. The pair is what makes
+    the mark mean "this is a real move, and it is large for this contract".
+    """
+    if pct is None or absolute is None:
+        return False
+    return abs(pct) > pct_threshold and abs(absolute) >= min_abs_oi
 
 
 def parse_ts(value: Any) -> datetime | None:
@@ -196,6 +234,10 @@ def _side_row(
     buckets: list[datetime],
     per_bucket: dict[datetime, dict[str, Any]],
     baseline: float | None,
+    *,
+    pct_threshold: float,
+    cum_threshold: float,
+    min_abs_oi: float,
 ) -> dict[str, Any]:
     """One side (CE or PE) of one strike: baseline, per-bucket cells, totals.
 
@@ -224,6 +266,7 @@ def _side_row(
                     "d_price": None,
                     "volume": None,
                     "cls": None,
+                    "breach": False,
                 }
             )
             continue
@@ -245,6 +288,12 @@ def _side_row(
                 "d_price": d_price,
                 "volume": point.get("volume"),
                 "cls": classify(d_oi, d_price),
+                "breach": is_breach(
+                    _pct(d_oi, prev_oi),
+                    d_oi,
+                    pct_threshold=pct_threshold,
+                    min_abs_oi=min_abs_oi,
+                ),
             }
         )
 
@@ -256,12 +305,18 @@ def _side_row(
             latest_ltp = ltp
 
     total = None if (latest_oi is None or baseline is None) else latest_oi - baseline
+    total_pct = _pct(total, baseline)
     return {
         "baseline": baseline,
         "latest_oi": latest_oi,
         "latest_ltp": latest_ltp,
         "total_delta": total,
-        "total_delta_pct": _pct(total, baseline),
+        "total_delta_pct": total_pct,
+        # Strike-level: has this contract been written or unwound hard *today*,
+        # against its own opening book? Independent of any single bucket.
+        "breach": is_breach(
+            total_pct, total, pct_threshold=cum_threshold, min_abs_oi=min_abs_oi
+        ),
         "cells": cells,
     }
 
@@ -322,6 +377,47 @@ def _totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def latest_bucket_alert(
+    rows: list[dict[str, Any]],
+    bucket_count: int,
+    *,
+    ratio_threshold: float = ALERT_BREACH_RATIO,
+) -> dict[str, Any]:
+    """Breach concentration in the **most recent bucket only**, per side.
+
+    OI Tracker ratios over its whole board because that board is four intervals
+    wide. This grid is a whole session wide, so the same ratio taken over every
+    cell converges to a session average and stops reacting to anything. Taken
+    over the newest column it answers the question an alert should answer: is
+    the chain being written *right now*.
+
+    The denominator counts only cells that carry a delta -- a strike blank in
+    this bucket (outside the collector's window at capture time) is absent, not
+    calm, and letting it dilute the ratio would mute the alert exactly when the
+    grid is widest.
+    """
+    out: dict[str, Any] = {"bucket_index": bucket_count - 1 if bucket_count else None}
+    for side in ("ce", "pe"):
+        breached = live = 0
+        if bucket_count:
+            for row in rows:
+                cell = row[side]["cells"][bucket_count - 1]
+                if cell.get("d_oi") is None:
+                    continue
+                live += 1
+                if cell.get("breach"):
+                    breached += 1
+        ratio = (breached / live) if live else 0.0
+        out[side] = {
+            "breached": breached,
+            "cells": live,
+            "ratio": round(ratio, 4),
+            "alert": bool(live) and ratio > ratio_threshold,
+        }
+    out["ratio_threshold"] = ratio_threshold
+    return out
+
+
 def build_grid(
     rows: list[dict[str, Any]],
     *,
@@ -331,6 +427,9 @@ def build_grid(
     strikes: list[float] | None = None,
     atm: float | None = None,
     session_start: str = SESSION_START,
+    pct_threshold: float | None = None,
+    cum_pct_threshold: float = CUM_PCT_THRESHOLD,
+    min_abs_oi: float = MIN_ABS_OI,
 ) -> dict[str, Any]:
     """Strike x time-bucket delta-OI grid, CE and PE side by side.
 
@@ -341,6 +440,9 @@ def build_grid(
     """
     if timeframe_min not in TIMEFRAMES_MIN:
         raise ValueError(f"Unsupported timeframe {timeframe_min}. Use {list(TIMEFRAMES_MIN)}")
+
+    if pct_threshold is None:
+        pct_threshold = PCT_THRESHOLDS[timeframe_min]
 
     series, bucket_ends, spot_by_bucket = bucket_legs(
         rows, timeframe_min=timeframe_min, expiry=expiry, session_start=session_start
@@ -363,7 +465,14 @@ def build_grid(
             base = baselines.get((strike, opt))
             if base is None:
                 base = _implied_baseline(bucket_ends, per_bucket)
-            side = _side_row(bucket_ends, per_bucket, base)
+            side = _side_row(
+                bucket_ends,
+                per_bucket,
+                base,
+                pct_threshold=pct_threshold,
+                cum_threshold=cum_pct_threshold,
+                min_abs_oi=min_abs_oi,
+            )
             row[opt.lower()] = side
             sink.extend(side["cells"])
         out_rows.append(row)
@@ -385,4 +494,11 @@ def build_grid(
         },
         "totals": _totals(out_rows),
         "class_codes": CLASS_CODES,
+        "thresholds": {
+            "pct": pct_threshold,
+            "cum_pct": cum_pct_threshold,
+            "min_abs_oi": min_abs_oi,
+            "alert_ratio": ALERT_BREACH_RATIO,
+        },
+        "alert": latest_bucket_alert(out_rows, len(bucket_ends)),
     }

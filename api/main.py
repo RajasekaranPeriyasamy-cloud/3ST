@@ -3310,13 +3310,22 @@ def buildup_grid(
     strike_range: str = "atm10",
     baseline_mode: str = "session_open",
     widen: bool = True,
+    pct_threshold: float | None = None,
+    cum_pct_threshold: float | None = None,
+    min_abs_oi: float | None = None,
 ) -> dict[str, Any]:
     """Strike x time-bucket OI build-up grid for one expiry.
 
     ``widen=false`` keeps the response purely archive-backed (no Kite calls);
     ``true`` lets a wide ``strike_range`` reach past the collector's ATM window
     via historical OI candles, capped and reported in ``meta.widen``.
+
+    Breach thresholds mirror the OI Tracker desk: ``pct_threshold`` defaults per
+    timeframe, ``cum_pct_threshold`` marks a whole strike, and ``min_abs_oi`` is
+    the absolute floor a move must clear before any percentage may call it a
+    breach. All three are echoed back in ``thresholds``.
     """
+    from analysis.chain_buildup import features as cb_features
     from analysis.chain_buildup import service as cb_service
 
     try:
@@ -3328,6 +3337,11 @@ def buildup_grid(
             strike_range=strike_range,
             baseline_mode=baseline_mode,
             widen=widen,
+            pct_threshold=pct_threshold,
+            cum_pct_threshold=(
+                cb_features.CUM_PCT_THRESHOLD if cum_pct_threshold is None else cum_pct_threshold
+            ),
+            min_abs_oi=cb_features.MIN_ABS_OI if min_abs_oi is None else min_abs_oi,
         )
     except ValueError as exc:
         raise _err(exc) from exc

@@ -215,6 +215,18 @@
     inset 0 0 0 2px color-mix(in oklch, var(--bear) 90%, transparent),
     0 0 14px color-mix(in oklch, var(--bear) 40%, transparent);
 }
+/* Chain Build-Up reuses the breach language, ring only.
+
+   Its cell fill already encodes side (CE red / PE green) and magnitude, so a
+   breach cannot also claim the background the way breach-cell-up does -- it
+   would overwrite the very thing the grid is drawn to show. The ring is amber
+   in both themes so it reads as "threshold", not as a third side. */
+@utility breach-ring {
+  box-shadow:
+    inset 0 0 0 2px color-mix(in oklch, var(--warn) 95%, transparent),
+    0 0 10px color-mix(in oklch, var(--warn) 35%, transparent);
+}
+
 @utility breach-pill-up {
   background-color: var(--color-bull);
   color: var(--color-bull-foreground);

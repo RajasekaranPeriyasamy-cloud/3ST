@@ -14,7 +14,7 @@ archive (see CLAUDE.md).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -218,7 +218,11 @@ def test_scale_uses_p95_so_one_outlier_cannot_wash_the_grid():
 
 @pytest.fixture
 def archive(tmp_path, monkeypatch):
-    """A two-session archive under tmp_path.
+    """A two-session archive under tmp_path. Returns ``(today, yesterday)``.
+
+    Dates derive from ``date.today()`` rather than being hardcoded: a fixture
+    pinned to a date that is *currently* valid silently stops testing anything
+    the moment it ages out, which is the rot CLAUDE.md calls out.
 
     Patches ``dv_store.data_dir`` — the module's own binding — not
     ``settings.data_dir``.
@@ -257,14 +261,17 @@ def archive(tmp_path, monkeypatch):
             )
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    write("2026-08-26", 1000)
-    write("2026-08-27", 5000)
-    return tmp_path
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    write(yesterday.isoformat(), 1000)
+    write(today.isoformat(), 5000)
+    return today.isoformat(), yesterday.isoformat()
 
 
 def test_grid_defaults_to_the_latest_archived_session(archive):
+    today, _ = archive
     grid = service.get_grid("NIFTY", strike_range="atm5", widen=False)
-    assert grid["session_date"] == "2026-08-27"
+    assert grid["session_date"] == today
     assert grid["meta"]["source"] == "archive"
     assert grid["atm"] == 24000.0
 
@@ -280,14 +287,15 @@ def test_prev_close_baseline_reads_the_previous_session(archive):
         "NIFTY", strike_range="atm5", widen=False, baseline_mode="prev_close"
     )
     row = next(r for r in grid["rows"] if r["strike"] == 24000.0)
-    assert row["ce"]["baseline"] == 1000 + 29 * 10  # last minute of 2026-08-26
+    assert row["ce"]["baseline"] == 1000 + 29 * 10  # last minute of the prior session
     assert grid["meta"]["notes"] == []
 
 
 def test_prev_close_says_so_when_there_is_no_earlier_session(archive):
     """It must not silently fall back to session-open and mislabel the column."""
+    _, yesterday = archive
     grid = service.get_grid(
-        "NIFTY", session_date="2026-08-26", strike_range="atm5",
+        "NIFTY", session_date=yesterday, strike_range="atm5",
         widen=False, baseline_mode="prev_close",
     )
     assert any("previous-day close unavailable" in n.lower() for n in grid["meta"]["notes"])
@@ -366,3 +374,137 @@ def test_wide_range_falls_back_when_the_listed_chain_is_unreadable(archive, monk
     grid = service.get_grid("NIFTY", strike_range="all", widen=False)
     assert [r["strike"] for r in grid["rows"]] == [23900.0, 24000.0, 24100.0]
     assert grid["meta"]["source"] == "archive"
+
+
+# ---------------------------------------------------------------------------
+# Breach thresholds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pct,absolute,expected",
+    [
+        (20.0, 100_000, True),   # clears both
+        (20.0, 1_000, False),    # big percent, trivial size
+        (2.0, 100_000, False),   # big size, small percent
+        (-20.0, -100_000, True), # unwinding breaches the same way
+        (None, 100_000, False),
+        (20.0, None, False),
+    ],
+)
+def test_breach_needs_percent_and_size_together(pct, absolute, expected):
+    """Either alone is a false positive: percent alone flags noise on thin
+    strikes, size alone flags every ATM tick on a liquid one."""
+    assert features.is_breach(pct, absolute, pct_threshold=8.0, min_abs_oi=25_000) is expected
+
+
+def test_the_absolute_floor_silences_thin_strikes():
+    """A 400-OI wing swinging 50% must not outshine the strikes that matter."""
+    thin = _rows([400, 600], ltp_by_minute=[1.0, 1.2])
+    grid = features.build_grid(
+        thin, timeframe_min=5, baselines={(24000.0, "CE"): 400.0}, atm=24000.0
+    )
+    cell = grid["rows"][0]["ce"]["cells"][0]
+    assert cell["d_oi_pct"] == 50.0  # the percentage is real
+    assert cell["breach"] is False  # and still not a breach
+
+
+def test_cell_breach_uses_the_timeframes_own_threshold():
+    """5m is 8%, 60m is 35% -- the same move is a breach at one and not the other."""
+    rows = _rows([1_000_000, 1_200_000], ltp_by_minute=[10.0, 11.0])  # +20%
+    for tf, expected in ((5, True), (60, False)):
+        grid = features.build_grid(
+            rows, timeframe_min=tf, baselines={(24000.0, "CE"): 1_000_000.0}, atm=24000.0
+        )
+        assert grid["rows"][0]["ce"]["cells"][0]["breach"] is expected
+        assert grid["thresholds"]["pct"] == features.PCT_THRESHOLDS[tf]
+
+
+def test_strike_level_breach_is_cumulative_not_per_bucket():
+    """Many small buckets that add up to a big day breach the row without any one
+    cell breaching."""
+    rows = _rows([1_000_000 + 30_000 * i for i in range(25)], ltp_by_minute=[10.0] * 25)
+    grid = features.build_grid(
+        rows, timeframe_min=5, baselines={(24000.0, "CE"): 1_000_000.0}, atm=24000.0
+    )
+    side = grid["rows"][0]["ce"]
+    assert side["total_delta_pct"] > features.CUM_PCT_THRESHOLD
+    assert side["breach"] is True
+
+
+def test_strike_breach_respects_the_floor_too():
+    rows = _rows([1_000, 2_000], ltp_by_minute=[1.0, 2.0])  # +100%, 1k contracts
+    grid = features.build_grid(
+        rows, timeframe_min=5, baselines={(24000.0, "CE"): 1_000.0}, atm=24000.0
+    )
+    assert grid["rows"][0]["ce"]["breach"] is False
+
+
+# ---------------------------------------------------------------------------
+# Latest-bucket alert
+# ---------------------------------------------------------------------------
+
+
+def _grid_with_breaches(n_breaching: int, n_quiet: int):
+    """One bucket, `n_breaching` strikes moving hard and `n_quiet` barely moving."""
+    rows: list = []
+    baselines = {}
+    for i in range(n_breaching + n_quiet):
+        strike = 24000.0 + 50 * i
+        base = 1_000_000.0
+        end = base + (300_000 if i < n_breaching else 1_000)
+        rows += _rows([base, end], strike=strike, ltp_by_minute=[10.0, 11.0])
+        baselines[(strike, "CE")] = base
+    return features.build_grid(rows, timeframe_min=5, baselines=baselines, atm=24000.0)
+
+
+def test_alert_fires_when_most_of_the_latest_bucket_breaches():
+    grid = _grid_with_breaches(8, 2)
+    assert grid["alert"]["ce"]["ratio"] == 0.8
+    assert grid["alert"]["ce"]["alert"] is True
+
+
+def test_alert_stays_quiet_below_the_ratio():
+    grid = _grid_with_breaches(3, 7)
+    assert grid["alert"]["ce"]["ratio"] == 0.3
+    assert grid["alert"]["ce"]["alert"] is False
+
+
+def test_alert_denominator_skips_blank_cells():
+    """A strike outside the collector's window in this bucket is absent, not calm.
+    Counting it would mute the alert exactly when the grid is widest."""
+    rows = _rows([1_000_000, 1_300_000], ltp_by_minute=[10.0, 11.0])
+    # A second strike present only in the *first* bucket, blank in the last.
+    rows += _rows([500_000] * 5, strike=24100.0, ltp_by_minute=[5.0] * 5)
+    rows += [
+        dict(r, ts=(START + timedelta(minutes=6)).isoformat())
+        for r in _rows([1_000_000], ltp_by_minute=[10.0])
+    ]
+    grid = features.build_grid(
+        rows,
+        timeframe_min=5,
+        baselines={(24000.0, "CE"): 1_000_000.0, (24100.0, "CE"): 500_000.0},
+        atm=24000.0,
+    )
+    last = grid["alert"]["ce"]
+    assert last["cells"] == 1  # only the strike that carried a delta in that bucket
+
+
+def test_alert_indexes_the_newest_bucket():
+    grid = _grid_with_breaches(1, 1)
+    assert grid["alert"]["bucket_index"] == len(grid["buckets"]) - 1
+
+
+def test_grid_marks_whether_the_session_is_live(archive):
+    """The page only toasts for today -- an archived day cannot be alerted on.
+
+    Both sessions are derived from ``date.today()`` by the fixture rather than
+    hardcoded, so this keeps testing something after today stops being today.
+    """
+    today, yesterday = archive
+
+    live = service.get_grid("NIFTY", session_date=today, strike_range="atm5", widen=False)
+    assert live["meta"]["is_live"] is True
+
+    old = service.get_grid("NIFTY", session_date=yesterday, strike_range="atm5", widen=False)
+    assert old["meta"]["is_live"] is False

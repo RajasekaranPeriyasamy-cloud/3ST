@@ -3501,6 +3501,7 @@ export interface BuildupCell {
   d_price: number | null;
   volume: number | null;
   cls: BuildupClass | null;
+  breach: boolean;
 }
 
 export interface BuildupSide {
@@ -3509,6 +3510,7 @@ export interface BuildupSide {
   latest_ltp: number | null;
   total_delta: number | null;
   total_delta_pct: number | null;
+  breach: boolean;
   cells: BuildupCell[];
 }
 
@@ -3556,6 +3558,8 @@ export interface BuildupGrid {
     strikes: number;
   };
   class_codes: Record<BuildupClass, string>;
+  thresholds: BuildupThresholds;
+  alert: BuildupAlert;
   meta: {
     source: string;
     archive_strikes: number;
@@ -3567,6 +3571,7 @@ export interface BuildupGrid {
       strikes_not_listed: number[];
     } | null;
     notes: string[];
+    is_live: boolean;
     generated_at: string;
   };
 }
@@ -3589,4 +3594,25 @@ export interface BuildupStatus {
     max_widen_legs: number;
     archive_strike_width: number;
   };
+}
+
+export interface BuildupThresholds {
+  pct: number;
+  cum_pct: number;
+  min_abs_oi: number;
+  alert_ratio: number;
+}
+
+export interface BuildupAlertSide {
+  breached: number;
+  cells: number;
+  ratio: number;
+  alert: boolean;
+}
+
+export interface BuildupAlert {
+  bucket_index: number | null;
+  ce: BuildupAlertSide;
+  pe: BuildupAlertSide;
+  ratio_threshold: number;
 }

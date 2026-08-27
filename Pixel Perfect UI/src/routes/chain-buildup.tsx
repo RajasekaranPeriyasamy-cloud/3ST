@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 
 import { api } from "@/lib/api";
 import type {
@@ -29,6 +30,9 @@ const RANGES: { value: string; label: string }[] = [
   { value: "all", label: "All strikes" },
 ];
 const POLL_MS = 60_000;
+/** Same debounce OI Tracker uses, for the same reason: the alert re-evaluates on
+ *  every poll, and a breach that persists is one event, not one per minute. */
+const ALERT_DEBOUNCE_MS = 120_000;
 
 /** Row and header heights are fixed so the three panes line up without a grid. */
 const ROW_H = 26;
@@ -193,7 +197,9 @@ function Wing({
                     title={cell ? cellTitle(cell, b.key, side.toUpperCase()) : undefined}
                     className={`relative border-b border-r border-border/40 text-center font-mono text-[10px] tabular-nums ${
                       strong ? "text-white" : "text-foreground"
-                    } ${row.atm ? "border-b-primary/40" : ""}`}
+                    } ${row.atm ? "border-b-primary/40" : ""} ${
+                      cell?.breach ? "breach-ring font-bold" : ""
+                    }`}
                   >
                     {value == null ? (
                       <span className="text-muted-foreground/40">·</span>
@@ -229,6 +235,8 @@ function ChainBuildupPage() {
   const [widen, setWiden] = useState<boolean>(false);
   const [sync, setSync] = useState<boolean>(true);
   const [strikeDesc, setStrikeDesc] = useState<boolean>(false);
+  const [minAbsOi, setMinAbsOi] = useState<number>(25_000);
+  const [breachOnly, setBreachOnly] = useState<boolean>(false);
 
   const [grid, setGrid] = useState<BuildupGrid | null>(null);
   const [status, setStatus] = useState<BuildupStatus | null>(null);
@@ -239,6 +247,7 @@ function ChainBuildupPage() {
   const ceRef = useRef<HTMLDivElement>(null);
   const peRef = useRef<HTMLDivElement>(null);
   const syncing = useRef(false);
+  const lastAlertRef = useRef<{ ce: number; pe: number }>({ ce: 0, pe: 0 });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -248,6 +257,7 @@ function ChainBuildupPage() {
       strike_range: range,
       baseline_mode: baseline,
       widen: String(widen),
+      min_abs_oi: String(minAbsOi),
     });
     if (sessionDate) q.set("session_date", sessionDate);
     if (expiry) q.set("expiry", expiry);
@@ -264,7 +274,7 @@ function ChainBuildupPage() {
     }
     if (s.status === "fulfilled") setStatus(s.value);
     setLoading(false);
-  }, [underlying, sessionDate, expiry, timeframe, range, baseline, widen]);
+  }, [underlying, sessionDate, expiry, timeframe, range, baseline, widen, minAbsOi]);
 
   useEffect(() => {
     void load();
@@ -295,6 +305,24 @@ function ChainBuildupPage() {
     }
   }, [grid?.buckets.length, grid?.underlying, grid?.timeframe_min]);
 
+  // Breach alert, mirroring the OI Tracker desk: fire when most of the newest
+  // bucket breached. Gated on meta.is_live -- the grid renders any archived
+  // session, and toasting about a chain that stopped moving days ago is noise.
+  useEffect(() => {
+    if (!grid?.meta.is_live || !grid.alert) return;
+    const now = Date.now();
+    (["ce", "pe"] as const).forEach((side) => {
+      const a = grid.alert[side];
+      if (!a.alert) return;
+      if (now - lastAlertRef.current[side] < ALERT_DEBOUNCE_MS) return;
+      lastAlertRef.current[side] = now;
+      toast.warning(
+        `${side.toUpperCase()} build-up alert: ${(a.ratio * 100).toFixed(0)}% of strikes ` +
+          `breached in the ${grid.buckets[grid.buckets.length - 1]?.key ?? "latest"} bucket`,
+      );
+    });
+  }, [grid]);
+
   const mirror = useCallback(
     (from: React.RefObject<HTMLDivElement | null>, to: React.RefObject<HTMLDivElement | null>) =>
       () => {
@@ -314,9 +342,21 @@ function ChainBuildupPage() {
   // One sorted array feeds all three panes, so they cannot drift out of
   // row alignment. The backend always returns ascending strikes.
   const rows = useMemo(() => {
-    const base = grid?.rows ?? [];
+    let base = grid?.rows ?? [];
+    if (breachOnly) {
+      // A row survives if either side breached cumulatively, or any single
+      // bucket breached. Both matter: one is "written hard all day", the other
+      // "written hard just now", and hiding either defeats the filter.
+      base = base.filter(
+        (r) =>
+          r.ce.breach ||
+          r.pe.breach ||
+          r.ce.cells.some((c) => c.breach) ||
+          r.pe.cells.some((c) => c.breach),
+      );
+    }
     return strikeDesc ? [...base].reverse() : base;
-  }, [grid?.rows, strikeDesc]);
+  }, [grid?.rows, strikeDesc, breachOnly]);
   const buckets = grid?.buckets ?? [];
   const scaleKey = metric === "cum" ? "cum" : "delta";
   const classCodes =
@@ -445,6 +485,29 @@ function ChainBuildupPage() {
           Sync scroll
         </label>
 
+        <label
+          className="flex items-center gap-1 text-xs text-muted-foreground"
+          title="Absolute floor a move must clear before any percentage may call it a breach"
+        >
+          Floor
+          <input
+            type="number"
+            min={0}
+            step={5000}
+            value={minAbsOi}
+            onChange={(e) => setMinAbsOi(Math.max(0, Number(e.target.value) || 0))}
+            className="h-8 w-20 rounded-md border bg-background px-1 text-right font-mono text-xs"
+          />
+        </label>
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={breachOnly}
+            onChange={(e) => setBreachOnly(e.target.checked)}
+          />
+          Breaches only
+        </label>
+
         <button
           onClick={() => setStrikeDesc((v) => !v)}
           title="Sort the strike ladder"
@@ -459,7 +522,7 @@ function ChainBuildupPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-7">
         <Stat label="Spot" value={fmtNum(bucketSpot)} hint={grid ? `ATM ${grid.atm ?? "—"}` : ""} />
         <Stat label="Session" value={grid?.session_date ?? "—"} hint={grid?.expiry ?? ""} />
         <Stat label="CE ΔOI" value={signed(grid?.totals.ce_delta)} hint="since baseline" />
@@ -467,8 +530,28 @@ function ChainBuildupPage() {
         <Stat label="PCR (OI)" value={fmtNum(grid?.totals.pcr_oi, 3)} />
         <Stat
           label="Strikes"
-          value={String(grid?.meta.rendered_strikes ?? 0)}
+          value={
+            breachOnly && grid
+              ? `${rows.length}/${grid.meta.rendered_strikes}`
+              : String(grid?.meta.rendered_strikes ?? 0)
+          }
           hint={grid?.meta.source ?? ""}
+        />
+        <Stat
+          label="Latest breach"
+          value={
+            grid
+              ? `${(grid.alert.ce.ratio * 100).toFixed(0)}% / ${(
+                  grid.alert.pe.ratio * 100
+                ).toFixed(0)}%`
+              : "—"
+          }
+          hint={
+            grid
+              ? `CE/PE in ${grid.buckets[grid.buckets.length - 1]?.key ?? "—"}` +
+                (grid.meta.is_live ? "" : " · archived, no alerts")
+              : ""
+          }
         />
       </div>
 
@@ -543,8 +626,15 @@ function ChainBuildupPage() {
                       <tr key={row.strike}>
                         <td
                           style={{ height: ROW_H, width: PCT_W, ...ceTotal.style }}
-                          title={`CE cumulative ΔOI vs ${baseLabel}, as a percent of it`}
-                          className={centreCell(ceTotal.strong)}
+                          title={
+                            row.ce.breach
+                              ? `CE BREACH — cumulative ΔOI vs ${baseLabel} clears both thresholds`
+                              : `CE cumulative ΔOI vs ${baseLabel}, as a percent of it`
+                          }
+                          className={
+                            centreCell(ceTotal.strong) +
+                            (row.ce.breach ? " breach-ring font-bold" : "")
+                          }
                         >
                           {pctText(row.ce.total_delta_pct)}
                         </td>
@@ -586,8 +676,15 @@ function ChainBuildupPage() {
                         </td>
                         <td
                           style={{ height: ROW_H, width: PCT_W, ...peTotal.style }}
-                          title={`PE cumulative ΔOI vs ${baseLabel}, as a percent of it`}
-                          className={centreCell(peTotal.strong)}
+                          title={
+                            row.pe.breach
+                              ? `PE BREACH — cumulative ΔOI vs ${baseLabel} clears both thresholds`
+                              : `PE cumulative ΔOI vs ${baseLabel}, as a percent of it`
+                          }
+                          className={
+                            centreCell(peTotal.strong) +
+                            (row.pe.breach ? " breach-ring font-bold" : "")
+                          }
                         >
                           {pctText(row.pe.total_delta_pct)}
                         </td>
@@ -657,10 +754,22 @@ function ChainBuildupPage() {
             {classCodes[k]} = {CLASS_LABEL[k]}
           </Badge>
         ))}
+        <span className="flex items-center gap-1">
+          <span className="breach-ring inline-block h-3 w-6 rounded-sm" />
+          breach
+        </span>
         <span>
           Intensity scales to the 95th percentile of |{metric === "cum" ? "cumulative" : "Δ"}OI| in
           view.
         </span>
+        {grid ? (
+          <span>
+            Breach = |Δ%| &gt; {grid.thresholds.pct}% per {grid.timeframe_min}m bucket (
+            {grid.thresholds.cum_pct}% cumulative for a strike) <strong>and</strong> ≥{" "}
+            {compact(grid.thresholds.min_abs_oi)} contracts. Alert at{" "}
+            {(grid.thresholds.alert_ratio * 100).toFixed(0)}% of the newest bucket.
+          </span>
+        ) : null}
       </div>
     </div>
   );
