@@ -114,8 +114,14 @@ _WATCHED_FILES = (
 # at call time, so its own ``data_dir`` reference is what gets redirected.
 #
 # Read-only caches are deliberately absent: ``instruments.CACHE_FILE`` (tests read
-# the real instrument dump) and ``kite_auth.SESSION_FILE`` (reads only, and Kite
-# is blocked anyway).
+# the real instrument dump) and ``kite_auth.SESSION_FILE`` (the one test that
+# writes it patches its own reference, and Kite is blocked anyway).
+#
+# ``kite_auth.SESSION_KEY_FILE`` IS here, and is the reason this table cannot be
+# assembled by reading the code for obvious writers: nothing writes it on a
+# machine that already has one. CI, with no data/ directory, takes the create
+# branch on the first save_session and blocks — a failure invisible to every
+# developer.
 _REDIRECTS: tuple[tuple[str, str | None, str | None], ...] = (
     ("execution.rolling_straddle_store", "CONFIG_FILE", "rolling_straddle_config.json"),
     ("execution.rolling_straddle_store", "STATE_FILE", "rolling_straddle_state.json"),
@@ -140,6 +146,13 @@ _REDIRECTS: tuple[tuple[str, str | None, str | None], ...] = (
     ("options.oi_movers", "SESSION_FILE", "oi_movers_session_open.json"),
     ("options.oi_movers", "PREV_DAY_CACHE", "oi_movers_prev_day_oi.json"),
     ("options.oi_movers", "HISTORY_FILE", "oi_movers_history.json"),
+    # kite_auth writes the Fernet key lazily, only when it does not already
+    # exist — so a developer machine that has one never takes the write branch
+    # and every test passes, while CI (no data/, no session) hits it on the
+    # first save_session and blocks. Redirected here rather than patched in the
+    # one test that tripped it, because anything touching kite_auth can reach
+    # it, and a credential file is the last thing the suite should create.
+    ("kite_auth", "SESSION_KEY_FILE", ".session_key"),
     ("options.oi_var_session", "SESSION_FILE", "oi_var_session_open.json"),
     ("options.oi_var_session", "HISTORY_FILE", "oi_var_history.json"),
     ("options.oi_var_store", "BASELINE_FILE", "oi_var_eod_baseline.json"),
