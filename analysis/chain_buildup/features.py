@@ -38,6 +38,8 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from analysis.chain_buildup import calibration
+
 #: Bucket sizes the desk offers. Each is also a native Kite candle interval
 #: (``config.KITE_INTERVALS``), so the historical widening path needs no
 #: client-side rollup to agree with the archive path.
@@ -70,6 +72,60 @@ CUM_PCT_THRESHOLD = 40.0
 #: holding 400 OI swings +/-50% on noise, and at "All strikes" the whole edge of
 #: the grid lights up while the strikes that matter look calm.
 MIN_ABS_OI = 25_000
+
+THRESHOLD_MODES = ("fixed", "adaptive")
+
+#: Floor under an adaptive threshold. The midday trough fits below 2% at 5m, and
+#: a threshold that low would mark ordinary book-keeping — the absolute floor is
+#: the intended noise gate, not a vanishing percentage.
+MIN_ADAPTIVE_PCT = 2.0
+
+
+def dte_bucket(days: int | None) -> str:
+    """Bucket used by the fitted table. Unknown DTE falls in the modal bucket."""
+    if days is None:
+        return "2-7"
+    if days <= 1:
+        return "0-1"
+    if days <= 7:
+        return "2-7"
+    if days <= 21:
+        return "8-21"
+    return "22+"
+
+
+def resolve_thresholds(
+    timeframe_min: int,
+    bucket_keys: list[str],
+    *,
+    mode: str = "fixed",
+    dte_days: int | None = None,
+    fixed_pct: float | None = None,
+) -> tuple[list[float], str]:
+    """One threshold per bucket column, plus the mode actually used.
+
+    ``fixed`` returns the hand-picked constant repeated. ``adaptive`` reads the
+    fitted p95 for this (timeframe, DTE, time-of-day) so the breach rate is ~5%
+    everywhere rather than 13.7% on expiry day and 0.2% on a far month — the
+    spread measured on the 2026-08 archive.
+
+    Falls back to fixed, and says so, when the timeframe was never fitted. The
+    caller surfaces the returned mode: silently serving a different rule than
+    the one requested is how a threshold stops meaning anything.
+    """
+    base = PCT_THRESHOLDS[timeframe_min] if fixed_pct is None else float(fixed_pct)
+    if mode != "adaptive":
+        return [base] * len(bucket_keys), "fixed"
+
+    bucket = dte_bucket(dte_days)
+    out: list[float] = []
+    for key in bucket_keys:
+        value = calibration.adaptive_threshold(timeframe_min, bucket, key)
+        out.append(base if value is None else max(MIN_ADAPTIVE_PCT, value))
+    if not out:
+        return out, "adaptive"
+    return out, ("adaptive" if calibration.BASE_P95.get(timeframe_min) else "fixed")
+
 
 #: Share of a column's live cells that must breach before the desk raises an
 #: alert. Matches OI Tracker's ``alert_breach_ratio``.
@@ -235,7 +291,7 @@ def _side_row(
     per_bucket: dict[datetime, dict[str, Any]],
     baseline: float | None,
     *,
-    pct_threshold: float,
+    pct_thresholds: list[float],
     cum_threshold: float,
     min_abs_oi: float,
 ) -> dict[str, Any]:
@@ -252,7 +308,7 @@ def _side_row(
     latest_oi: float | None = None
     latest_ltp: float | None = None
 
-    for end in buckets:
+    for index, end in enumerate(buckets):
         point = per_bucket.get(end)
         if point is None:
             cells.append(
@@ -291,7 +347,10 @@ def _side_row(
                 "breach": is_breach(
                     _pct(d_oi, prev_oi),
                     d_oi,
-                    pct_threshold=pct_threshold,
+                    # Per column, not per grid: under `adaptive` the bar moves
+                    # with time of day, so the cell must be judged against its
+                    # own bucket's threshold.
+                    pct_threshold=pct_thresholds[index],
                     min_abs_oi=min_abs_oi,
                 ),
             }
@@ -430,6 +489,8 @@ def build_grid(
     pct_threshold: float | None = None,
     cum_pct_threshold: float = CUM_PCT_THRESHOLD,
     min_abs_oi: float = MIN_ABS_OI,
+    threshold_mode: str = "fixed",
+    dte_days: int | None = None,
 ) -> dict[str, Any]:
     """Strike x time-bucket delta-OI grid, CE and PE side by side.
 
@@ -441,13 +502,19 @@ def build_grid(
     if timeframe_min not in TIMEFRAMES_MIN:
         raise ValueError(f"Unsupported timeframe {timeframe_min}. Use {list(TIMEFRAMES_MIN)}")
 
-    if pct_threshold is None:
-        pct_threshold = PCT_THRESHOLDS[timeframe_min]
-
     series, bucket_ends, spot_by_bucket = bucket_legs(
         rows, timeframe_min=timeframe_min, expiry=expiry, session_start=session_start
     )
     baselines = baselines or {}
+
+    bucket_keys = [end.strftime("%H:%M") for end in bucket_ends]
+    per_bucket_thresholds, mode_used = resolve_thresholds(
+        timeframe_min,
+        bucket_keys,
+        mode=threshold_mode,
+        dte_days=dte_days,
+        fixed_pct=pct_threshold,
+    )
 
     all_strikes = sorted({strike for strike, _ in series})
     if strikes is not None:
@@ -469,7 +536,7 @@ def build_grid(
                 bucket_ends,
                 per_bucket,
                 base,
-                pct_threshold=pct_threshold,
+                pct_thresholds=per_bucket_thresholds,
                 cum_threshold=cum_pct_threshold,
                 min_abs_oi=min_abs_oi,
             )
@@ -495,10 +562,25 @@ def build_grid(
         "totals": _totals(out_rows),
         "class_codes": CLASS_CODES,
         "thresholds": {
-            "pct": pct_threshold,
+            "mode": mode_used,
+            "requested_mode": threshold_mode,
+            "dte_bucket": dte_bucket(dte_days),
+            # Under `adaptive` the bar varies per column; report the range so the
+            # page can say what it is applying instead of implying one number.
+            "pct": (
+                per_bucket_thresholds[0]
+                if mode_used == "fixed"
+                else round(sum(per_bucket_thresholds) / len(per_bucket_thresholds), 2)
+                if per_bucket_thresholds
+                else None
+            ),
+            "pct_min": round(min(per_bucket_thresholds), 2) if per_bucket_thresholds else None,
+            "pct_max": round(max(per_bucket_thresholds), 2) if per_bucket_thresholds else None,
+            "pct_by_bucket": [round(v, 2) for v in per_bucket_thresholds],
             "cum_pct": cum_pct_threshold,
             "min_abs_oi": min_abs_oi,
             "alert_ratio": ALERT_BREACH_RATIO,
+            "fitted_sessions": calibration.FITTED_SESSIONS,
         },
         "alert": latest_bucket_alert(out_rows, len(bucket_ends)),
     }

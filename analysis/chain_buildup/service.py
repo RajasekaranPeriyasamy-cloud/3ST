@@ -101,6 +101,9 @@ def defaults() -> dict[str, Any]:
         "cum_pct_threshold": features.CUM_PCT_THRESHOLD,
         "min_abs_oi": features.MIN_ABS_OI,
         "alert_ratio": features.ALERT_BREACH_RATIO,
+        "threshold_modes": list(features.THRESHOLD_MODES),
+        "threshold_mode": "fixed",
+        "fitted_sessions": features.calibration.FITTED_SESSIONS,
     }
 
 
@@ -408,6 +411,7 @@ def get_grid(
     pct_threshold: float | None = None,
     cum_pct_threshold: float = features.CUM_PCT_THRESHOLD,
     min_abs_oi: float = features.MIN_ABS_OI,
+    threshold_mode: str = "fixed",
 ) -> dict[str, Any]:
     """The grid: one row per strike, CE and PE each carrying per-bucket delta-OI."""
     u = _check_underlying(underlying)
@@ -419,6 +423,10 @@ def get_grid(
         raise ValueError(f"Unknown strike_range {strike_range!r}. Use {list(STRIKE_RANGES)}")
     if baseline_mode not in BASELINE_MODES:
         raise ValueError(f"Unknown baseline_mode {baseline_mode!r}. Use {list(BASELINE_MODES)}")
+    if threshold_mode not in features.THRESHOLD_MODES:
+        raise ValueError(
+            f"Unknown threshold_mode {threshold_mode!r}. Use {list(features.THRESHOLD_MODES)}"
+        )
 
     day = _resolve_session(u, session_date)
     rows = _session_rows(u, day)
@@ -477,6 +485,11 @@ def get_grid(
         pct_threshold=pct_threshold,
         cum_pct_threshold=cum_pct_threshold,
         min_abs_oi=min_abs_oi,
+        threshold_mode=threshold_mode,
+        # DTE is what the fitted table conditions hardest on, and it is the one
+        # input the caller cannot supply: it comes from the expiry the grid is
+        # already scoped to, against the session being rendered.
+        dte_days=_dte_days(chosen_expiry, day),
     )
 
     grid.update(
@@ -503,6 +516,13 @@ def get_grid(
         }
     )
     return grid
+
+
+def _dte_days(expiry: str, session_date: date) -> int | None:
+    try:
+        return (date.fromisoformat(str(expiry)[:10]) - session_date).days
+    except ValueError:
+        return None
 
 
 def _nearest_archived_expiry(rows: list[dict[str, Any]]) -> str:

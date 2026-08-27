@@ -325,6 +325,7 @@ function ChainBuildupPage() {
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [minAbsOi, setMinAbsOi] = useState<number>(25_000);
   const [breachOnly, setBreachOnly] = useState<boolean>(false);
+  const [thresholdMode, setThresholdMode] = useState<"fixed" | "adaptive">("fixed");
 
   const [grid, setGrid] = useState<BuildupGrid | null>(null);
   const [status, setStatus] = useState<BuildupStatus | null>(null);
@@ -346,6 +347,7 @@ function ChainBuildupPage() {
       baseline_mode: baseline,
       widen: String(widen),
       min_abs_oi: String(minAbsOi),
+      threshold_mode: thresholdMode,
     });
     if (sessionDate) q.set("session_date", sessionDate);
     if (expiry) q.set("expiry", expiry);
@@ -362,7 +364,7 @@ function ChainBuildupPage() {
     }
     if (s.status === "fulfilled") setStatus(s.value);
     setLoading(false);
-  }, [underlying, sessionDate, expiry, timeframe, range, baseline, widen, minAbsOi]);
+  }, [underlying, sessionDate, expiry, timeframe, range, baseline, widen, minAbsOi, thresholdMode]);
 
   useEffect(() => {
     void load();
@@ -594,6 +596,27 @@ function ChainBuildupPage() {
           <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} />
           Sync scroll
         </label>
+
+        <div className="flex overflow-hidden rounded-md border">
+          <button
+            onClick={() => setThresholdMode("fixed")}
+            title="One hand-picked percentage for the whole session"
+            className={`px-2 py-1 text-xs ${
+              thresholdMode === "fixed" ? "bg-primary text-primary-foreground" : "bg-background"
+            }`}
+          >
+            Fixed
+          </button>
+          <button
+            onClick={() => setThresholdMode("adaptive")}
+            title="Fitted p95 per time-of-day and days-to-expiry — a flat ~5% breach rate"
+            className={`px-2 py-1 text-xs ${
+              thresholdMode === "adaptive" ? "bg-primary text-primary-foreground" : "bg-background"
+            }`}
+          >
+            Adaptive
+          </button>
+        </div>
 
         <label
           className="flex items-center gap-1 text-xs text-muted-foreground"
@@ -905,7 +928,17 @@ function ChainBuildupPage() {
         </span>
         {grid ? (
           <span>
-            Breach = |Δ%| &gt; {grid.thresholds.pct}% per {grid.timeframe_min}m bucket (
+            Breach ={" "}
+            {grid.thresholds.mode === "adaptive" ? (
+              <>
+                fitted p95, {grid.thresholds.pct_min}–{grid.thresholds.pct_max}% across the
+                session (DTE {grid.thresholds.dte_bucket}, {grid.thresholds.fitted_sessions}{" "}
+                session-files)
+              </>
+            ) : (
+              <>|Δ%| &gt; {grid.thresholds.pct}%</>
+            )}{" "}
+            per {grid.timeframe_min}m bucket (
             {grid.thresholds.cum_pct}% cumulative for a strike) <strong>and</strong> ≥{" "}
             {compact(grid.thresholds.min_abs_oi)} contracts. Alert at{" "}
             {(grid.thresholds.alert_ratio * 100).toFixed(0)}% of the newest bucket.

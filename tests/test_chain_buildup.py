@@ -508,3 +508,95 @@ def test_grid_marks_whether_the_session_is_live(archive):
 
     old = service.get_grid("NIFTY", session_date=yesterday, strike_range="atm5", widen=False)
     assert old["meta"]["is_live"] is False
+
+
+# ---------------------------------------------------------------------------
+# Adaptive thresholds
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_mode_repeats_one_constant_across_the_session():
+    keys = ["09:20", "12:30", "15:15"]
+    values, used = features.resolve_thresholds(5, keys, mode="fixed")
+    assert used == "fixed"
+    assert values == [features.PCT_THRESHOLDS[5]] * 3
+
+
+def test_adaptive_bar_rises_at_the_open_and_falls_at_midday():
+    """The measured spread the fitted table exists to absorb: OI churns hardest
+    in the first minutes and least around 12:30."""
+    values, used = features.resolve_thresholds(
+        5, ["09:30", "12:30"], mode="adaptive", dte_days=5
+    )
+    assert used == "adaptive"
+    assert values[0] > values[1] * 3
+
+
+def test_adaptive_bar_rises_with_nearness_to_expiry():
+    """Expiry-day OI churns several times harder than a far month; a flat rule
+    fired on 13.7% of expiry-day cells and 0.2% of far-dated ones."""
+    expiry_day, _ = features.resolve_thresholds(5, ["11:00"], mode="adaptive", dte_days=0)
+    far_month, _ = features.resolve_thresholds(5, ["11:00"], mode="adaptive", dte_days=45)
+    assert expiry_day[0] > far_month[0] * 2
+
+
+def test_adaptive_never_goes_below_the_floor_percentage():
+    """The midday trough fits under 2% at 5m; a threshold that low would mark
+    ordinary book-keeping."""
+    values, _ = features.resolve_thresholds(
+        5, list(features.calibration.TOD_FACTOR.get(5, {})), mode="adaptive", dte_days=45
+    )
+    assert values and min(values) >= features.MIN_ADAPTIVE_PCT
+
+
+@pytest.mark.parametrize(
+    "days,expected",
+    [(0, "0-1"), (1, "0-1"), (2, "2-7"), (7, "2-7"), (8, "8-21"), (21, "8-21"), (22, "22+")],
+)
+def test_dte_bucketing(days, expected):
+    assert features.dte_bucket(days) == expected
+
+
+def test_unfitted_timeframe_falls_back_and_says_so(monkeypatch):
+    """Serving a different rule than the one requested, silently, is how a
+    threshold stops meaning anything."""
+    monkeypatch.setattr(features.calibration, "BASE_P95", {})
+    values, used = features.resolve_thresholds(5, ["11:00"], mode="adaptive", dte_days=5)
+    assert used == "fixed"
+    assert values == [features.PCT_THRESHOLDS[5]]
+
+
+def test_adaptive_judges_each_column_against_its_own_bar():
+    """Under `adaptive` the bar moves with time of day, so a cell must be judged
+    against its own bucket rather than a grid-wide constant."""
+    rows = _rows(
+        [1_000_000 + 200_000 * i for i in range(60)],
+        ltp_by_minute=[10.0] * 60,
+    )
+    grid = features.build_grid(
+        rows,
+        timeframe_min=5,
+        baselines={(24000.0, "CE"): 1_000_000.0},
+        atm=24000.0,
+        threshold_mode="adaptive",
+        dte_days=5,
+    )
+    per_bucket = grid["thresholds"]["pct_by_bucket"]
+    assert len(per_bucket) == len(grid["buckets"])
+    assert len(set(per_bucket)) > 1  # not a repeated constant
+    assert grid["thresholds"]["mode"] == "adaptive"
+
+
+def test_grid_reports_the_mode_it_actually_applied(archive):
+    today, _ = archive
+    grid = service.get_grid(
+        "NIFTY", session_date=today, strike_range="atm5", widen=False, threshold_mode="adaptive"
+    )
+    assert grid["thresholds"]["requested_mode"] == "adaptive"
+    assert grid["thresholds"]["mode"] in features.THRESHOLD_MODES
+    assert grid["thresholds"]["pct_min"] <= grid["thresholds"]["pct_max"]
+
+
+def test_unknown_threshold_mode_is_rejected(archive):
+    with pytest.raises(ValueError, match="Unknown threshold_mode"):
+        service.get_grid("NIFTY", strike_range="atm5", widen=False, threshold_mode="magic")

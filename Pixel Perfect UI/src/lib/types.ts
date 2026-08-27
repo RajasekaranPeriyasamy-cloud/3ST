@@ -3597,10 +3597,18 @@ export interface BuildupStatus {
 }
 
 export interface BuildupThresholds {
+  mode: "fixed" | "adaptive";
+  requested_mode: "fixed" | "adaptive";
+  dte_bucket: string;
+  /** Under "adaptive" this is the session mean; the bar varies per column. */
   pct: number;
+  pct_min: number | null;
+  pct_max: number | null;
+  pct_by_bucket: number[];
   cum_pct: number;
   min_abs_oi: number;
   alert_ratio: number;
+  fitted_sessions: number;
 }
 
 export interface BuildupAlertSide {

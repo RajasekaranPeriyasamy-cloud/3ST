@@ -3313,6 +3313,7 @@ def buildup_grid(
     pct_threshold: float | None = None,
     cum_pct_threshold: float | None = None,
     min_abs_oi: float | None = None,
+    threshold_mode: str = "fixed",
 ) -> dict[str, Any]:
     """Strike x time-bucket OI build-up grid for one expiry.
 
@@ -3324,6 +3325,11 @@ def buildup_grid(
     timeframe, ``cum_pct_threshold`` marks a whole strike, and ``min_abs_oi`` is
     the absolute floor a move must clear before any percentage may call it a
     breach. All three are echoed back in ``thresholds``.
+
+    ``threshold_mode="adaptive"`` replaces the flat percentage with the fitted
+    p95 for this (timeframe, DTE, time-of-day) from
+    ``analysis/chain_buildup/calibration.py``. ``thresholds.mode`` reports what
+    was actually applied, which is not always what was asked for.
     """
     from analysis.chain_buildup import features as cb_features
     from analysis.chain_buildup import service as cb_service
@@ -3342,6 +3348,7 @@ def buildup_grid(
                 cb_features.CUM_PCT_THRESHOLD if cum_pct_threshold is None else cum_pct_threshold
             ),
             min_abs_oi=cb_features.MIN_ABS_OI if min_abs_oi is None else min_abs_oi,
+            threshold_mode=threshold_mode,
         )
     except ValueError as exc:
         raise _err(exc) from exc
