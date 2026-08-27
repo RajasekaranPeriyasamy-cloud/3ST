@@ -197,8 +197,10 @@ function SortHead({
         }`}
       >
         {label}
-        <span className={`text-[8px] leading-none ${on ? "" : "opacity-30"}`}>
-          {on ? (dir === "asc" ? "▲" : "▼") : "▲"}
+        {/* Inactive columns get a neutral glyph, not a faded ascending one:
+            opacity alone made "sorted ascending" and "not sorted" look alike. */}
+        <span className={`text-[8px] leading-none ${on ? "" : "opacity-40"}`}>
+          {on ? (dir === "asc" ? "▲" : "▼") : "↕"}
         </span>
       </button>
     </th>
@@ -412,16 +414,24 @@ function ChainBuildupPage() {
   // Clicking the active column flips direction; a new column starts ascending
   // for the strike ladder and descending everywhere else — for a delta column
   // "biggest first" is what you meant by clicking it.
-  const onSort = useCallback((key: SortKey) => {
-    setSortKey((prev) => {
-      if (prev === key) {
+  //
+  // Both branches must stay OUTSIDE any state updater. This previously called
+  // setSortDir from inside the setSortKey updater, and <StrictMode>
+  // (src/main.tsx) double-invokes updaters in development: the direction
+  // toggled twice per click and never appeared to change. It looked fine on
+  // :8001 only because a production build skips that double-invoke — which is
+  // exactly the class of bug verifying on one surface hides.
+  const onSort = useCallback(
+    (key: SortKey) => {
+      if (key === sortKey) {
         setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-      } else {
-        setSortDir(key === "strike" ? "asc" : "desc");
+        return;
       }
-      return key;
-    });
-  }, []);
+      setSortKey(key);
+      setSortDir(key === "strike" ? "asc" : "desc");
+    },
+    [sortKey],
+  );
 
   const mirror = useCallback(
     (from: React.RefObject<HTMLDivElement | null>, to: React.RefObject<HTMLDivElement | null>) =>
