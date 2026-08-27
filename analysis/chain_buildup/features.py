@@ -73,6 +73,14 @@ CUM_PCT_THRESHOLD = 40.0
 #: the grid lights up while the strikes that matter look calm.
 MIN_ABS_OI = 25_000
 
+#: **The breach layer is an attention tool, not a validated signal.** An event
+#: study over 42 archived session-files (``scripts/event_study_chain_buildup.py``)
+#: found no class/horizon surviving Benjamini-Hochberg at q<0.10: forward
+#: underlying returns ran 0.2-4.1 bps against standard errors of the same size.
+#: The same data analysed *without* clustering on (underlying, session) reports
+#: four significant horizons, which is why that script clusters. Do not build
+#: execution logic on ``breach`` without re-running it on a deeper archive.
+
 THRESHOLD_MODES = ("fixed", "adaptive")
 
 #: Floor under an adaptive threshold. The midday trough fits below 2% at 5m, and

@@ -2,11 +2,206 @@
 
 **Last updated:** 2026-08-27  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Option Chain Build-Up desk — bucketed ΔOI grid off the minute archive
+**Session focus:** Test isolation — the unit suite was writing into the live `data/` directory
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-27 (later) — the unit suite was writing into live `data/`
+
+`pytest tests/ -q` failed on
+`tests/test_mcx_rolling_straddle.py::test_ensure_state_underlying_heals_legacy_nifty_spot_on_crude`
+**only when the desk was running**. In isolation it passed. That asymmetry is the whole
+story: the test was writing the live rolling-straddle store on every run, and the failure
+appeared only once the live runner was writing the same file and the two raced.
+
+### The write was two frames below the function under test
+
+The test calls `rolling_straddle._ensure_state_underlying(cfg, state)` — nothing in the name
+or the assertions mentions persistence. But it reaches
+`clear_spot_state_for_underlying()` -> `save_state()` + `append_log()`, so both
+`data/rolling_straddle_state.json` and `data/rolling_straddle_log.json` were rewritten.
+Confirmed from the artifacts: the live log carried `underlying_reset` rows stamped inside
+the test run, and `last_spot` / `current_atm` / `state_underlying` had been reset.
+
+This is the same class as the theta-decay incident (2026-08-13, 1,800 synthetic snapshots
+appended to the live delta-velocity archive), and it is why the sibling
+`test_save_config_underlying_change_resets_spot_state` — which *does* patch `CONFIG_FILE`,
+`STATE_FILE` and `LOG_FILE` — was safe while its neighbours were not. **A test cannot be
+audited by reading its own body.** That is the argument for a guard rather than another
+round of per-test patches.
+
+### The audit found six files, not one
+
+Instrumented `open` / `Path.write_*` / `os.replace` / `rename` / `remove` for the whole
+suite and recorded every write resolving under the real `data/`:
+
+| test file | live file written |
+| --- | --- |
+| `test_mcx_rolling_straddle.py` (5 tests) | `rolling_straddle_state.json`, `rolling_straddle_log.json` |
+| `test_panic.py` (2) | `arm_state.json` — the live kill-switch |
+| `test_order_router.py`, `test_order_executor.py`, `test_watchlist_activation.py` (8) | `latency_log.jsonl` |
+| `test_session_poc.py`, `test_cas_indicative.py` (4) | `oi_movers_prev_day_oi.json`, `cas_history.jsonl` |
+
+Three offenders were in the reported file beyond the two named — `test_resolve_tick_spot_*`
+and `test_status_bundle_*` reach `append_log` the same way. `test_panic.py` rewriting the
+real `arm_state.json` is the one to worry about: that file is the ARM/DISARM state the
+kill-switch persists across API restarts.
+
+### Fix: two layers in `tests/conftest.py`, plus a session backstop
+
+Shared conftest rather than a per-module fixture, because a module fixture would have fixed
+one of the six.
+
+- **`isolate_real_data_writes`** (autouse) redirects a `_REDIRECTS` table of ~33 store
+  constants into a per-test sandbox, patching each **store module's own** reference.
+  `execution/latency_log.py` and `options/cas_history.py` resolve `data_dir()` at call time,
+  so their `data_dir` name is redirected instead of a constant. Read-only caches are
+  deliberately absent: `instruments.CACHE_FILE` (tests read the real instrument dump) and
+  `kite_auth.SESSION_FILE`.
+- **A call-level guard** armed by `pytest_collection_finish` raises `RealDataWriteBlocked` on
+  anything still landing under live `data/`, with a message naming the fix. This is what
+  makes the list unforgettable — a store added later fails loudly instead of quietly joining
+  the offenders. Opt out with `@pytest.mark.writes_real_data` (nothing does). Collection and
+  import stay unguarded: a couple of modules `mkdir` under `data/` at import time, and
+  refusing that would fail collection rather than any test.
+- **`real_store_files_untouched`** (session-scoped) is CLAUDE.md's "assert the real file's
+  line count is unchanged" rule applied to 13 live files at session scope — the write that
+  prompted it was two calls away from the test that caused it, so per-fixture was the wrong
+  altitude. It fails **only** when the call-level guard also caught this process attempting
+  the write; the desk may legitimately be running alongside pytest, and an otherwise
+  unexplained change is a warning naming the other writer, not a false failure. Without that
+  distinction the check would go red every time the analytics scheduler ticked.
+
+`tests/test_store_isolation.py` (new, 49 tests) pins all of it the way
+`tests/test_offline_guard.py` pins the Kite guard: the redirect *skips names it cannot find*,
+so a renamed store constant would silently turn its entry into a no-op — each one is asserted
+to still exist. Plus `test_ensure_state_underlying_does_not_touch_the_live_store` as the
+direct regression, and `test_writing_a_watched_file_is_refused` proving the guard bites.
+
+### Verified, both ways
+
+`1043 passed` (994 -> 1043 from the new file), full suite, **desk running** (`52s`, three
+times) and **desk stopped** (`30s`) — every watched live file byte-identical afterwards, 22
+of them on the stopped run. The guard itself was verified by temporarily deleting the three
+`rolling_straddle_store` redirect lines: all five tests then failed with
+`RealDataWriteBlocked` rather than writing. `ruff check` clean on every changed file.
+
+### `stop_3st.ps1` does not actually stop the desk
+
+Worth knowing independently of this work. `scripts/stop_3st.ps1` kills whatever is
+*listening* on 8001/8080 — but the API is launched through `scripts/start_api.bat`, which
+wraps uvicorn in a `:restart` loop that waits 5 seconds and starts it again,
+unconditionally. The `cmd.exe` running that batch is never killed, so the desk is back
+about five seconds later.
+
+This produced a convincing false positive: the first "desk stopped" run came back with
+`gamma_density_history.json` and `oi_var_history.json` modified, which with the desk
+supposedly down could only mean the suite wrote them. Bisecting blamed
+`test_oi_var.py::test_moneyness` — a pure arithmetic test that touches no store. The real
+writer was the resurrected analytics scheduler ticking during that test's 1.9s window.
+**A bisect that lands on an implausible test is evidence the writer is out of process.**
+Killing the `start_api.bat` supervisor first, then confirming the API stayed down for the
+whole run, gave the clean result above.
+
+### One real bug the false positive uncovered
+
+Chasing it exposed a genuine hole in the guard as first written: it disarmed in
+`pytest_runtest_teardown`, which fires *before* fixture finalizers — precisely when
+`monkeypatch` restores the real store constants. A finalizer that wrote would have found the
+live paths back in place and the guard already asleep. The guard now arms once at
+`pytest_collection_finish` and stays armed, disarming only for a `writes_real_data` test and
+re-arming at `pytest_runtest_logfinish`, after that test's teardown is fully done.
+
+One artifact of the investigation: the audit instrumentation *recorded* writes rather than
+blocking them, so those runs appended 18 rows to `data/rolling_straddle_log.json`. Restored
+from a pre-work backup (8 rows, newest `15:14:43`). The two `underlying_reset` rows already
+in that file from an earlier test run were left alone.
+
+Docs: the Testing section of `CLAUDE.md` now documents both layers; its `settings.data_dir`
+binding-trap bullet points at the guard while still asking for the explicit per-test patch,
+which documents what each file starts out holding.
+
+---
+
+## Session 2026-08-27 (later) — Chain Build-Up: fitted thresholds, and a null result
+
+Two follow-ons to the Build-Up desk, both driven by measurement against the
+`analysis/delta_velocity` archive (42 session-files: 14 sessions x NIFTY /
+BANKNIFTY / SENSEX, 2026-08-10 to 08-27).
+
+### The fixed thresholds were well-chosen; the *conditioning* was missing
+
+Fitting `|dOI %|` against the archive (`scripts/fit_chain_buildup_thresholds.py`)
+showed the hand-picked constants inherited from OI Tracker all sit near p92-p94,
+with correct scaling across timeframes. The level was never the problem:
+
+| tf | p95 | current | breach rate it produces |
+| --- | --- | --- | --- |
+| 5m | 9.5 | 8.0 | 6.3% |
+| 15m | 20.8 | 15.0 | 8.2% |
+| 30m | 33.3 | 25.0 | 7.6% |
+| 60m | 46.7 | 35.0 | 8.1% |
+
+What *is* wrong is that one number cannot mean the same thing twice:
+
+- **By DTE** — breach rate 13.7% on expiry day against 0.2% at 22+ DTE, a 70x
+  spread. Wallpaper at one end, a dead feature at the other.
+- **By time of day** — 20.2% at 09:25 against 0.2% at 12:35. **09:20-09:45 is
+  6.5% of cells but 24.9% of all breaches**: a quarter of what the desk flagged
+  was the open being the open, in the columns the eye lands on first.
+- **By moneyness** — p95 runs 8.9-11.0 from ATM to +/-6 at 5m. Flat. Conditioning
+  on moneyness was in the plan and the data killed it, so it was not built.
+
+`threshold_mode=adaptive` reads a fitted p95 per (timeframe, DTE, time-of-day)
+from the generated `analysis/chain_buildup/calibration.py`. Under it every
+(DTE x session-third) cell lands between 3.5% and 6.3% against a 5% target —
+that flattening is the acceptance test, and `--verify` reports it rather than the
+prettiness of the table.
+
+The model is factorised (`base x dte_factor x tod_factor`) rather than a full
+cross-tab: 14 sessions gives single-digit samples per cross-tab cell at 60m,
+which is noise dressed as precision. It therefore **cannot represent an
+interaction** — if the opening surge is sharper on expiry day than on a monthly,
+this averages them. Revisit when the archive is deep enough.
+
+`calibration.py` is generated *and committed*: it is a calibration constant, not
+runtime state, and `data/` is gitignored, so a store there would leave CI and a
+fresh checkout with nothing to read.
+
+### The event study came back null, and that is the finding
+
+`scripts/event_study_chain_buildup.py` measures forward underlying returns at
++5/+15/+30/+60m after every breach, against the unconditional mean over the same
+sessions. **0 of 32 tests survive Benjamini-Hochberg at q<0.10.** Effects run
+0.2-4.1 bps against standard errors of the same magnitude. One test reaches raw
+p<0.05 (PE short-covering @30m) and points the *opposite* way to the classic
+reading; noise alone is expected to produce ~1.6 such hits.
+
+**The methodological point is worth more than the verdict.** Forward spot return
+belongs to a (underlying, session, timestamp), not to a cell — every breached
+cell at 11:05 on one session shares one outcome. Collapsing events and clustering
+on (underlying, session) leaves ~33 independent moments; treating cells as
+independent inflates that to ~250 and shrinks the standard error ~2.7x. Measured
+on this archive, the naive version reports CE short-covering as significant at
+**all four horizons, strengthening monotonically** (t up to 3.63, p=0.0005) —
+the most convincing shape a false positive can take. `--naive-contrast` prints
+both, deliberately.
+
+**This does not prove the layer useless.** Power is limited: ~30-37 clusters with
+SEs of 0.4-2.3 bps puts the minimum detectable effect around 1-6 bps, and the
+test only asks about *direction of the underlying* — it says nothing about
+whether a breached call strike holds as resistance, which is a strike-level
+question and closer to what the desk is for. Sample is one month and one
+volatility regime.
+
+**Treat `breach` as an attention tool, not a signal.** `features.py` carries the
+same warning next to `THRESHOLD_MODES` so it is not re-derived as one. Re-run the
+study as the archive deepens; the honest label is "failed to reject on a thin
+sample", not "closed".
 
 ---
 
