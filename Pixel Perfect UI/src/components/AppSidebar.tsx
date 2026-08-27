@@ -27,6 +27,7 @@ import {
   Settings,
   Target,
   TrendingUp,
+  TableProperties,
 } from "lucide-react";
 import { useExecutionQueue } from "@/hooks/useExecutionQueue";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,8 @@ const items = [
   { title: "Vol Surface", url: "/vol-surface", icon: Grid3x3 },
   { title: "IV Skew", url: "/iv-skew", icon: Blend },
   { title: "OI Profile", url: "/oi-profile", icon: CandlestickChart },
+  { title: "Chain Build-Up", url: "/chain-buildup", icon: TableProperties },
+  { title: "Options Arbitrage", url: "/opt-arb", icon: Scale },
   { title: "Volume Footprint", url: "/volume-footprint", icon: AlignVerticalDistributeCenter },
   { title: "Equity Report", url: "/equity-report", icon: FileSearch },
   { title: "Algo Execution", url: "/execution", icon: Cpu },

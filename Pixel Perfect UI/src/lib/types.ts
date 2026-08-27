@@ -1233,6 +1233,29 @@ export interface VolumeFootprintOiRow {
   sell_volume: number | null;
 }
 
+export interface VolumeFootprintOiLadder {
+  underlying: string;
+  available: boolean;
+  reason: string | null;
+  asof?: string;
+  expiry?: string | null;
+  spot?: number | null;
+  atm_strike?: number | null;
+  strike_step?: number;
+  rows: VolumeFootprintOiRow[];
+  oi_baseline_mode?: string | null;
+  oi_baseline_note?: string | null;
+  oi_baseline_open_count?: number | null;
+  oi_baseline_prev_close_count?: number | null;
+  total_ce_doi?: number | null;
+  total_pe_doi?: number | null;
+  /** Shared bar scale across both sides, so equal lengths mean equal contracts. */
+  max_abs_doi?: number | null;
+  volume_available?: boolean;
+  volume_reason?: string | null;
+  price_axis?: string;
+}
+
 /** One prior session in the tilt comparison window. */
 export interface TiltHistoryPoint {
   date: string;
@@ -1267,27 +1290,126 @@ export interface VolumeFootprintTiltHistory {
   series?: TiltHistoryPoint[];
 }
 
-export interface VolumeFootprintOiLadder {
-  underlying: string;
-  available: boolean;
-  reason: string | null;
-  asof?: string;
-  expiry?: string | null;
-  spot?: number | null;
-  atm_strike?: number | null;
-  strike_step?: number;
-  rows: VolumeFootprintOiRow[];
-  oi_baseline_mode?: string | null;
-  oi_baseline_note?: string | null;
-  oi_baseline_open_count?: number | null;
-  oi_baseline_prev_close_count?: number | null;
-  total_ce_doi?: number | null;
-  total_pe_doi?: number | null;
-  /** Shared bar scale across both sides, so equal lengths mean equal contracts. */
-  max_abs_doi?: number | null;
-  volume_available?: boolean;
-  volume_reason?: string | null;
-  price_axis?: string;
+export type ExpiryPinState = "no_pin" | "shifting" | "stable" | "locked";
+
+/** One strike in the pressure ladder. */
+export interface ExpiryMagnetStrike {
+  strike: number;
+  /** Gross dealer gamma at the strike, ₹. |CE γ| + |PE γ|. */
+  gamma: number;
+  /** Signed — a magnet on short dealer gamma reads differently from long. */
+  net_gamma: number;
+  distance_pts: number;
+  distance_sigma: number;
+  /** exp(−d²/2σ²) — the settle-probability weight. */
+  weight: number;
+  /** Γ × weight, normalised so the leader is 1.0. The sort key. */
+  pressure: number;
+  /** Raw gamma share, for seeing where pressure and gamma invert. */
+  gamma_share: number;
+  rank: number;
+}
+
+/**
+ * Expiry Magnet: which strike is pulling settlement, and how hard.
+ *
+ * `conviction.calibrated` is false until the daily_pin trail can fit the
+ * weights against outcomes — the score is a summary of its four components,
+ * not an independent measurement.
+ */
+export interface ExpiryMagnet {
+  pin: number;
+  pin_gamma: number;
+  pin_net_gamma: number;
+  distance_pts: number;
+  distance_sigma: number;
+  sigma_pts: number | null;
+  dte: number | null;
+  /** √(t_ref / t_now): how much harder the clock is squeezing than at t_ref. */
+  time_boost: number | null;
+  time_boost_reference_dte: number;
+  runner_up: number | null;
+  runner_up_pressure: number | null;
+  margin: number | null;
+  leader_share: number;
+  stability_pct: number | null;
+  state: ExpiryPinState | string;
+  state_label: string;
+  state_description: string;
+  conviction: {
+    score: number | null;
+    parts: Record<string, number | null>;
+    weights: Record<string, number>;
+    calibrated: boolean;
+  };
+  top: ExpiryMagnetStrike[];
+  ladder: ExpiryMagnetStrike[];
+  thresholds: {
+    min_leader_share: number;
+    dominant_margin: number;
+    held_stability_pct: number;
+  };
+}
+
+export type GammaRegimeState =
+  | "unmeasured"
+  | "pinned"
+  | "coiled_box"
+  | "short_gamma_trend"
+  | "long_gamma_drift"
+  | "transition"
+  | "mixed";
+
+/** One key level as points and σ from spot (signed: + above, − below). */
+export interface GammaSigmaLevel {
+  level: number | null;
+  pts: number | null;
+  sigma: number | null;
+}
+
+/**
+ * Structural state: gamma pin vs volume POC, every level in σ, and a
+ * classification with its evidence.
+ *
+ * Describes the book only — it carries no directional or positional
+ * suggestion, and a backend test enforces that it stays that way.
+ */
+export interface GammaRegime {
+  state: GammaRegimeState | string;
+  label: string;
+  description: string;
+  evidence: string[];
+  sigma1_pts: number | null;
+  confluence: {
+    pin: number | null;
+    poc: number | null;
+    gap_pts: number | null;
+    gap_steps: number | null;
+    /** null = could not compare, which is not the same as "they agree". */
+    aligned: boolean | null;
+    confluence_steps: number;
+    pin_in_value: boolean | null;
+    value_area: { low: number; high: number; width_pts: number } | null;
+  };
+  levels: Record<string, GammaSigmaLevel>;
+  features: {
+    gamma_sign: "positive" | "negative" | null;
+    flip_sigma: number | null;
+    flip_near: boolean | null;
+    box_pts: number | null;
+    box_sigma: number | null;
+    spot_in_box: boolean | null;
+    pin_is_dominant: boolean | null;
+    pin_gates_passed: boolean | null;
+    containment_pct: number | null;
+    containment_holds: boolean | null;
+    hhi_band: string | null;
+    overlap_pct: number | null;
+    volume_balanced: boolean | null;
+    confluence_aligned: boolean | null;
+    confluence_gap_steps: number | null;
+    pin: number | null;
+  };
 }
 
 export type GammaPinWindow = "15m" | "30m" | "60m" | "session";
@@ -1412,6 +1534,8 @@ export interface GammaSnapshot {
   pin_lock?: GammaPinLock | null;
   volume_profile?: VolumeProfileSnapshot | null;
   strike_volume?: GammaStrikeVolume | null;
+  regime?: GammaRegime | null;
+  expiry_magnet?: ExpiryMagnet | null;
   conviction?: GammaConviction | null;
   momentum?: GammaMomentum | null;
   market_read?: GammaMarketRead | null;
@@ -1938,6 +2062,184 @@ export interface ArbitrageSnapshot {
   generated_at: string;
   rows: ArbitrageRow[];
   updated_at: string;
+}
+
+// --- Options Arbitrage desk (/oarb) -----------------------------------------
+
+export interface OptArbLeg {
+  exchange: string;
+  tradingsymbol: string;
+  segment: string;
+  side: "BUY" | "SELL";
+  price: number;
+  units: number;
+  strike?: number;
+  option_type?: string;
+  expiry?: string;
+}
+
+export interface OptArbPayoffPoint {
+  spot: number;
+  gross: number;
+  net: number;
+}
+
+export interface OptArbPayoff {
+  points: OptArbPayoffPoint[];
+  strikes: number[];
+  spot: number | null;
+  charges: number;
+  assumptions: string[];
+  summary: {
+    flat?: boolean;
+    max_profit?: number;
+    max_loss?: number;
+    profit_at_spot?: number | null;
+    breakevens?: number[];
+    risk_free?: boolean;
+    unbounded_loss?: boolean;
+    range?: [number, number];
+  };
+}
+
+export interface OptArbRow {
+  family: "xcontract" | "butterfly" | "vertical" | "box";
+  tier: "A" | "B";
+  id: string;
+  net: number;
+  gross: number;
+  cost: number;
+  legs: OptArbLeg[];
+  warnings: string[];
+  max_lots?: number;
+  underlying?: string;
+  exchange?: string;
+  expiry?: string;
+  option_type?: string;
+  strike?: number;
+  width?: number;
+  lower_strike?: number;
+  upper_strike?: number;
+  violation?: string | null;
+  direction?: string;
+  label?: string;
+  edge_per_unit?: number;
+  unit?: string;
+  ratio?: number;
+  mini_lots?: number;
+  exercise?: { applies: boolean; reason: string; intrinsic: number; stt: number };
+  payoff?: OptArbPayoff;
+}
+
+export interface OptArbPair {
+  key: string;
+  big: string;
+  mini: string;
+  exchange: string;
+  label: string;
+  unit: string;
+  ratio: number;
+  clean: boolean;
+  reason: string;
+  front_clean: boolean;
+  front_reason: string;
+  front_expiry: { big: string | null; mini: string | null; matched: boolean };
+  referenced_future: { big: string | null; mini: string | null; matched: boolean };
+  shared_expiries: string[];
+  clean_expiries: string[];
+}
+
+export interface OptArbPairs {
+  pairs: OptArbPair[];
+  counts: { total: number; clean: number };
+}
+
+export interface OptArbXCell {
+  edge_per_unit: number;
+  gross: number;
+  cost: number;
+  net: number;
+  big_price: number;
+  mini_price: number;
+  max_lots: number;
+  passes: boolean;
+}
+
+export interface OptArbXSheet {
+  pair: OptArbPair;
+  clean: boolean;
+  reason: string;
+  option_type: string;
+  lots: number;
+  threshold: number;
+  unit: string;
+  ratio: number;
+  expiry: { big: string | null; mini: string | null; matched: boolean };
+  forward: { big: number | null; mini: number | null };
+  basis: { value: number | null; unit: string; note: string };
+  atm_strike: number | null;
+  rows: Array<{ strike: number; buy: OptArbXCell | null; sell: OptArbXCell | null }>;
+  skipped: string | null;
+}
+
+export interface OptArbConfig {
+  min_net_rs: number;
+  lots: number;
+  require_clean: boolean;
+  require_depth: boolean;
+  families: string[];
+  strike_window: number;
+  rate_pct: number;
+  underlyings: Array<{ name: string; exchange: string }>;
+  rates: Record<string, Record<string, number | boolean | string>>;
+  rates_asof: string;
+}
+
+export interface OptArbScan {
+  generated_at: string;
+  families: string[];
+  pairs: OptArbPair[];
+  underlyings: Array<{
+    underlying: string;
+    exchange: string;
+    expiry: string | null;
+    implied_spot: number | null;
+    rows: number;
+  }>;
+  counts: { rows: number; tier_a: number; tier_b: number; instruments_quoted: number };
+  rows: OptArbRow[];
+  skipped: Record<string, unknown>;
+}
+
+export interface OptArbSheetCell {
+  strike: number;
+  width: number;
+  buy: number | null;
+  sell: number | null;
+  violation: string | null;
+  net: number | null;
+}
+
+export interface OptArbSheet {
+  family: string;
+  underlying: string;
+  exchange: string;
+  expiry: string;
+  option_type: string;
+  strike_step: number;
+  units_per_lot: number;
+  widths: string[];
+  rows: Array<{ strike: number; cells: Record<string, OptArbSheetCell | null> }>;
+  violations: OptArbRow[];
+  skipped: string | null;
+}
+
+export interface OptArbExpiries {
+  underlying: string;
+  exchange: string;
+  expiries: string[];
+  segment: string;
+  physically_settled: boolean;
 }
 
 export type OiProfileUnderlying = "NIFTY" | "BANKNIFTY" | "FINNIFTY" | "SENSEX";
@@ -3178,5 +3480,113 @@ export interface ThetaDecayStatus {
     max_vega_share: number;
     risk_free_rate: number;
     dividend_yield: number;
+  };
+}
+
+// --- Option Chain Build-Up (/buildup) ---------------------------------------
+
+export type BuildupClass =
+  | "long_buildup"
+  | "short_buildup"
+  | "short_covering"
+  | "long_unwinding";
+
+export interface BuildupCell {
+  oi: number | null;
+  d_oi: number | null;
+  d_oi_pct: number | null;
+  cum: number | null;
+  cum_pct: number | null;
+  ltp: number | null;
+  d_price: number | null;
+  volume: number | null;
+  cls: BuildupClass | null;
+}
+
+export interface BuildupSide {
+  baseline: number | null;
+  latest_oi: number | null;
+  latest_ltp: number | null;
+  total_delta: number | null;
+  total_delta_pct: number | null;
+  cells: BuildupCell[];
+}
+
+export interface BuildupRow {
+  strike: number;
+  atm: boolean;
+  ce: BuildupSide;
+  pe: BuildupSide;
+}
+
+export interface BuildupBucket {
+  key: string;
+  end: string;
+  spot: number | null;
+}
+
+export interface BuildupScale {
+  p95: number | null;
+  p50: number | null;
+  max: number | null;
+}
+
+export interface BuildupGrid {
+  underlying: string;
+  expiry: string;
+  session_date: string;
+  spot: number | null;
+  atm: number | null;
+  timeframe_min: number;
+  strike_range: string;
+  baseline_mode: string;
+  buckets: BuildupBucket[];
+  rows: BuildupRow[];
+  scale: {
+    ce: { delta: BuildupScale; cum: BuildupScale };
+    pe: { delta: BuildupScale; cum: BuildupScale };
+  };
+  totals: {
+    ce_oi: number;
+    pe_oi: number;
+    ce_delta: number;
+    pe_delta: number;
+    pcr_oi: number | null;
+    pcr_delta: number | null;
+    strikes: number;
+  };
+  class_codes: Record<BuildupClass, string>;
+  meta: {
+    source: string;
+    archive_strikes: number;
+    rendered_strikes: number;
+    widen: {
+      legs_requested: number;
+      legs_failed: number;
+      truncated: boolean;
+      strikes_not_listed: number[];
+    } | null;
+    notes: string[];
+    generated_at: string;
+  };
+}
+
+export interface BuildupStatus {
+  source: string;
+  collector_alive: boolean;
+  underlyings: string[];
+  coverage: VelocityCoverage;
+  sessions: string[];
+  defaults: {
+    underlyings: string[];
+    timeframes_min: number[];
+    timeframe_min: number;
+    strike_ranges: string[];
+    strike_range: string;
+    baseline_modes: string[];
+    baseline_mode: string;
+    refresh_seconds: number;
+    max_widen_legs: number;
+    archive_strike_width: number;
   };
 }

@@ -1,12 +1,119 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-26  
+**Last updated:** 2026-08-27  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Volume Footprint — strike OI ladder (spot, session-open OI, ΔOI)
+**Session focus:** Option Chain Build-Up desk — bucketed ΔOI grid off the minute archive
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-27 — Option Chain Build-Up desk (`/chain-buildup`)
+
+New read-only desk: a strike x time-bucket grid of OI build-up, CE left / PE right, at
+5 / 15 / 30 / 60-minute buckets. Backend `analysis/chain_buildup/`, API prefix `/buildup`,
+SPA page `/chain-buildup`. Nothing under `broker/` / `execution/` / `risk/` touched — it
+places no orders.
+
+### No collector, and that was the point
+
+The desk was scoped as "record chain build-up going forward", which reads as a new
+collector + store + runner. It does not need one: `analysis/delta_velocity/collector.py`
+already samples **every minute of every cash session** for NIFTY / BANKNIFTY / SENSEX and
+archives per-leg `oi` and `ltp` to `data/delta_velocity/<U>/<date>.jsonl`. Bucketing that
+is a pure read — no Kite call, no rate-limit exposure, no second daemon thread. Same
+dependency `analysis/theta_decay/` already takes on the same archive.
+
+Also found and worth knowing: `data/chain_history/NIFTY/` holds 8 sessions
+(2026-07-27 → 08-05) of wider full-chain snapshots. **Its writer is no longer in the tree**
+and the `/chain-history/coverage` route went with it (that route also carried an unfixed
+path-traversal finding from the 2026-08-06 security review). Dead data, not a source — but
+it is the format `delta_velocity/store.py` deliberately mirrors, so the same parser reads it.
+
+### Two sources, and the split matters
+
+| | archive (default) | Kite historical (`widen=true`) |
+| --- | --- | --- |
+| cost | free | one `fetch_historical_by_token` per leg |
+| span | 09:15 → now, survives expiry | only while the contract is listed |
+| width | `dv_collector.STRIKE_WIDTH` (ATM ±5) **at capture time** | whole listed chain |
+
+The archive's strike set **drifts with spot through the day**, so the union across a session
+is wider than any single minute of it — a strike present at 09:15 can be absent by 14:00.
+Rows render blank for the gap rather than vanishing, and the delta on the returning bucket
+spans the whole absence (honest, and it keeps the telescoping property).
+
+Widening is the expensive path this repo has been bitten by before — a gamma snapshot once
+walked a chain issuing ~80 sequential historical requests, 80+ seconds. Three controls:
+opt-in per request (`widen=false` refuses rather than silently costing a minute), a
+`MAX_WIDEN_LEGS = 160` cap with truncation reported in `meta` rather than passed off as full
+coverage, and a per-`(token, timeframe, session)` cache. Concurrency is 3 workers, matching
+Kite's published 3 req/s historical limit. Measured: ATM ±10 on NIFTY = 12 extra legs, ~2s.
+
+### Conventions the grid depends on
+
+- **A bucket's OI is its last value, never a mean.** OI is a level; averaging 100 and 900
+  reports 500, which was true at no instant. This is also exactly what Kite's `oi` on a
+  candle means, so the two sources agree cell for cell.
+- **ΔOI is against the previous bucket; the first bucket is against the baseline.** The row
+  then telescopes: buckets sum to `latest_oi - baseline`, so the per-bucket columns and the
+  cumulative column cannot disagree. "Every bucket vs baseline" is offered as `cum` on the
+  same cells rather than as a second differencing scheme.
+- **Bucket edges anchor at 09:15, not at the first snapshot** — otherwise a collector that
+  started late shifts every column label and two sessions stop being comparable.
+- **Baseline `prev_close` reads the previous *archived* session**, not a Kite previous-day
+  candle: consistent with the rest of the grid and still correct after expiry. When there is
+  no earlier session it says so in `meta.notes` instead of silently falling back to
+  session-open and mislabelling the column.
+- **Shading scales to p95, not max.** One expiry-day print an order of magnitude above the
+  rest would otherwise wash the whole grid to white; the UI clamps above p95.
+
+### BUG found while wiring the widening path
+
+Merging the two sources raised `TypeError: can't subtract offset-naive and offset-aware
+datetimes`. The archive writes `+05:30`-aware stamps; a Kite candle can arrive naive
+depending on how pandas carried its index, and bucketing subtracts one from the other.
+Fixed at the single parse boundary — `features.parse_ts` now normalises everything to
+**naive IST wall-clock** (aware stamps converted to IST first). Regression tests cover the
+mixed-source case and a foreign offset.
+
+Also stamped Kite candles at their **close** time in the adapter: Kite labels a candle by its
+open, and `bucket_end` maps a timestamp to the bucket closing at or after it, so passing the
+open landed a 09:20 candle one column early.
+
+### UI
+
+Layout resolves two constraints the operator gave that sound contradictory: baseline OI sits
+next to the strike, *and* time reads left → right. Result — the centre block is
+`Δ% │ ΔOI │ CE-base │ STRIKE │ PE-base │ ΔOI │ Δ%` and never scrolls, while the two wings
+scroll horizontally with their scroll positions mirrored. Reading outward from the strike on
+each side: baseline OI, cumulative ΔOI against it, that change as a percent — the three
+numbers read as one sentence, and the Δ pair carries the same fill/hatch shading as the wings. Hue encodes the **side** (CE red / PE green), not direction;
+fill intensity is magnitude; unwinding is **hatched** rather than merely paler, because a
+faint fill is indistinguishable from a small build-up and that is the one confusion this grid
+cannot afford. Each cell carries a corner tag for the four-quadrant class (LB / SB / SC / LU)
+derived from ΔOI against Δprice per option.
+
+Three panes stay row-aligned by fixed row heights and a single sorted `rows` array, which is
+also what makes the strike sort toggle (low→high / high→low) safe.
+
+### Route naming
+
+API `/buildup`, page `/chain-buildup` — `is_api_path` matches on `startswith`, and
+"/chain-buildup" does not start with "/buildup". Verified: a **direct browser load** of
+`/chain-buildup` on :8001 returns the SPA, not a JSON 404.
+
+### Test-isolation gap found (pre-existing, not from this work)
+
+Running `pytest tests/` **while the desk is up** fails
+`test_mcx_rolling_straddle.py::test_ensure_state_underlying_heals_legacy_nifty_spot_on_crude`;
+it passes in isolation. `rs._ensure_state_underlying` calls `clear_spot_state_for_underlying()`
+→ `save_state()` + `append_log()`, and that test patches neither `store.STATE_FILE` nor
+`store.LOG_FILE`, so both writes land in the **live** `data/rolling_straddle_{state,log}.json`
+and race the runner. Confirmed by `underlying_reset` entries appearing in the live log at the
+test run's timestamps. Sibling tests in the same file already patch all three paths correctly.
 
 ---
 
@@ -501,6 +608,155 @@ folder was the desk's original working directory, emptied on 2026-08-20 and left
 behind; it is now the documentation home. Code stayed put — in particular
 `vendor/volume_footprint/` can never move there, because a directory name with
 spaces cannot be a Python package root.
+
+---
+
+## Session 2026-08-25 — Options Arbitrage desk (`/opt-arb`, API `/oarb`)
+
+New analysis desk: `analysis/opt_arb/`. Scans option-to-option pricing violations
+across NFO/BFO/MCX, prices them at bid/ask, nets them against the Indian charge
+stack. **Scan and alert only** — no imports from `broker/` / `execution/` / `risk/`,
+no order path. Built in the order the design called for: costs first, then the MCX
+big/mini pairs, then the index butterfly sheet.
+
+### The finding that changed the design
+
+The obvious big-vs-mini trade (GOLD vs GOLDM, SILVER vs SILVERM — what the vendor
+sheets show) **is not arbitrage today**. Read straight out of the instrument dump:
+
+| Pair | Option expiry | Referenced future | |
+|---|---|---|---|
+| CRUDEOIL / CRUDEOILM | same | same | Tier A |
+| NATURALGAS / NATGASMINI | same | same | Tier A |
+| GOLD / GOLDM | 08-31 vs 08-28 | Oct-05 vs Sep-04 | Tier B |
+| SILVER / SILVERM | 08-28 vs 09-24 | Sep-04 vs Nov-30 | Tier B |
+
+Gold's two sides point at futures a month apart, so the "spread" on a vendor
+big-vs-mini sheet is mostly carry — a four-figure number at ₹1,25,000/10 g that
+is not edge. Crude and NatGas *do* share both, and are the only pairs where the
+per-unit identity actually holds. `referenced_future()` resolves the reference as
+the first future expiring on or after the option expiry, and the classification is
+recomputed from the dump on every call, so a pair promotes itself when it becomes
+comparable. `require_clean=true` (default) drops Tier B entirely.
+
+### Costs are the gate, not a footnote
+
+A NIFTY four-leg box round-trips at ~₹330/lot — 5 index points — before any edge
+exists. The item most screens omit: **exercise STT is 0.125% of intrinsic**, and a
+long box always finishes holding a leg struck at the *far* strike, so the levy is
+unbounded in spot. A short box's long legs sit at the near strike and cost less;
+`box_exercise_cost` prices both directions rather than assuming symmetry. MCX pays
+CTT instead and has no intrinsic levy (ITM devolves into futures). NSE stock
+options are physically settled, so their boxes are forced to Tier B.
+
+Rate cards are operator-editable at runtime and persist to
+`data/opt_arb_config.json` — **only fields that differ from the shipped card are
+written**, so a future correction to the built-in schedule is not shadowed by a
+stale full copy on disk.
+
+### Bid/ask, never LTP — with negative controls to prove it
+
+Every BUY leg is priced at the ask and every SELL leg at the bid. Each family has a
+test asserting that a **parity-exact book with a real bid-ask produces zero rows**;
+a mid-priced sheet would fire on roughly every strike pair at half the spread.
+`require_depth` drops rows the top of book cannot fill — the binding constraint on
+MCX, where offsetting one big lot needs `ratio` mini lots against a thin mini book.
+
+### Performance: 48s → 1.4s
+
+The first live sweep took 48 seconds. `universe.py` was rescanning the 113k-row
+instrument dump five or six times per underlying, with a per-element
+`pd.to_datetime` on top. Memoised the per-underlying frames against the dump's
+mtime (the same guard `options/chain.py` uses) and vectorised the expiry column:
+full sweep now ~1.4s, which makes the page's 15s poll viable.
+
+**Trap for tests:** the cache key is the *real* dump's mtime, which does not move
+when a fixture substitutes the frame — so a test swapping the dump must call
+`universe.clear_caches()` or one fixture leaks into the next.
+`test_clear_caches_lets_a_swapped_dump_take_effect` pins this.
+
+### Live verification (2026-08-25, ~19:50 IST, MCX open, desk DISARMED)
+
+Full sweep over NIFTY/BANKNIFTY/SENSEX + all four MCX pairs, 246 instruments
+quoted, 1.4s. Index families returned **zero** rows (correct — cash closed, books
+tight). Cross-contract returned Tier-A rows on NATURALGAS/NATGASMINI at
+0.10–0.15 ₹/mmBtu, ₹12–42 net per lot after charges, 5–18 lots of book depth.
+GOLD/SILVER correctly skipped with their carry reason. `implied_spot` — derived
+from the option book itself rather than a separate index quote — returned
+NIFTY 24,334.65 against a Gamma-Density spot of 24,334.6.
+
+### Payoff chart per recommendation (added same session)
+
+`analysis/opt_arb/payoff.py` attaches an expiry payoff curve to every scan row,
+rendered on the page under the selected row. Dashed line = the structure's own
+payoff, solid = after charges; for a real arbitrage the solid line never touches
+zero. Computed backend-side for the same reason the delta-velocity aggregation is
+— breakevens and the unbounded-tail flag are arithmetic worth testing rather than
+reimplementing in TypeScript.
+
+Two decisions worth keeping:
+
+* **The sample grid always contains every strike.** The curve is piecewise linear
+  with kinks only at strikes, so a breakeven interpolated across a missing kink
+  would be wrong in a way that looks entirely plausible on a chart.
+* **`risk_free` means "never touches zero", not "flat".** A butterfly bought
+  below zero is a tent and is still free money; requiring flatness reported the
+  whole butterfly family as risky. Caught by the smoke test before it shipped.
+
+Cross-contract curves carry an explicit assumption line. A Tier A pair's two legs
+settle against the same futures month so one price axis is exact; a Tier B pair's
+flat line assumes a convergence that will not happen, and the note says so rather
+than letting the picture imply otherwise.
+
+Also fixed the reason the operator could not see any of this: the detail panel
+required a click on a row with no affordance for it. The top row is now selected
+automatically after a scan, rows have a hover state and a chevron, and the
+selected row is highlighted.
+
+### Correction: gold IS a Tier A pair, just not in the front month
+
+The classification above was wrong, and the desk was hiding a real trade because
+of it. `pair_status()` classified a **pair** by its **front** expiry. GOLD/GOLDM
+is a carry spread in the front month (31 Aug vs 28 Aug, October vs September
+futures) — but both sides also list a **25 Sep** option, and at that expiry they
+share the date *and* the October future. That is a genuine Tier A trade, and
+`require_clean=True` was skipping the whole pair before it was ever priced.
+
+Fixed by splitting `expiry_status(pair, big_expiry, mini_expiry)` out of
+`pair_status()`. The scan now targets the first *clean* shared expiry rather than
+the first shared one, and tags tier from the expiry it actually traded.
+`pair_status()` reports `clean_expiries` plus a separate `front_clean`, because
+the front month being carry is still worth seeing on the page.
+
+Live after the fix: gold produces 7 Tier-A rows at 25 Sep — all with
+`max_lots: 0`, so the depth gate still keeps them out of the default ranking.
+Previously invisible; now visible and correctly gated. Silver stays Tier B at
+every shared expiry: the SILVER and SILVERM futures cycles never coincide.
+
+### Big-vs-mini strike grid
+
+`GET /oarb/xsheet` + `components/opt-arb/BigMiniSheet.tsx` reproduce the vendor
+worksheet layout (strike rows, BUY/SELL columns, ATM highlight, threshold) with
+the three things that make it mean something: cells net of charges, BUY and SELL
+priced at the side of the book you would hit (so the gap between them is the
+round trip, not zero), and the header basis explicitly labelled as carry when the
+displayed expiry's legs reference different futures months.
+
+Windowed ±12 strikes around the money — crude lists ~190 strikes and the far ITM
+ones carry stale books whose cells run to six figures and swamp the readable rows.
+`_priced_cell` deliberately keeps non-positive edges that `_direction` drops: a
+worksheet needs every cell filled or the good ones have nothing to stand out
+against.
+
+### Deliberately not built
+
+Ratio-spread credit screens (an unlimited-tail short is not arbitrage and must not
+share a page with one), dispersion / index-vs-basket, and any `INDEX_OPTIONS`
+entries for GOLD/SILVER — that constant is what
+`ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS` filters against, so adding names there would
+silently switch on 30-second Gamma-Density and OI-VAR sampling for them.
+
+See [docs/options-arbitrage/](options-arbitrage/) for the desk doc.
 
 ---
 

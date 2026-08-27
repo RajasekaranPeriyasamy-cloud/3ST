@@ -3289,6 +3289,357 @@ def decay_status(underlying: str = "NIFTY") -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Option Chain Build-Up desk (/buildup)
+#
+# Prefix is ``/buildup`` so the SPA page at ``/chain-buildup`` does not collide:
+# ``api.ui_static.is_api_path`` matches on ``startswith``, and "/chain-buildup"
+# does not start with "/buildup". See CLAUDE.md.
+#
+# Read-only, and collector-free -- it reads the delta-velocity minute archive,
+# the same way the theta-decay desk does. Never places an order.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/buildup/grid")
+def buildup_grid(
+    underlying: str = "NIFTY",
+    expiry: str | None = None,
+    session_date: str | None = None,
+    timeframe_min: int = 5,
+    strike_range: str = "atm10",
+    baseline_mode: str = "session_open",
+    widen: bool = True,
+) -> dict[str, Any]:
+    """Strike x time-bucket OI build-up grid for one expiry.
+
+    ``widen=false`` keeps the response purely archive-backed (no Kite calls);
+    ``true`` lets a wide ``strike_range`` reach past the collector's ATM window
+    via historical OI candles, capped and reported in ``meta.widen``.
+    """
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        return cb_service.get_grid(
+            underlying,
+            expiry=expiry,
+            session_date=session_date,
+            timeframe_min=timeframe_min,
+            strike_range=strike_range,
+            baseline_mode=baseline_mode,
+            widen=widen,
+        )
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/buildup/expiries")
+def buildup_expiries(underlying: str = "NIFTY", session_date: str | None = None) -> dict[str, Any]:
+    """Expiries the chosen session actually archived, nearest first."""
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        return {
+            "underlying": underlying.upper(),
+            "session_date": session_date,
+            "expiries": cb_service.expiries(underlying, session_date),
+        }
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/buildup/status")
+def buildup_status(underlying: str = "NIFTY") -> dict[str, Any]:
+    """Archive coverage and defaults for the build-up desk."""
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        payload = cb_service.status(underlying)
+    except ValueError as exc:
+        raise _err(exc) from exc
+    payload["collector_alive"] = delta_velocity_alive()
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Options Arbitrage desk (/oarb)
+#
+# Prefix is ``/oarb`` rather than ``/options-arbitrage`` for two reasons: the
+# SPA page at ``/opt-arb`` must not start with an API prefix (``is_api_path``
+# matches on ``startswith``), and ``/options`` is already an API prefix, so
+# anything beginning ``/options`` would be swallowed. See CLAUDE.md.
+#
+# Read-only. This desk never places an order.
+# ---------------------------------------------------------------------------
+
+
+class OptArbConfigIn(BaseModel):
+    min_net_rs: float | None = None
+    lots: int | None = None
+    require_clean: bool | None = None
+    require_depth: bool | None = None
+    families: list[str] | None = None
+    strike_window: int | None = None
+    rate_pct: float | None = None
+    underlyings: list[dict[str, str]] | None = None
+    rates: dict[str, dict[str, float | bool]] | None = None
+
+
+@app.get("/oarb/config")
+def oarb_config() -> dict[str, Any]:
+    from analysis.opt_arb import store as oarb_store
+
+    return oarb_store.config()
+
+
+@app.post("/oarb/config")
+def oarb_config_save(body: OptArbConfigIn) -> dict[str, Any]:
+    from analysis.opt_arb import store as oarb_store
+
+    return oarb_store.save_config(body.model_dump(exclude_none=True))
+
+
+@app.post("/oarb/config/reset")
+def oarb_config_reset() -> dict[str, Any]:
+    from analysis.opt_arb import store as oarb_store
+
+    return oarb_store.reset_config()
+
+
+@app.get("/oarb/pairs")
+def oarb_pairs() -> dict[str, Any]:
+    """Big/mini registry with its live clean-vs-carry classification.
+
+    Reads the instrument dump only — no quotes, so it answers without a market
+    session and is the right thing to look at before trusting any pair row.
+    """
+    from analysis.opt_arb import universe as oarb_universe
+
+    rows = oarb_universe.pair_registry()
+    return {
+        "pairs": rows,
+        "counts": {"total": len(rows), "clean": sum(1 for r in rows if r["clean"])},
+    }
+
+
+@app.get("/oarb/scan")
+def oarb_scan(
+    families: str | None = None,
+    lots: int | None = None,
+    min_net: float | None = None,
+    require_clean: bool | None = None,
+    require_depth: bool | None = None,
+) -> dict[str, Any]:
+    """Full sweep, ranked by net-of-charges rupee edge."""
+    from analysis.opt_arb import scanner as oarb_scanner
+
+    fams = [f.strip() for f in families.split(",") if f.strip()] if families else None
+    try:
+        return oarb_scanner.scan_all(
+            families=fams,
+            lots=lots,
+            min_net=min_net,
+            require_clean=require_clean,
+            require_depth=require_depth,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/underlying")
+def oarb_underlying(
+    name: str = "NIFTY",
+    exchange: str = "NFO",
+    expiry: str | None = None,
+    families: str | None = None,
+    lots: int | None = None,
+    min_net: float | None = None,
+    require_depth: bool | None = None,
+) -> dict[str, Any]:
+    """Butterfly / vertical / box violations for one underlying and expiry."""
+    from analysis.opt_arb import scanner as oarb_scanner
+
+    fams = [f.strip() for f in families.split(",") if f.strip()] if families else None
+    try:
+        return oarb_scanner.scan_underlying(
+            name.upper(),
+            exchange.upper(),
+            expiry,
+            families=fams,
+            lots=lots,
+            min_net=min_net,
+            require_depth=require_depth,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/xcontract")
+def oarb_xcontract(
+    pair: str | None = None,
+    expiry: str | None = None,
+    lots: int | None = None,
+    min_net: float | None = None,
+    require_clean: bool = True,
+    require_depth: bool = True,
+) -> dict[str, Any]:
+    """Big-vs-mini scan, optionally pinned to one pair and expiry."""
+    from analysis.opt_arb import store as oarb_store
+    from analysis.opt_arb.detectors import xcontract as oarb_xc
+
+    cfg = oarb_store.config()
+    try:
+        return oarb_xc.scan(
+            pair_keys=[pair.upper()] if pair else None,
+            expiry=expiry,
+            lots=int(lots or cfg["lots"]),
+            min_net=float(min_net if min_net is not None else cfg["min_net_rs"]),
+            require_clean=require_clean,
+            require_depth=require_depth,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/xsheet")
+def oarb_xsheet(
+    pair: str = "GOLD_GOLDM",
+    expiry: str | None = None,
+    option_type: str = "CE",
+    lots: int | None = None,
+    threshold: float = 0.0,
+) -> dict[str, Any]:
+    """Big-vs-mini strike grid — BUY and SELL of the spread at every strike.
+
+    Cells are **net of charges**, and the header basis is labelled as carry when
+    the two contracts reference different futures months.
+    """
+    from analysis.opt_arb import store as oarb_store
+    from analysis.opt_arb import universe as oarb_universe
+    from analysis.opt_arb.detectors import xcontract as oarb_xc
+
+    found = oarb_universe.pair_by_key(pair)
+    if found is None:
+        known = [p.key for p in oarb_universe.MINI_PAIRS]
+        raise _err(RuntimeError(f"Unknown pair {pair!r}. Use one of {known}"))
+    cfg = oarb_store.config()
+    try:
+        return oarb_xc.sheet(
+            found,
+            expiry=expiry,
+            option_type=option_type.upper(),
+            lots=int(lots or cfg["lots"]),
+            threshold=threshold,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/sheet")
+def oarb_sheet(
+    name: str = "NIFTY",
+    exchange: str = "NFO",
+    expiry: str | None = None,
+    option_type: str = "CE",
+    widths: str | None = None,
+    strike_window: int | None = None,
+    lots: int | None = None,
+) -> dict[str, Any]:
+    """Combo-butterfly worksheet: body strikes down, wing widths across.
+
+    BUY is priced on the wings' asks and the body's bid, SELL the other way
+    round, so a green cell is one you could actually hit rather than one that
+    only exists at the mid.
+    """
+    from analysis.opt_arb import store as oarb_store
+    from analysis.opt_arb import universe as oarb_universe
+    from analysis.opt_arb.detectors import butterfly as oarb_fly
+
+    cfg = oarb_store.config()
+    grid = None
+    if widths:
+        grid = [float(w) for w in widths.split(",") if w.strip()]
+    target = expiry
+    if not target:
+        listed = oarb_universe.option_expiries(name.upper(), exchange.upper())
+        target = listed[0] if listed else None
+    if not target:
+        raise _err(RuntimeError(f"No listed option expiry for {exchange.upper()}:{name.upper()}"))
+    try:
+        return oarb_fly.sheet(
+            name.upper(),
+            exchange.upper(),
+            target,
+            option_type=option_type.upper(),
+            widths=grid,
+            strike_window=int(strike_window or cfg["strike_window"]),
+            lots=int(lots or cfg["lots"]),
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+class OptArbPayoffLeg(BaseModel):
+    side: Literal["BUY", "SELL"]
+    option_type: str | None = None
+    strike: float | None = None
+    price: float = 0.0
+    units: float = 0.0
+    exchange: str | None = None
+    tradingsymbol: str | None = None
+
+
+class OptArbPayoffIn(BaseModel):
+    legs: list[OptArbPayoffLeg]
+    spot: float | None = None
+    charges: float = 0.0
+
+
+@app.post("/oarb/payoff")
+def oarb_payoff(body: OptArbPayoffIn) -> dict[str, Any]:
+    """Expiry payoff curve for an arbitrary leg set.
+
+    Scan rows already carry their own ``payoff`` block; this is for a structure
+    assembled by hand, or for re-pricing one at a different size.
+    """
+    from analysis.opt_arb import payoff as oarb_payoff
+
+    return oarb_payoff.build(
+        [leg.model_dump() for leg in body.legs],
+        spot=body.spot,
+        charges=body.charges,
+    )
+
+
+@app.get("/oarb/expiries")
+def oarb_expiries(name: str = "NIFTY", exchange: str = "NFO") -> dict[str, Any]:
+    from analysis.opt_arb import universe as oarb_universe
+
+    return {
+        "underlying": name.upper(),
+        "exchange": exchange.upper(),
+        "expiries": oarb_universe.option_expiries(name.upper(), exchange.upper()),
+        "segment": oarb_universe.cost_segment(exchange.upper(), name.upper()),
+        "physically_settled": oarb_universe.is_physically_settled(
+            exchange.upper(), name.upper()
+        ),
+    }
+
+
+@app.get("/oarb/costs")
+def oarb_costs(
+    segment: str = "NFO",
+    side: str = "BUY",
+    price: float = 100.0,
+    units: float = 75.0,
+) -> dict[str, Any]:
+    """Charge preview for one leg — the floor any edge has to clear."""
+    from analysis.opt_arb import costs as oarb_costs
+
+    leg = oarb_costs.leg_cost(segment.upper(), side.upper(), price, units)  # type: ignore[arg-type]
+    return {"rates_asof": oarb_costs.RATES_ASOF, "leg": leg.as_dict()}
+
+
 @app.get("/api/meta")
 def api_meta() -> dict[str, str | bool]:
     from api.ui_static import ui_build_available

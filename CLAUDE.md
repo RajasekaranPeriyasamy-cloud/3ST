@@ -18,6 +18,8 @@ This file provides guidance to Claude (Claude Code / Cowork) when working with c
 | Theta Decay | `/theta-decay` | `analysis/theta_decay/` (API prefix `/decay`) |
 | RRG, OI Tracker, OI VAR, Gamma Density, Vanna Exposure, Vol Surface, IV Smile, Pricing Engine, Calendar Arb, OI Profile, Analogue Paths | various | `analysis/`, `options/` |
 | Volume Footprint | `/volume-footprint` | `analysis/volume_profile/` + `vendor/volume_footprint/` |
+| Chain Build-Up | `/chain-buildup` | `analysis/chain_buildup/` (API prefix `/buildup`) |
+| Options Arbitrage | `/opt-arb` | `analysis/opt_arb/` (API prefix `/oarb`) |
 
 Legacy **Streamlit** UI (`app.py`) still exists but is not actively developed — treat `Pixel Perfect UI` + FastAPI as canonical.
 
@@ -110,6 +112,20 @@ options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG
                   archived IV is solved at q=0, and mixing them shifts ATM theta ~5%. Read
                   features.py's docstring before trusting capture_ratio — burn rate is solid,
                   decay capture is a session-scale statistic with a quality gate.
+                — analysis/chain_buildup/ (added 2026-08-27): Option Chain Build-Up desk.
+                  Like theta_decay it has **no collector, store or runner** — it buckets the
+                  analysis/delta_velocity/ minute archive into 5/15/30/60m OI columns. The
+                  archive only holds ATM +/- STRIKE_WIDTH strikes *at capture time*, so its
+                  strike set drifts with spot; wider strike ranges opt into Kite historical
+                  OI candles (`widen=true`), capped at MAX_WIDEN_LEGS and cached per
+                  (token, timeframe, session). Read-only; places no orders.
+                — analysis/opt_arb/ (added 2026-08-25): option-to-option arbitrage scanner.
+                  Scan-and-alert only — imports nothing from broker/ execution/ risk/ and
+                  places no orders. Prices every leg at bid/ask (never LTP) and nets every
+                  row against costs.py before surfacing it. Its universe is self-contained
+                  rather than going through INDEX_OPTIONS, deliberately: that constant is
+                  what ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS filters against, so adding
+                  GOLD/SILVER there would silently start Gamma-Density/OI-VAR sampling them.
 vendor/         Third-party code, verbatim, each subpackage with its own LICENSE.
                 — vendor/volume_footprint/ (added 2026-08-20): MPL-2.0 Pine port behind the
                   Volume Footprint desk. Do NOT edit in place — it is kept diffable against
@@ -139,6 +155,7 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | `kite_instruments.json` | `instruments.py` cache |
 | `equity_reports.json` + `equity_reports/*.md` | `analysis/equity_report/store.py` |
 | `equity_pins.json` | `analysis/equity_report/pins.py` |
+| `opt_arb_config.json` | `analysis/opt_arb/store.py` |
 
 There is no single source of truth across runners for "what legs are open" today — that's exactly the gap `position_ledger.py` exists to close, once runners migrate to it.
 
