@@ -120,6 +120,91 @@ function centreCell(strong: boolean): string {
   );
 }
 
+/** Which column the ladder is ordered by. Every key reads off a value the grid
+ *  already carries, so sorting is a pure reorder — no refetch. */
+type SortKey =
+  | "strike"
+  | "ce_base"
+  | "ce_delta"
+  | "ce_pct"
+  | "pe_base"
+  | "pe_delta"
+  | "pe_pct";
+
+type SortDir = "asc" | "desc";
+
+function sortValue(row: BuildupRow, key: SortKey): number | null {
+  switch (key) {
+    case "strike":
+      return row.strike;
+    case "ce_base":
+      return row.ce.baseline;
+    case "ce_delta":
+      return row.ce.total_delta;
+    case "ce_pct":
+      return row.ce.total_delta_pct;
+    case "pe_base":
+      return row.pe.baseline;
+    case "pe_delta":
+      return row.pe.total_delta;
+    case "pe_pct":
+      return row.pe.total_delta_pct;
+  }
+}
+
+/** Sorts signed, not by magnitude: descending puts the heaviest build-up on top
+ *  and ascending the heaviest unwinding, so one toggle reaches both ends. Rows
+ *  with no value sink to the bottom either way — a strike with no baseline has
+ *  not "sorted lowest", it has nothing to sort on. */
+function sortRows(rows: BuildupRow[], key: SortKey, dir: SortDir): BuildupRow[] {
+  const sign = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = sortValue(a, key);
+    const bv = sortValue(b, key);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return (av - bv) * sign;
+  });
+}
+
+function SortHead({
+  label,
+  sortKey,
+  active,
+  dir,
+  width,
+  className,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  active: SortKey;
+  dir: SortDir;
+  width: number;
+  className: string;
+  onSort: (k: SortKey) => void;
+}) {
+  const on = active === sortKey;
+  return (
+    <th style={{ height: HEAD_H, width }} className={className}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        title={`Sort by ${label}`}
+        className={`flex w-full items-center justify-center gap-0.5 ${
+          on ? "font-bold" : "opacity-90 hover:opacity-100"
+        }`}
+      >
+        {label}
+        <span className={`text-[8px] leading-none ${on ? "" : "opacity-30"}`}>
+          {on ? (dir === "asc" ? "▲" : "▼") : "▲"}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 function cellTitle(cell: BuildupCell, bucket: string, side: string): string {
   const parts = [
     `${side} @ ${bucket}`,
@@ -234,7 +319,8 @@ function ChainBuildupPage() {
   const [metric, setMetric] = useState<"delta" | "cum">("delta");
   const [widen, setWiden] = useState<boolean>(false);
   const [sync, setSync] = useState<boolean>(true);
-  const [strikeDesc, setStrikeDesc] = useState<boolean>(false);
+  const [sortKey, setSortKey] = useState<SortKey>("strike");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [minAbsOi, setMinAbsOi] = useState<number>(25_000);
   const [breachOnly, setBreachOnly] = useState<boolean>(false);
 
@@ -323,6 +409,20 @@ function ChainBuildupPage() {
     });
   }, [grid]);
 
+  // Clicking the active column flips direction; a new column starts ascending
+  // for the strike ladder and descending everywhere else — for a delta column
+  // "biggest first" is what you meant by clicking it.
+  const onSort = useCallback((key: SortKey) => {
+    setSortKey((prev) => {
+      if (prev === key) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+      } else {
+        setSortDir(key === "strike" ? "asc" : "desc");
+      }
+      return key;
+    });
+  }, []);
+
   const mirror = useCallback(
     (from: React.RefObject<HTMLDivElement | null>, to: React.RefObject<HTMLDivElement | null>) =>
       () => {
@@ -355,8 +455,8 @@ function ChainBuildupPage() {
           r.pe.cells.some((c) => c.breach),
       );
     }
-    return strikeDesc ? [...base].reverse() : base;
-  }, [grid?.rows, strikeDesc, breachOnly]);
+    return sortRows(base, sortKey, sortDir);
+  }, [grid?.rows, sortKey, sortDir, breachOnly]);
   const buckets = grid?.buckets ?? [];
   const scaleKey = metric === "cum" ? "cum" : "delta";
   const classCodes =
@@ -508,14 +608,6 @@ function ChainBuildupPage() {
           Breaches only
         </label>
 
-        <button
-          onClick={() => setStrikeDesc((v) => !v)}
-          title="Sort the strike ladder"
-          className="h-8 rounded-md border bg-background px-2 text-xs"
-        >
-          Strike {strikeDesc ? "↓ high→low" : "↑ low→high"}
-        </button>
-
         <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
           <RefreshCw className={`mr-1 h-3 w-3 ${loading ? "animate-spin" : ""}`} />
           Refresh
@@ -591,30 +683,69 @@ function ChainBuildupPage() {
               <table className="border-separate border-spacing-0">
                 <thead>
                   <tr>
-                    <th style={{ height: HEAD_H, width: PCT_W }} className={CENTRE_HEAD_CE}>
-                      Δ%
-                    </th>
-                    <th style={{ height: HEAD_H, width: DELTA_W }} className={CENTRE_HEAD_CE}>
-                      ΔOI
-                    </th>
-                    <th style={{ height: HEAD_H, width: BASE_W }} className={CENTRE_HEAD_CE}>
-                      CE base
-                    </th>
-                    <th
-                      style={{ height: HEAD_H, width: 74 }}
+                    <SortHead
+                      label="Δ%"
+                      sortKey="ce_pct"
+                      active={sortKey}
+                      dir={sortDir}
+                      width={PCT_W}
+                      className={CENTRE_HEAD_CE}
+                      onSort={onSort}
+                    />
+                    <SortHead
+                      label="ΔOI"
+                      sortKey="ce_delta"
+                      active={sortKey}
+                      dir={sortDir}
+                      width={DELTA_W}
+                      className={CENTRE_HEAD_CE}
+                      onSort={onSort}
+                    />
+                    <SortHead
+                      label="CE base"
+                      sortKey="ce_base"
+                      active={sortKey}
+                      dir={sortDir}
+                      width={BASE_W}
+                      className={CENTRE_HEAD_CE}
+                      onSort={onSort}
+                    />
+                    <SortHead
+                      label="STRIKE"
+                      sortKey="strike"
+                      active={sortKey}
+                      dir={sortDir}
+                      width={74}
                       className="sticky top-0 z-10 bg-background text-[10px] font-semibold"
-                    >
-                      STRIKE
-                    </th>
-                    <th style={{ height: HEAD_H, width: BASE_W }} className={CENTRE_HEAD_PE}>
-                      PE base
-                    </th>
-                    <th style={{ height: HEAD_H, width: DELTA_W }} className={CENTRE_HEAD_PE}>
-                      ΔOI
-                    </th>
-                    <th style={{ height: HEAD_H, width: PCT_W }} className={CENTRE_HEAD_PE}>
-                      Δ%
-                    </th>
+                      onSort={onSort}
+                    />
+                    <SortHead
+                      label="PE base"
+                      sortKey="pe_base"
+                      active={sortKey}
+                      dir={sortDir}
+                      width={BASE_W}
+                      className={CENTRE_HEAD_PE}
+                      onSort={onSort}
+                    />
+                    <SortHead
+                      label="ΔOI"
+                      sortKey="pe_delta"
+                      active={sortKey}
+                      dir={sortDir}
+                      width={DELTA_W}
+                      className={CENTRE_HEAD_PE}
+                      onSort={onSort}
+                    />
+                    <SortHead
+                      label="Δ%"
+                      sortKey="pe_pct"
+                      active={sortKey}
+                      dir={sortDir}
+                      width={PCT_W}
+                      className={CENTRE_HEAD_PE}
+                      onSort={onSort}
+                    />
                   </tr>
                 </thead>
                 <tbody>
