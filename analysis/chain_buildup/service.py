@@ -37,6 +37,7 @@ two land in the same bucket.
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import date, datetime, time, timedelta
 from typing import Any
@@ -360,7 +361,7 @@ def _widen_rows(
                 failures += 1
                 log_event(
                     logger,
-                    "warning",
+                    logging.WARNING,
                     "chain_buildup widen leg failed",
                     underlying=underlying,
                     strike=strike,
@@ -520,7 +521,7 @@ def _resolve_wanted_strikes(
     except Exception as exc:  # no instrument cache / no session — archive still renders
         log_event(
             logger,
-            "warning",
+            logging.WARNING,
             "chain_buildup could not read listed chain; falling back to archive strikes",
             underlying=underlying,
             expiry=expiry,

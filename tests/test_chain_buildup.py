@@ -346,3 +346,23 @@ def test_candles_are_stamped_at_close_not_open():
         timeframe_min=5,
     )
     assert features.parse_ts(rows[0]["ts"]) == datetime(2026, 8, 27, 9, 25)
+
+
+def test_wide_range_falls_back_when_the_listed_chain_is_unreadable(archive, monkeypatch):
+    """No instrument cache (CI, or before the first Kite sync) must degrade to the
+    archive's own strikes, not raise.
+
+    The fallback logs a warning, and `log_event` takes a numeric level — passing
+    the string "warning" blew up inside logging with
+    `'>=' not supported between instances of 'str' and 'int'`, but only on this
+    path, which is why a machine with a populated data/ never saw it.
+    """
+    import options.chain as chain_mod
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("Instrument cache empty")
+
+    monkeypatch.setattr(chain_mod, "get_chain", _boom)
+    grid = service.get_grid("NIFTY", strike_range="all", widen=False)
+    assert [r["strike"] for r in grid["rows"]] == [23900.0, 24000.0, 24100.0]
+    assert grid["meta"]["source"] == "archive"
