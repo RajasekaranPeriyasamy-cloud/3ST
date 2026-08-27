@@ -29,4 +29,5 @@ known-first-party = [
 [tool.pytest.ini_options]
 markers = [
     "live_kite: test may open a real Kite client (opts out of the offline guard in tests/conftest.py)",
+    "writes_real_data: test may write into the live data/ directory (opts out of the store guard in tests/conftest.py)",
 ]

@@ -1,4 +1,15 @@
-"""MCX commodity support for rolling straddle."""
+"""MCX commodity support for rolling straddle.
+
+Several tests here exercise ``execution.rolling_straddle`` functions that write
+through to the store without saying so — ``_ensure_state_underlying`` and
+``status_bundle`` both reach ``clear_spot_state_for_underlying`` ->
+``save_state`` + ``append_log``. Until 2026-08-27 those writes landed in the
+live ``data/rolling_straddle_{state,log}.json``, which passed in isolation and
+failed against the running desk. The per-test redirect now comes from
+``tests/conftest.py``'s autouse ``isolate_real_data_writes``; the explicit
+``monkeypatch.setattr(store, ...)`` calls below are kept because they also pin
+*what* each file starts out holding.
+"""
 
 from __future__ import annotations
 

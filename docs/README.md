@@ -22,6 +22,7 @@ Sidebar categories map to folders below. Deep conversation notes currently live 
 | IV Chart | `/iv-chart` | [iv-chart/](iv-chart/) |
 | Pricing Engine | `/pricing-engine` | [pricing-engine/](pricing-engine/) |
 | Calendar Arb | `/arbitrage` | [calendar-arb/](calendar-arb/) |
+| Options Arbitrage | `/opt-arb` | [options-arbitrage/](options-arbitrage/) — model-free violations, net of charges; API prefix `/oarb` |
 | OI Profile | `/oi-profile` | [oi-profile/](oi-profile/) |
 | Volume Footprint | `/volume-footprint` | [../volume Profile Gaucessian/](../volume%20Profile%20Gaucessian/) |
 | Straddle Watch | `/straddle-watch` | [straddle-watch/](straddle-watch/) |
