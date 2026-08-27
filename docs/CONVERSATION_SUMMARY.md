@@ -127,6 +127,79 @@ which documents what each file starts out holding.
 
 ---
 
+## Session 2026-08-27 (later) — Chain Build-Up: the wall test, also null
+
+Second validation attempt on the breach layer, asking the question closer to
+what the desk is used for than the directional study was: when calls are written
+at strike K above spot, does K hold as resistance? `scripts/wall_test_chain_buildup.py`.
+
+Outcome is binary — within h minutes, does spot reach K. 125,008 strike
+observations, 100-241 events per test, 27-33 clusters.
+
+**Null again, and the point estimates lean against the hypothesis.** Nothing
+survives Benjamini-Hochberg at q<0.10, and all six call-side rows are *positive*
+— breached call strikes were crossed MORE often than matched controls, not less.
+The put side sits at zero.
+
+| event | side | h | ev% | ctl% | diff | t |
+| --- | --- | --- | --- | --- | --- | --- |
+| writing | CE | 30m | 36.4 | 29.4 | +9.42pp | 1.47 |
+| writing | CE | 60m | 40.2 | 34.3 | +9.09pp | 1.50 |
+| writing | PE | 30m | 21.3 | 28.8 | -0.52pp | -0.09 |
+
+### Two confounds, and only one is obvious
+
+**Distance** is the obvious one: a strike 10 points away is crossed constantly,
+one 300 points away almost never, and writing concentrates at particular
+distances. Absorbed by expressing distance in expected-move units,
+`z = |K - spot| / (spot * sigma_5m * sqrt(h/5))`, and comparing events only
+against non-events in the same (side, horizon, z-bin).
+
+**Momentum toward the strike** is the one that bites, and it is why the naive
+version of this test would have "found" that walls break. Writers write the
+strike spot is already approaching; matching on distance controls for how far K
+is, not which way spot is moving. Re-matched on prior-15-minute drift toward the
+strike, about a third of the call-side effect disappears:
+
+| | distance | + momentum |
+| --- | --- | --- |
+| writing CE 30m | +9.42pp (t=1.47) | +6.00pp (t=0.99) |
+| any_breach CE 30m | +5.63pp (t=1.45) | +3.15pp (t=0.82) |
+
+Six-for-six on sign looked like it might be something. It is not worth much:
+`writing` is a subset of `any_breach` and the horizons are nested, so those are
+closer to one or two independent signs than six.
+
+### Power is the binding limit in both studies
+
+100-241 events over 27-33 clusters at SEs of 3-6pp puts the minimum detectable
+effect near **9-17pp**. A genuine 3-5pp "walls hold" effect would be invisible
+here. Same story as the directional study (MDE ~1-6 bps). Both are failures to
+reject on a thin sample, not demonstrations of absence.
+
+One asymmetry worth revisiting rather than believing: calls tilt positive, puts
+sit at zero — consistent with put OI being more hedging and call OI more
+overwriting, but at t~1 that is a hypothesis.
+
+### Standing conclusion
+
+Both validation attempts are null, so the label holds: **the breach layer is an
+attention tool, not a signal or a level.** The adaptive calibration is what makes
+it a well-behaved one, and that part *is* measured. `features.py` carries both
+results next to `THRESHOLD_MODES`.
+
+Two methodological improvements would do more than more data alone:
+
+- **A continuous outcome** — "how close did spot get, in expected-move units"
+  instead of binary crossing — uses every observation's full information rather
+  than discarding it at a threshold, and could roughly halve the standard errors
+  with no new sessions.
+- **Condition on dOI / volume**, the position-building ratio: the hypothesis
+  worth testing is that walls built by genuine position-building hold, and
+  pooling them with churn is what flattens the result.
+
+---
+
 ## Session 2026-08-27 (later) — Chain Build-Up: fitted thresholds, and a null result
 
 Two follow-ons to the Build-Up desk, both driven by measurement against the
