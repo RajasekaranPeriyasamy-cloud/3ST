@@ -2484,6 +2484,45 @@ def build_gamma_snapshot(
             volume_profile_block = None
             strike_volume_block = None
 
+    # Expiry magnet: pressure = gamma weighted by the chance of settling there.
+    # Pure arithmetic over strikes already in hand, so it costs nothing.
+    expiry_magnet_block = None
+    try:
+        from options.expiry_magnet import build_expiry_magnet
+
+        expiry_magnet_block = build_expiry_magnet(
+            strikes=strikes,
+            spot=spot,
+            sigma_pts=(bands or {}).get("sigma1_pts"),
+            dte=_days_to_expiry(exp),
+            strike_step=float(strike_step),
+            history=history,
+        )
+    except Exception:
+        expiry_magnet_block = None
+
+    # Structural state: confluence, levels in σ, and the classifier. Pure
+    # arithmetic over blocks already computed above, so it costs nothing and
+    # cannot fail the snapshot on its own.
+    regime_block = None
+    try:
+        from options.regime import build_regime_block
+
+        regime_block = build_regime_block(
+            gamma_regime=gamma_regime,
+            spot=spot,
+            sigma1_pts=(bands or {}).get("sigma1_pts"),
+            flip_level=scan["flip"],
+            call_wall=call_wall,
+            put_wall=put_wall,
+            strike_step=float(strike_step),
+            concentration=concentration,
+            pin_lock=pin_lock_block,
+            volume_profile=volume_profile_block,
+        )
+    except Exception:
+        regime_block = None
+
     cas_block = None
     try:
         from options.cas_indicative import cas_for_snapshot
@@ -2558,6 +2597,8 @@ def build_gamma_snapshot(
         "pin_lock": pin_lock_block,
         "volume_profile": volume_profile_block,
         "strike_volume": strike_volume_block,
+        "regime": regime_block,
+        "expiry_magnet": expiry_magnet_block,
         "conviction": conviction,
         "momentum": momentum,
         "market_read": market_read,

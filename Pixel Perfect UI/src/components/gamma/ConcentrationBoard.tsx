@@ -22,12 +22,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ExpiryMagnetPanel } from "@/components/gamma/concentration/ExpiryMagnetPanel";
 import { GammaLadder } from "@/components/gamma/concentration/GammaLadder";
 import { HhiBuilders, type TopNOption } from "@/components/gamma/concentration/HhiBuilders";
 import { HhiHero } from "@/components/gamma/concentration/HhiHero";
 import { HhiSessionsChart } from "@/components/gamma/concentration/HhiSessionsChart";
 import { OiChangePanel } from "@/components/gamma/concentration/OiChangePanel";
 import { PinStrengthPanel } from "@/components/gamma/concentration/PinStrengthPanel";
+import { RegimePanel } from "@/components/gamma/concentration/RegimePanel";
 import { SideHhiCards } from "@/components/gamma/concentration/SideHhiCards";
 import { VolumeConfluencePanel } from "@/components/gamma/concentration/VolumeConfluencePanel";
 import {
@@ -551,6 +553,41 @@ function IntradayHhiPanel({ snap }: { snap: GammaSnapshot }) {
   );
 }
 
+/**
+ * A titled band of related cards.
+ *
+ * The tab previously ran nine cards through two ragged 12-column grids, which
+ * gave a 30-session history chart the same visual weight as the pin gates. These
+ * headings group by the question being asked, so the eye can skip a whole band
+ * rather than reading every card to find out whether it matters.
+ */
+function Section({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-baseline gap-3">
+        <h3 className="gd-section-title shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/70">
+          {title}
+        </h3>
+        {hint ? (
+          <span className="shrink-0 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+            {hint}
+          </span>
+        ) : null}
+        <span className="h-px flex-1 bg-border" aria-hidden />
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function MassBasisSelect({
   value,
   onChange,
@@ -640,7 +677,7 @@ export function ConcentrationBoard({
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-7">
       <div className="flex flex-wrap items-center gap-2">
         <IndexConcentrationStrip
           selected={activeUnderlying}
@@ -657,32 +694,39 @@ export function ConcentrationBoard({
 
       <HhiHero snap={snap} conc={conc} />
 
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-6">
-          <GammaLadder snap={snap} conc={conc} cliffStrike={cliffStrike} />
+      {/* Where — the map, with its supporting readouts beside it rather than
+          stacked under an unrelated history chart. */}
+      <Section title="Where the gamma sits" hint="strike map · builders · sides">
+        <div className="grid gap-4 lg:grid-cols-12">
+          <div className="lg:col-span-7">
+            <GammaLadder snap={snap} conc={conc} cliffStrike={cliffStrike} />
+          </div>
+          <div className="flex flex-col gap-4 lg:col-span-5">
+            <HhiBuilders
+              contributors={allContributors}
+              conc={conc}
+              topN={topN}
+              onTopNChange={setTopN}
+            />
+            <SideHhiCards
+              callHhi={callHhi}
+              putHhi={putHhi}
+              callBand={conc?.call_band ?? bandForSide(callHhi)}
+              putBand={conc?.put_band ?? bandForSide(putHhi)}
+            />
+            <StructurePanel snap={snap} cliffStrike={cliffStrike} />
+          </div>
         </div>
-        <div className="flex flex-col gap-4 lg:col-span-6">
-          <HhiSessionsChart conc={conc} />
-          <HhiBuilders
-            contributors={allContributors}
-            conc={conc}
-            topN={topN}
-            onTopNChange={setTopN}
-          />
-          <SideHhiCards
-            callHhi={callHhi}
-            putHhi={putHhi}
-            callBand={conc?.call_band ?? bandForSide(callHhi)}
-            putBand={conc?.put_band ?? bandForSide(putHhi)}
-          />
-        </div>
-      </div>
+      </Section>
 
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-7">
-          <OiChangePanel snap={snap} />
+      {/* Holding — the two panels that answer the same question from opposite
+          directions: dealer mechanics, and where business actually happened. */}
+      <Section title="Is it holding?" hint="expiry magnet · regime · pin gates · confluence">
+        <div className="mb-4">
+          <ExpiryMagnetPanel em={snap.expiry_magnet} />
         </div>
-        <div className="flex flex-col gap-4 lg:col-span-5">
+        <div className="grid gap-4 lg:grid-cols-3">
+          <RegimePanel regime={snap.regime} />
           <PinStrengthPanel
             pinLock={snap.pin_lock}
             window={pinWindow}
@@ -694,10 +738,20 @@ export function ConcentrationBoard({
             pinLock={snap.pin_lock}
             strikeStep={strikeStep}
           />
-          <StructurePanel snap={snap} cliffStrike={cliffStrike} />
+        </div>
+      </Section>
+
+      {/* Context — both time-series together, at equal weight. */}
+      <Section title="How today compares" hint="30 sessions · intraday">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <HhiSessionsChart conc={conc} />
           <IntradayHhiPanel snap={snap} />
         </div>
-      </div>
+      </Section>
+
+      <Section title="Positioning flow" hint="ΔOI top movers">
+        <OiChangePanel snap={snap} />
+      </Section>
     </div>
   );
 }

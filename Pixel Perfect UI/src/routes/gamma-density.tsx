@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play, RefreshCw, Settings2 } from "lucide-react";
 
 import { api } from "@/lib/api";
+// Desk-scoped chrome; everything in it is nested under `.gamma-desk`.
+import "@/styles/gamma-desk.css";
 import { pickNearestExpiry, useOptionExpiries } from "@/hooks/useOptionExpiries";
 import type {
   GammaConfig,
@@ -616,7 +618,7 @@ function GammaDensityPage() {
     : null;
 
   return (
-    <div className="report-page mx-auto flex max-w-[1400px] flex-col gap-6 pb-10">
+    <div className="gamma-desk report-page mx-auto flex max-w-[1400px] flex-col gap-6 pb-10">
       <header className="report-controls flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">3ST Algo Desk — Gamma Density</h1>
@@ -792,7 +794,7 @@ function GammaDensityPage() {
             </Card>
           ) : null}
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="gd-stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard
               label="Gamma Regime"
               value={snapshot.gamma_regime === "positive" ? "Positive γ" : "Negative γ"}
@@ -835,7 +837,7 @@ function GammaDensityPage() {
             />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="gd-stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard
               label="HHI Concentration"
               value={

@@ -36,7 +36,7 @@ function Gap({
     <span className="font-mono tabular-nums" style={tone ? { color: tone } : undefined}>
       {d >= 0 ? "+" : "−"}
       {Math.abs(d).toFixed(0)}
-      <span className="ml-1 text-[10px] text-muted-foreground">
+      <span className="ml-1 text-[11px] text-muted-foreground">
         {Math.abs(steps).toFixed(1)} step{Math.abs(steps) === 1 ? "" : "s"}
       </span>
     </span>
@@ -45,7 +45,7 @@ function Gap({
 
 function Row({ label, value, extra }: { label: string; value: string; extra?: React.ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 text-[11px]">
+    <div className="flex items-baseline justify-between gap-3 text-xs">
       <span className="text-muted-foreground">{label}</span>
       <span className="flex items-baseline gap-2">
         <span className="font-mono tabular-nums font-semibold">{value}</span>
@@ -86,14 +86,14 @@ export function VolumeConfluencePanel({
     return (
       <Card>
         <CardHeader className="py-3">
-          <CardTitle className="text-sm">Volume confluence</CardTitle>
+          <CardTitle className="text-base">Volume confluence</CardTitle>
         </CardHeader>
         <CardContent className="space-y-1">
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {UNAVAILABLE_COPY[vp?.reason ?? ""] ?? "Session volume profile unavailable."}
           </p>
           {vp?.bars ? (
-            <p className="text-[10px] text-muted-foreground">{vp.bars} bars so far.</p>
+            <p className="text-[11px] text-muted-foreground">{vp.bars} bars so far.</p>
           ) : null}
         </CardContent>
       </Card>
@@ -104,12 +104,12 @@ export function VolumeConfluencePanel({
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-2 py-3">
         <div>
-          <CardTitle className="text-sm">Volume confluence</CardTitle>
-          <p className="mt-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+          <CardTitle className="text-base">Volume confluence</CardTitle>
+          <p className="mt-1 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
             where dealers must hedge vs where business happened
           </p>
         </div>
-        <Badge variant="outline" className="text-[10px] font-normal">
+        <Badge variant="outline" className="text-[11px] font-normal">
           {vp.bars} bars
         </Badge>
       </CardHeader>
@@ -125,7 +125,7 @@ export function VolumeConfluencePanel({
             label="Value area"
             value={`${fmt(vp.val, 0)} – ${fmt(vp.vah, 0)}`}
             extra={
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-[11px] text-muted-foreground">
                 ±{vaSteps != null ? vaSteps.toFixed(1) : "—"} steps
               </span>
             }
@@ -137,7 +137,7 @@ export function VolumeConfluencePanel({
               pinInsideVa == null ? null : (
                 <Badge
                   variant="outline"
-                  className={`h-5 px-1.5 text-[10px] ${
+                  className={`h-5 px-1.5 text-[11px] ${
                     pinInsideVa
                       ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
                       : "border-amber-500/40 text-amber-700 dark:text-amber-300"
@@ -155,7 +155,7 @@ export function VolumeConfluencePanel({
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/60 pt-2.5 text-[11px]">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/60 pt-2.5 text-xs">
           <span className="text-muted-foreground">
             Tilt{" "}
             <span
@@ -178,7 +178,7 @@ export function VolumeConfluencePanel({
             OVL <span className="font-mono tabular-nums">{vp.overlap_pct?.toFixed(0) ?? "—"}</span>
           </span>
           {vp.balance_verdict ? (
-            <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+            <Badge variant="outline" className="h-5 px-1.5 text-[11px] font-normal">
               {vp.balance_verdict}
             </Badge>
           ) : null}
@@ -186,11 +186,11 @@ export function VolumeConfluencePanel({
 
         {/* Two honesty lines the engine's own README insists on. */}
         <div className="space-y-1 border-t border-border/60 pt-2.5">
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-[11px] text-muted-foreground">
             Buy/sell split is inferred from candle geometry ({vp.engine}), not measured order flow
             — read tilt and OVL as structure, not verified flow.
           </p>
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-[11px] text-muted-foreground">
             {vp.price_axis === "future"
               ? "Options are written on the future, so volume and strikes already share one axis."
               : `Futures volume shifted onto the index axis${

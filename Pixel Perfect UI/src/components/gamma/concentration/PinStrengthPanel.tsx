@@ -28,8 +28,8 @@ function GateRow({ ok, label }: { ok: boolean | null; label: string }) {
         ? "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300"
         : "border-border bg-muted text-muted-foreground";
   return (
-    <div className="flex items-center gap-2 text-[11px]">
-      <Badge variant="outline" className={`${tone} h-5 px-1.5 font-mono text-[10px]`}>
+    <div className="flex items-center gap-2 text-xs">
+      <Badge variant="outline" className={`${tone} h-5 px-1.5 font-mono text-[11px]`}>
         {ok === true ? "PASS" : ok === false ? "FAIL" : "N/A"}
       </Badge>
       <span className={ok === false ? "text-foreground" : "text-muted-foreground"}>{label}</span>
@@ -57,25 +57,30 @@ function Component({
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+        <span className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
           {label}
         </span>
-        <span className="font-mono text-xs tabular-nums" style={tone ? { color: tone } : undefined}>
+        <span className="font-mono text-sm tabular-nums" style={tone ? { color: tone } : undefined}>
           {value}
         </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-sm bg-muted/60">
         {pct != null ? (
+          // The default fill comes from the `bg-primary` utility, not an inline
+          // `hsl(var(--primary))`. This project is Tailwind v4: the tokens hold
+          // complete oklch colours, not shadcn's older HSL triplets, so wrapping
+          // one in hsl() produces invalid CSS that the browser drops silently —
+          // a full-width bar that paints nothing.
           <div
-            className="h-full rounded-sm"
+            className={`h-full rounded-sm ${tone ? "" : "bg-primary"}`}
             style={{
               width: `${Math.min(100, Math.max(0, pct))}%`,
-              background: tone ?? "hsl(var(--primary))",
+              ...(tone ? { background: tone } : {}),
             }}
           />
         ) : null}
       </div>
-      {hint ? <p className="text-[10px] text-muted-foreground">{hint}</p> : null}
+      {hint ? <p className="text-[11px] text-muted-foreground">{hint}</p> : null}
     </div>
   );
 }
@@ -106,14 +111,14 @@ export function PinStrengthPanel({
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-2 py-3">
         <div>
-          <CardTitle className="text-sm">Pin strength</CardTitle>
-          <p className="mt-1 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+          <CardTitle className="text-base">Pin strength</CardTitle>
+          <p className="mt-1 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
             gates + components · no blended score until calibrated
           </p>
         </div>
         {onWindowChange ? (
           <Select value={win ?? "30m"} onValueChange={(v) => onWindowChange(v as GammaPinWindow)}>
-            <SelectTrigger className="h-7 w-[5.5rem] text-xs" aria-label="Pin window">
+            <SelectTrigger className="h-7 w-[5.5rem] text-sm" aria-label="Pin window">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -131,10 +136,10 @@ export function PinStrengthPanel({
         <div className="flex flex-wrap items-end gap-x-5 gap-y-1">
           <p className={`font-mono text-3xl font-light tabular-nums ${verdictTone}`}>{verdict}</p>
           <div className="pb-1">
-            <p className="font-mono text-sm font-semibold tabular-nums">
+            <p className="font-mono text-base font-semibold tabular-nums">
               {fmt(pinLock?.pin_mode ?? pinLock?.pin)}
             </p>
-            <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+            <p className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
               {pinLock?.pin_source
                 ? (SOURCE_LABEL[pinLock.pin_source] ?? pinLock.pin_source)
                 : "no pin"}
@@ -182,7 +187,7 @@ export function PinStrengthPanel({
           />
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-[11px]">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs">
           <span className="text-muted-foreground">
             Pin wall ΔOI{" "}
             <span
@@ -207,12 +212,12 @@ export function PinStrengthPanel({
           </span>
         </div>
 
-        <p className="text-[11px] text-foreground/90">
+        <p className="text-xs text-foreground/90">
           Breaks when {pinLock?.breaker?.label ?? "—"}.
         </p>
 
         {pinLock?.reasons?.length ? (
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-[11px] text-muted-foreground">
             Not pinned: {pinLock.reasons.join(" · ")}.
           </p>
         ) : null}
