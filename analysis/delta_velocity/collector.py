@@ -10,6 +10,12 @@ Phase 0 finding baked into the defaults: with one or two expiries per
 underlying, days-to-expiry is confounded with calendar date, so ``EXPIRIES``
 defaults to 3 — the same session then appears at several DTEs and the two can
 be separated.
+
+One minute of archive is ~2.3x its pre-2026-08-27 size after the STRIKE_WIDTH
+widening below (~27 MB/day across the three underlyings). ``store.prune_raw``
+exists for that and is **not** called by the runner — retention is currently
+aspirational, so the archive grows without bound until someone wires it or
+prunes by hand.
 """
 
 from __future__ import annotations
@@ -35,9 +41,21 @@ logger = get_logger("delta_velocity.collector")
 
 UNDERLYINGS: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX")
 
-# Strikes each side of ATM. 5 -> 11 strikes x 2 types x 3 expiries x 3
-# underlyings = 198 legs, comfortably inside the 500-instrument quote ceiling.
-STRIKE_WIDTH = 5
+# Strikes each side of ATM. The leg count is (2*W + 1) * 2 types * EXPIRIES *
+# len(UNDERLYINGS), so W=12 -> 25 * 2 * 3 * 3 = 450 legs against the
+# 500-instrument quote ceiling: 50 spare, and one batch call either way.
+#
+# Widened from 5 (198 legs) on 2026-08-27. The wings are where positioning is
+# interesting, and every downstream study was constrained by this: the
+# Chain Build-Up desk could only reach past ATM+/-5 through per-leg Kite
+# historical calls, and its validation studies were power-bound on a narrow
+# archive. This is forward-only — no amount of later work widens data that was
+# never written — which is why it was raised as early as possible rather than
+# after the analysis asked for it.
+#
+# Raising it further needs the ceiling arithmetic redone, not just this number:
+# W=13 is 486 legs and W=14 is 522, past the ceiling.
+STRIKE_WIDTH = 12
 EXPIRIES = 3
 
 RISK_FREE = float(PRICING_ENGINE_DEFAULTS.get("risk_free_rate", 0.065))
@@ -224,6 +242,7 @@ def sample_once(underlyings: tuple[str, ...] = UNDERLYINGS, *, now: datetime | N
         return {"ok": False, "error": str(exc)}
 
     all_legs: dict[str, list[dict[str, Any]]] = {}
+    all_spots: dict[str, float] = {}
     leg_keys: list[str] = []
     for u, info in plan.items():
         if "error" in info:
@@ -236,15 +255,36 @@ def sample_once(underlyings: tuple[str, ...] = UNDERLYINGS, *, now: datetime | N
         info["spot"] = float(spot)
         legs = tracked_legs(u, float(spot))
         all_legs[u] = legs
+        all_spots[u] = float(spot)
         leg_keys.extend(leg["key"] for leg in legs)
 
     if len(leg_keys) > _QUOTE_CEILING:
-        logger.warning(
-            "delta_velocity tracking %d legs, above the %d quote ceiling — truncating",
-            len(leg_keys),
-            _QUOTE_CEILING,
-        )
-        leg_keys = leg_keys[:_QUOTE_CEILING]
+        # Narrow every underlying evenly rather than slicing the tail off the
+        # list. ``leg_keys`` is built underlying by underlying, so a plain
+        # ``[:CEILING]`` silently drops the LAST underlying outright — SENSEX
+        # would vanish from the archive while NIFTY kept its full width, and
+        # nothing downstream could tell that had happened. Dropping the
+        # outermost strikes instead degrades all three the same way, which is
+        # both fairer and visible in the width the snapshot reports.
+        width = STRIKE_WIDTH
+        while width > 1:
+            width -= 1
+            rebuilt = {u: tracked_legs(u, all_spots[u], width=width) for u in all_legs}
+            keys = [leg["key"] for legs in rebuilt.values() for leg in legs]
+            if len(keys) <= _QUOTE_CEILING:
+                logger.warning(
+                    "delta_velocity tracking %d legs above the %d quote ceiling — "
+                    "narrowed to ATM+/-%d (%d legs)",
+                    len(leg_keys), _QUOTE_CEILING, width, len(keys),
+                )
+                all_legs, leg_keys = rebuilt, keys
+                break
+        else:
+            logger.warning(
+                "delta_velocity cannot fit %d legs under the %d ceiling — truncating",
+                len(leg_keys), _QUOTE_CEILING,
+            )
+            leg_keys = leg_keys[:_QUOTE_CEILING]
 
     try:
         leg_quotes = fetch_quote_batch(leg_keys) if leg_keys else {}

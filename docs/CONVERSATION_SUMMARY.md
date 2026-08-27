@@ -127,6 +127,48 @@ which documents what each file starts out holding.
 
 ---
 
+## Session 2026-08-27 (later) — delta-velocity collector widened to ATM +/- 12
+
+`STRIKE_WIDTH` 5 -> 12 in `analysis/delta_velocity/collector.py`. Leg count is
+`(2W+1) * 2 types * EXPIRIES * len(UNDERLYINGS)`, so 198 -> 450 worst case against
+the 500-instrument quote ceiling; measured against the live instrument dump it
+resolves to **404 legs** (BANKNIFTY lists fewer strikes at that spacing), leaving
+96 spare. Still one batch call per minute — the API cost is unchanged, only the
+response size.
+
+**This is the one action from three sessions of analysis that had to happen
+now rather than later.** Every downstream study was constrained by the narrow
+archive: the Chain Build-Up desk could only reach past ATM+/-5 through per-leg
+Kite historical calls, and all three of its validation attempts came back
+power-bound. Width is forward-only — no later work widens data that was never
+written — so the cost of deferring it is permanent.
+
+### The truncation guard was quietly unfair, and widening made that matter
+
+`sample_once` capped the batch with `leg_keys[:_QUOTE_CEILING]`. Because
+`leg_keys` is built underlying by underlying, that slices the **last underlying
+off entirely** — SENSEX would vanish from the archive while NIFTY kept full
+width, and nothing downstream could tell the difference between "not written"
+and "not traded". Harmless at 198 legs, a live hazard at 450.
+
+Replaced with symmetric narrowing: drop one strike from each side, rebuild, and
+retry until it fits. All three underlyings degrade the same way, and the width
+that was actually used is visible in the snapshot. `tests/test_delta_velocity.py`
+pins both the ceiling arithmetic and the even-narrowing behaviour, so raising
+`STRIKE_WIDTH` past the ceiling fails a test instead of silently losing an
+underlying.
+
+### Retention is aspirational — flagged, not fixed
+
+`store.prune_raw` exists and honours `RAW_RETENTION_DAYS = 30`, but **nothing
+calls it**. The archive has grown unbounded since Phase 1 and this change makes
+it ~2.3x faster (~27 MB/day across the three underlyings, against 164 MB
+accumulated so far). Wiring a pruner deletes the operator's data on a schedule,
+so it is left as a decision rather than a side effect of a width change. Until
+then, prune by hand or accept the growth.
+
+---
+
 ## Session 2026-08-27 (later) — Chain Build-Up: continuous outcome, and why more data is the only lever
 
 Third validation attempt on the breach layer, and the one that produced something

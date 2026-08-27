@@ -650,3 +650,66 @@ def test_chart_with_no_archive_at_all_is_still_safe(tmp_path, monkeypatch):
     out = chart.session_chart("NIFTY")
     assert out["minutes"] == []
     assert out["contracts"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Quote-ceiling handling (STRIKE_WIDTH widened to 12 on 2026-08-27)
+# ---------------------------------------------------------------------------
+
+
+def test_strike_width_fits_the_quote_ceiling():
+    """The whole tracked set must fit ONE batch call. Raising STRIKE_WIDTH past
+    this silently truncates, which is data loss the archive cannot recover."""
+    from analysis.delta_velocity import collector
+
+    legs = (2 * collector.STRIKE_WIDTH + 1) * 2 * collector.EXPIRIES * len(collector.UNDERLYINGS)
+    assert legs <= collector._QUOTE_CEILING, (
+        f"{legs} legs exceeds the {collector._QUOTE_CEILING} ceiling — "
+        "redo the arithmetic in collector.py, do not just raise the number"
+    )
+
+
+def test_over_ceiling_narrows_every_underlying_not_just_the_last(monkeypatch):
+    """A plain leg_keys[:CEILING] drops the LAST underlying outright, because the
+    list is built underlying by underlying. SENSEX would vanish from the archive
+    while NIFTY kept full width, and nothing downstream could tell."""
+    from analysis.delta_velocity import collector
+
+    monkeypatch.setattr(collector, "_QUOTE_CEILING", 60)
+
+    def fake_legs(underlying, spot, *, width=collector.STRIKE_WIDTH):
+        return [
+            {"key": f"NFO:{underlying}{i}", "tradingsymbol": f"{underlying}{i}",
+             "exchange": "NFO", "expiry": "2026-09-01", "strike": 100.0 + i,
+             "option_type": "CE"}
+            for i in range(2 * width + 1)
+        ]
+
+    monkeypatch.setattr(collector, "tracked_legs", fake_legs)
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_quotes(keys):
+        captured.setdefault("keys", list(keys))
+        return {}
+
+    monkeypatch.setattr(collector, "fetch_quote_batch", fake_quotes)
+    monkeypatch.setattr(collector, "_index_spot", lambda u: 100.0, raising=False)
+
+    all_legs = {u: fake_legs(u, 100.0) for u in collector.UNDERLYINGS}
+    all_spots = dict.fromkeys(collector.UNDERLYINGS, 100.0)
+    leg_keys = [leg["key"] for legs in all_legs.values() for leg in legs]
+    assert len(leg_keys) > collector._QUOTE_CEILING
+
+    width = collector.STRIKE_WIDTH
+    while width > 1:
+        width -= 1
+        rebuilt = {u: fake_legs(u, all_spots[u], width=width) for u in all_legs}
+        keys = [leg["key"] for legs in rebuilt.values() for leg in legs]
+        if len(keys) <= collector._QUOTE_CEILING:
+            break
+
+    # every underlying survives, and all of them are the same width
+    per_underlying = {u: len(v) for u, v in rebuilt.items()}
+    assert set(per_underlying) == set(collector.UNDERLYINGS)
+    assert len(set(per_underlying.values())) == 1
