@@ -32,3 +32,8 @@ Start.txt
 qn.xlsx
 ~$*
 ch8 Markov Chain.pdf
+
+# Kalman research cache — derived parquet bars rebuilt by
+# Kalman/scripts/fetch_index_bars.py. ~306 MB, and one file is 113 MB, past
+# GitHub's hard 100 MB limit; it is regenerable output, not source.
+Kalman/cache/
