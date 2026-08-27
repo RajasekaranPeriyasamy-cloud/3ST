@@ -127,6 +127,71 @@ which documents what each file starts out holding.
 
 ---
 
+## Session 2026-08-27 (later) — Chain Build-Up: continuous outcome, and why more data is the only lever
+
+Third validation attempt on the breach layer, and the one that produced something
+worth keeping — though not the thing it was aimed at.
+
+The binary wall test discards everything except whether spot crossed K, so the
+obvious refinement was a continuous outcome: the percentile rank of
+`approach = excursion / distance` among matched controls, where 0.5 is the null
+and below 0.5 means spot was repelled. Rank rather than a raw mean because
+excursion is strongly right-skewed and a mean difference is dominated by a few
+large moves that say nothing about a level holding.
+
+**Null again.** 0 of 12 survive Benjamini-Hochberg at q<0.10; every rank sits
+within 0.05 of 0.500. The faint call-side tilt *above* 0.5 persists — same
+direction as the binary test, still not significant.
+
+### The refinement bought nothing, and that is the finding
+
+Median |t| ratio, rank against binary, same events and strata: **0.99.** No gain.
+The prediction that a continuous outcome would "roughly halve the standard
+errors" was wrong, and the variance decomposition (now printed by the script)
+says exactly why:
+
+| | events/cluster | ICC | SE now | SE if 4x events | SE if 4x sessions |
+| --- | --- | --- | --- | --- | --- |
+| writing CE 15m | 3.7 | 0.31 | 0.0447 | 0.0379 | **0.0224** |
+| any_breach CE 15m | 7.0 | 0.16 | 0.0299 | 0.0247 | **0.0149** |
+| any_breach CE 60m | 7.4 | 0.30 | 0.0337 | 0.0306 | **0.0168** |
+
+Two things bind, and a sharper per-observation statistic moves neither:
+
+- **Intra-cluster correlation of 0.16-0.40.** A third of the variance is
+  between-session — different days, different regimes — and no within-session
+  precision touches it.
+- **Only 3-7 events per cluster.** The cluster mean is limited by how *few*
+  events there are, not by how precisely each is measured.
+
+Quadrupling events per session buys ~15%; quadrupling sessions buys the full 50%.
+
+### Two corrections to the roadmap
+
+- **More sessions is not one option among several, it is the whole list.** It had
+  been ranked below methodological refinement. Backwards. Moving the minimum
+  detectable effect from ~9-17pp to ~4-8pp needs ~4x the clusters — roughly 56
+  sessions per underlying, about 2.5 more months at the current collection rate.
+- **Conditioning on dOI/volume would make this worse, not better.** It was the
+  recommended next test. Splitting 3-7 events per cluster into a high-build-ratio
+  subset leaves 1-3, and by the table above that direction costs power. Good idea
+  at 4x the sample; bad one now.
+
+### Standing conclusion
+
+Three attempts, three nulls, and a fourth would fail for arithmetic reasons
+rather than because the hypothesis is wrong. **Stop testing this until the
+archive is deeper.** The useful action is the forward-only one from the original
+plan: widen `STRIKE_WIDTH` in `analysis/delta_velocity/collector.py`, since every
+week of delay is a week of narrow data.
+
+The label on the desk is unchanged and now well-supported: the breach layer is an
+**attention tool**, not a signal and not a level. The adaptive calibration is what
+makes it a well-behaved one, and that part *is* measured. `features.py` carries
+all three results next to `THRESHOLD_MODES`.
+
+---
+
 ## Session 2026-08-27 (later) — Chain Build-Up: the wall test, also null
 
 Second validation attempt on the breach layer, asking the question closer to

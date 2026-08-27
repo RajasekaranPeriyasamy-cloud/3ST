@@ -83,13 +83,21 @@ MIN_ABS_OI = 25_000
 #:   (underlying, session) the same data reports four significant horizons,
 #:   which is why that script clusters.
 #: * ``scripts/wall_test_chain_buildup.py`` — does a breached strike hold as a
-#:   level? Every call-side estimate came out positive: breached call strikes
-#:   were crossed *more* often than distance-matched controls, not less. About a
+#:   level? Null under both a binary outcome (does spot reach K) and a
+#:   continuous one (how far it got, ranked against matched controls). Every
+#:   call-side estimate came out on the *wrong* side: breached call strikes were
+#:   approached harder than distance-matched controls, not repelled. About a
 #:   third of that is writers writing into approaching spot.
 #:
 #: Both are underpowered rather than conclusive (minimum detectable effects of
-#: ~1-6 bps and ~9-17pp respectively). Do not build execution logic on
-#: ``breach`` without re-running them on a deeper archive.
+#: ~1-6 bps and ~9-17pp respectively), and the wall test's own variance
+#: decomposition says why: intra-cluster correlation of 0.16-0.40 with only 3-7
+#: events per session-day. Quadrupling events per session moves the standard
+#: error ~15%; quadrupling *sessions* halves it. **More sessions is the only
+#: lever** — a sharper statistic does not help, and splitting events into
+#: subsets (by dOI/volume, say) costs power at this sample rather than buying
+#: it. Do not build execution logic on ``breach`` without re-running these on a
+#: deeper archive.
 
 THRESHOLD_MODES = ("fixed", "adaptive")
 
