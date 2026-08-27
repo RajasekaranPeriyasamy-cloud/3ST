@@ -23,6 +23,7 @@ import { Route as RrgRouteImport } from './routes/rrg'
 import { Route as RollingStraddleRouteImport } from './routes/rolling-straddle'
 import { Route as PricingEngineRouteImport } from './routes/pricing-engine'
 import { Route as PremiumBookRouteImport } from './routes/premium-book'
+import { Route as OptArbRouteImport } from './routes/opt-arb'
 import { Route as OiVarRouteImport } from './routes/oi-var'
 import { Route as OiTrackerRouteImport } from './routes/oi-tracker'
 import { Route as OiProfileRouteImport } from './routes/oi-profile'
@@ -37,6 +38,7 @@ import { Route as ExecutionRouteImport } from './routes/execution'
 import { Route as EquityReportRouteImport } from './routes/equity-report'
 import { Route as DeltaVelocityRouteImport } from './routes/delta-velocity'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as ChainBuildupRouteImport } from './routes/chain-buildup'
 import { Route as CasIndicativeRouteImport } from './routes/cas-indicative'
 import { Route as BacktestRouteImport } from './routes/backtest'
 import { Route as ArbitrageRouteImport } from './routes/arbitrage'
@@ -113,6 +115,11 @@ const PremiumBookRoute = PremiumBookRouteImport.update({
   path: '/premium-book',
   getParentRoute: () => rootRouteImport,
 } as any)
+const OptArbRoute = OptArbRouteImport.update({
+  id: '/opt-arb',
+  path: '/opt-arb',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OiVarRoute = OiVarRouteImport.update({
   id: '/oi-var',
   path: '/oi-var',
@@ -183,6 +190,11 @@ const DashboardRoute = DashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ChainBuildupRoute = ChainBuildupRouteImport.update({
+  id: '/chain-buildup',
+  path: '/chain-buildup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const CasIndicativeRoute = CasIndicativeRouteImport.update({
   id: '/cas-indicative',
   path: '/cas-indicative',
@@ -215,6 +227,7 @@ export interface FileRoutesByFullPath {
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
+  '/chain-buildup': typeof ChainBuildupRoute
   '/dashboard': typeof DashboardRoute
   '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
@@ -229,6 +242,7 @@ export interface FileRoutesByFullPath {
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/opt-arb': typeof OptArbRoute
   '/premium-book': typeof PremiumBookRoute
   '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
@@ -250,6 +264,7 @@ export interface FileRoutesByTo {
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
+  '/chain-buildup': typeof ChainBuildupRoute
   '/dashboard': typeof DashboardRoute
   '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
@@ -264,6 +279,7 @@ export interface FileRoutesByTo {
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/opt-arb': typeof OptArbRoute
   '/premium-book': typeof PremiumBookRoute
   '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
@@ -286,6 +302,7 @@ export interface FileRoutesById {
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
+  '/chain-buildup': typeof ChainBuildupRoute
   '/dashboard': typeof DashboardRoute
   '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
@@ -300,6 +317,7 @@ export interface FileRoutesById {
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/opt-arb': typeof OptArbRoute
   '/premium-book': typeof PremiumBookRoute
   '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
@@ -323,6 +341,7 @@ export interface FileRouteTypes {
     | '/arbitrage'
     | '/backtest'
     | '/cas-indicative'
+    | '/chain-buildup'
     | '/dashboard'
     | '/delta-velocity'
     | '/equity-report'
@@ -337,6 +356,7 @@ export interface FileRouteTypes {
     | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/opt-arb'
     | '/premium-book'
     | '/pricing-engine'
     | '/rolling-straddle'
@@ -358,6 +378,7 @@ export interface FileRouteTypes {
     | '/arbitrage'
     | '/backtest'
     | '/cas-indicative'
+    | '/chain-buildup'
     | '/dashboard'
     | '/delta-velocity'
     | '/equity-report'
@@ -372,6 +393,7 @@ export interface FileRouteTypes {
     | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/opt-arb'
     | '/premium-book'
     | '/pricing-engine'
     | '/rolling-straddle'
@@ -393,6 +415,7 @@ export interface FileRouteTypes {
     | '/arbitrage'
     | '/backtest'
     | '/cas-indicative'
+    | '/chain-buildup'
     | '/dashboard'
     | '/delta-velocity'
     | '/equity-report'
@@ -407,6 +430,7 @@ export interface FileRouteTypes {
     | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/opt-arb'
     | '/premium-book'
     | '/pricing-engine'
     | '/rolling-straddle'
@@ -429,6 +453,7 @@ export interface RootRouteChildren {
   ArbitrageRoute: typeof ArbitrageRoute
   BacktestRoute: typeof BacktestRoute
   CasIndicativeRoute: typeof CasIndicativeRoute
+  ChainBuildupRoute: typeof ChainBuildupRoute
   DashboardRoute: typeof DashboardRoute
   DeltaVelocityRoute: typeof DeltaVelocityRoute
   EquityReportRoute: typeof EquityReportRoute
@@ -443,6 +468,7 @@ export interface RootRouteChildren {
   OiProfileRoute: typeof OiProfileRoute
   OiTrackerRoute: typeof OiTrackerRoute
   OiVarRoute: typeof OiVarRoute
+  OptArbRoute: typeof OptArbRoute
   PremiumBookRoute: typeof PremiumBookRoute
   PricingEngineRoute: typeof PricingEngineRoute
   RollingStraddleRoute: typeof RollingStraddleRoute
@@ -559,6 +585,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PremiumBookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/opt-arb': {
+      id: '/opt-arb'
+      path: '/opt-arb'
+      fullPath: '/opt-arb'
+      preLoaderRoute: typeof OptArbRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/oi-var': {
       id: '/oi-var'
       path: '/oi-var'
@@ -657,6 +690,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/chain-buildup': {
+      id: '/chain-buildup'
+      path: '/chain-buildup'
+      fullPath: '/chain-buildup'
+      preLoaderRoute: typeof ChainBuildupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/cas-indicative': {
       id: '/cas-indicative'
       path: '/cas-indicative'
@@ -701,6 +741,7 @@ const rootRouteChildren: RootRouteChildren = {
   ArbitrageRoute: ArbitrageRoute,
   BacktestRoute: BacktestRoute,
   CasIndicativeRoute: CasIndicativeRoute,
+  ChainBuildupRoute: ChainBuildupRoute,
   DashboardRoute: DashboardRoute,
   DeltaVelocityRoute: DeltaVelocityRoute,
   EquityReportRoute: EquityReportRoute,
@@ -715,6 +756,7 @@ const rootRouteChildren: RootRouteChildren = {
   OiProfileRoute: OiProfileRoute,
   OiTrackerRoute: OiTrackerRoute,
   OiVarRoute: OiVarRoute,
+  OptArbRoute: OptArbRoute,
   PremiumBookRoute: PremiumBookRoute,
   PricingEngineRoute: PricingEngineRoute,
   RollingStraddleRoute: RollingStraddleRoute,
