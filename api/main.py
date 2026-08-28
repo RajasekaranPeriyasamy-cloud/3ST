@@ -3369,6 +3369,46 @@ def buildup_expiries(underlying: str = "NIFTY", session_date: str | None = None)
         raise _err(exc) from exc
 
 
+@app.get("/buildup/levels")
+def buildup_levels(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+    strikes: str | None = None,
+) -> dict[str, Any]:
+    """Gamma reference levels to overlay on the build-up ladder.
+
+    Separate from ``/buildup/grid`` on purpose: the grid is a pure archive read
+    with no Kite call, while this reaches the gamma snapshot. Keeping them apart
+    means a gamma outage greys one panel instead of blanking the grid.
+
+    ``strikes`` is an optional comma-separated ladder, used only to bracket the
+    price levels (flip, POC) between the two rows they fall between — they are
+    never snapped to a row, which would move them by up to half a strike step.
+    """
+    from analysis.chain_buildup import levels as cb_levels
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        u = cb_service._check_underlying(underlying)
+        day = cb_service._resolve_session(u, session_date)
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+    ladder: list[float] = []
+    if strikes:
+        for part in strikes.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ladder.append(float(part))
+            except ValueError:
+                continue
+
+    return cb_levels.resolve(u, day, strikes=ladder, grid_expiry=expiry)
+
+
 @app.get("/buildup/status")
 def buildup_status(underlying: str = "NIFTY") -> dict[str, Any]:
     """Archive coverage and defaults for the build-up desk."""

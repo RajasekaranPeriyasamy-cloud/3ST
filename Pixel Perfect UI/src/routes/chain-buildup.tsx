@@ -9,6 +9,9 @@ import type {
   BuildupClass,
   BuildupGrid,
   BuildupRow,
+  BuildupLevel,
+  BuildupLevelKey,
+  BuildupLevels,
   BuildupScale,
   BuildupStatus,
 } from "@/lib/types";
@@ -207,6 +210,45 @@ function SortHead({
   );
 }
 
+/** Short tags stamped on the strike column. Kept to two or three characters so
+ *  they sit beside a five-digit strike without pushing the centre block wider. */
+const LEVEL_TAG: Record<BuildupLevelKey, string> = {
+  call_wall: "CW",
+  put_wall: "PW",
+  pin: "PIN",
+  flip: "FLIP",
+  fut_poc: "POC",
+};
+
+const LEVEL_TONE: Record<BuildupLevelKey, string> = {
+  call_wall: "bg-red-500/85 text-white",
+  put_wall: "bg-emerald-500/85 text-white",
+  pin: "bg-primary/80 text-primary-foreground",
+  flip: "bg-amber-500/85 text-white",
+  fut_poc: "bg-sky-500/85 text-white",
+};
+
+function levelTitle(l: BuildupLevel): string {
+  const parts = [`${l.label} ${l.price == null ? "—" : l.price.toLocaleString()}`];
+  if (l.kind === "price" && l.between)
+    parts.push(`between ${l.between[0] ?? "—"} and ${l.between[1] ?? "—"}`);
+  parts.push(l.source === "live" ? "live snapshot" : "from session history");
+  if (l.note) parts.push(l.note);
+  return parts.join(" · ");
+}
+
+/** Why a level is missing, in the operator's words rather than the API's. */
+const SKIP_REASON: Record<string, string> = {
+  not_recorded_this_session: "not recorded that day (walls are stored only from 2026-08-27)",
+  no_gamma_history_for_session: "no gamma history for that session",
+  gamma_unavailable: "gamma snapshot unavailable",
+  gamma_history_unavailable: "gamma history unreadable",
+  poc_unavailable: "POC unavailable",
+  no_trail_yet: "no POC trail for that session",
+  not_sampled: "this underlying is not POC-sampled",
+  unavailable: "unavailable",
+};
+
 function cellTitle(cell: BuildupCell, bucket: string, side: string): string {
   const parts = [
     `${side} @ ${bucket}`,
@@ -328,6 +370,8 @@ function ChainBuildupPage() {
   const [thresholdMode, setThresholdMode] = useState<"fixed" | "adaptive">("fixed");
 
   const [grid, setGrid] = useState<BuildupGrid | null>(null);
+  const [levels, setLevels] = useState<BuildupLevels | null>(null);
+  const [showLevels, setShowLevels] = useState<boolean>(true);
   const [status, setStatus] = useState<BuildupStatus | null>(null);
   const [expiries, setExpiries] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -352,18 +396,19 @@ function ChainBuildupPage() {
     if (sessionDate) q.set("session_date", sessionDate);
     if (expiry) q.set("expiry", expiry);
 
-    const [g, s] = await Promise.allSettled([
-      api.get<BuildupGrid>(`/buildup/grid?${q}`),
-      api.get<BuildupStatus>(`/buildup/status?underlying=${underlying}`, { silent: true }),
-    ]);
-    if (g.status === "fulfilled") {
-      setGrid(g.value);
+    // The grid is awaited alone. /buildup/status walks every archived session
+    // file to report coverage, which grew with the collector's strike width and
+    // now runs seconds — tens of seconds when the single API process is also
+    // sampling. Awaiting both together let that slow, decorative call hold the
+    // whole ladder blank, which is what it did.
+    try {
+      setGrid(await api.get<BuildupGrid>(`/buildup/grid?${q}`));
       setError(null);
-    } else {
-      setError(g.reason instanceof Error ? g.reason.message : String(g.reason));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
-    if (s.status === "fulfilled") setStatus(s.value);
-    setLoading(false);
   }, [underlying, sessionDate, expiry, timeframe, range, baseline, widen, minAbsOi, thresholdMode]);
 
   useEffect(() => {
@@ -374,6 +419,44 @@ function ChainBuildupPage() {
     const t = setInterval(() => void load(), POLL_MS);
     return () => clearInterval(t);
   }, [load]);
+
+  // Coverage feeds only the session dropdown, so it is fetched independently and
+  // may land late; nothing on screen waits for it.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get<BuildupStatus>(`/buildup/status?underlying=${underlying}`, { silent: true })
+      .then((s) => !cancelled && setStatus(s))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [underlying]);
+
+  // Levels are fetched on their own, never as part of the grid request: the
+  // grid is a pure archive read and this one reaches the gamma snapshot, so a
+  // gamma outage must grey this panel rather than blank the ladder. `silent`
+  // for the same reason — it degrades in place instead of raising a toast.
+  useEffect(() => {
+    if (!showLevels || !grid) {
+      if (!showLevels) setLevels(null);
+      return;
+    }
+    const q = new URLSearchParams({
+      underlying: grid.underlying,
+      session_date: grid.session_date,
+      expiry: grid.expiry,
+      strikes: grid.rows.map((r) => r.strike).join(","),
+    });
+    let cancelled = false;
+    api
+      .get<BuildupLevels>(`/buildup/levels?${q}`, { silent: true })
+      .then((r) => !cancelled && setLevels(r))
+      .catch(() => !cancelled && setLevels(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [showLevels, grid?.underlying, grid?.session_date, grid?.expiry, grid?.rows]);
 
   // Expiry list follows the chosen session, not today.
   useEffect(() => {
@@ -470,6 +553,25 @@ function ChainBuildupPage() {
     return sortRows(base, sortKey, sortDir);
   }, [grid?.rows, sortKey, sortDir, breachOnly]);
   const buckets = grid?.buckets ?? [];
+  // Strike levels keyed by the row they land on; price levels keyed by the row
+  // they sit *below*, so the rule draws on that row's lower edge.
+  const { tagsByStrike, rulesByStrike } = useMemo(() => {
+    const tags = new Map<number, BuildupLevel[]>();
+    const rules = new Map<number, BuildupLevel[]>();
+    if (showLevels && levels) {
+      for (const l of levels.levels) {
+        if (!l.in_ladder) continue;
+        if (l.kind === "strike" && l.strike != null) {
+          tags.set(l.strike, [...(tags.get(l.strike) ?? []), l]);
+        } else if (l.kind === "price" && l.between?.[0] != null) {
+          const anchor = l.between[0];
+          rules.set(anchor, [...(rules.get(anchor) ?? []), l]);
+        }
+      }
+    }
+    return { tagsByStrike: tags, rulesByStrike: rules };
+  }, [levels, showLevels]);
+
   const scaleKey = metric === "cum" ? "cum" : "delta";
   const classCodes =
     grid?.class_codes ??
@@ -632,6 +734,17 @@ function ChainBuildupPage() {
             className="h-8 w-20 rounded-md border bg-background px-1 text-right font-mono text-xs"
           />
         </label>
+        <label
+          className="flex items-center gap-1 text-xs text-muted-foreground"
+          title="Call/Put wall, pin, gamma flip and futures POC on the ladder"
+        >
+          <input
+            type="checkbox"
+            checked={showLevels}
+            onChange={(e) => setShowLevels(e.target.checked)}
+          />
+          Gamma levels
+        </label>
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
           <input
             type="checkbox"
@@ -683,6 +796,49 @@ function ChainBuildupPage() {
       {error ? (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
+        </div>
+      ) : null}
+
+      {showLevels && levels ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-[11px]">
+          <span className="font-medium">Gamma levels</span>
+          <Badge variant="outline" className="text-[10px]">
+            {levels.source === "live" ? "live" : `history · ${levels.session_date}`}
+          </Badge>
+          {levels.gamma_regime ? (
+            <Badge variant="outline" className="text-[10px]">
+              {levels.gamma_regime} gamma
+            </Badge>
+          ) : null}
+          {levels.levels.map((l) => (
+            <span
+              key={l.key}
+              title={levelTitle(l)}
+              className={`flex items-center gap-1 rounded-sm px-1 ${
+                l.in_ladder ? "" : "opacity-50"
+              }`}
+            >
+              <span className={`rounded-sm px-0.5 text-[8px] font-bold ${LEVEL_TONE[l.key]}`}>
+                {LEVEL_TAG[l.key]}
+              </span>
+              <span className="font-mono tabular-nums">{fmtNum(l.price, 0)}</span>
+              {l.note ? <span className="text-muted-foreground">(derived)</span> : null}
+              {l.in_ladder ? null : <span className="text-muted-foreground">off ladder</span>}
+            </span>
+          ))}
+          {/* Missing levels are named, not silently dropped: "no call wall" and
+              "call wall not recorded that day" mean very different things. */}
+          {Object.entries(levels.skipped).map(([key, reason]) => (
+            <span key={key} className="text-muted-foreground">
+              {LEVEL_TAG[key as BuildupLevelKey] ?? key}:{" "}
+              {SKIP_REASON[reason] ?? reason}
+            </span>
+          ))}
+          {levels.expiry_match === false ? (
+            <span className="font-medium text-amber-600 dark:text-amber-400">
+              levels are for {levels.gamma_expiry}, ladder is {levels.grid_expiry} — not comparable
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -817,12 +973,45 @@ function ChainBuildupPage() {
                           {compact(row.ce.baseline)}
                         </td>
                         <td
-                          style={{ height: ROW_H, width: 74 }}
-                          className={`border-b border-border/40 text-center font-mono text-[11px] font-semibold tabular-nums ${
+                          style={{
+                            height: ROW_H,
+                            width: 74,
+                            // A price level falls BETWEEN strikes, so it draws on
+                            // the row's lower edge rather than inside any cell.
+                            ...(rulesByStrike.has(row.strike)
+                              ? { borderBottom: "2px solid rgb(245 158 11 / 0.9)" }
+                              : {}),
+                          }}
+                          title={(rulesByStrike.get(row.strike) ?? []).map(levelTitle).join(" | ")}
+                          className={`relative border-b border-border/40 text-center font-mono text-[11px] font-semibold tabular-nums ${
                             row.atm ? "bg-primary/20 text-primary" : ""
                           }`}
                         >
                           {row.strike.toLocaleString()}
+                          {(tagsByStrike.get(row.strike) ?? []).map((l, i) => (
+                            <span
+                              key={l.key}
+                              title={levelTitle(l)}
+                              style={{ right: 1, top: 1 + i * 8 }}
+                              className={`absolute rounded-sm px-0.5 text-[7px] font-bold leading-[8px] ${
+                                LEVEL_TONE[l.key]
+                              } ${l.note ? "opacity-70 italic" : ""}`}
+                            >
+                              {LEVEL_TAG[l.key]}
+                            </span>
+                          ))}
+                          {(rulesByStrike.get(row.strike) ?? []).map((l, i) => (
+                            <span
+                              key={l.key}
+                              title={levelTitle(l)}
+                              style={{ left: 1, bottom: -4 - i * 8 }}
+                              className={`absolute rounded-sm px-0.5 text-[7px] font-bold leading-[8px] ${
+                                LEVEL_TONE[l.key]
+                              }`}
+                            >
+                              {LEVEL_TAG[l.key]}
+                            </span>
+                          ))}
                         </td>
                         <td
                           style={{ height: ROW_H, width: BASE_W }}

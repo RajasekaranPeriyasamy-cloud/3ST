@@ -600,3 +600,117 @@ def test_grid_reports_the_mode_it_actually_applied(archive):
 def test_unknown_threshold_mode_is_rejected(archive):
     with pytest.raises(ValueError, match="Unknown threshold_mode"):
         service.get_grid("NIFTY", strike_range="atm5", widen=False, threshold_mode="magic")
+
+
+# ---------------------------------------------------------------------------
+# Gamma levels overlay
+# ---------------------------------------------------------------------------
+
+
+LADDER = [23900.0, 24000.0, 24100.0, 24200.0, 24300.0]
+
+
+def _stub_live(monkeypatch, payload):
+    from analysis.chain_buildup import levels as cb_levels
+
+    monkeypatch.setattr(cb_levels, "_live_gamma", lambda u: (payload, None))
+    monkeypatch.setattr(cb_levels, "_fut_poc", lambda u, d, live: (None, "not_sampled"))
+    return cb_levels
+
+
+def test_price_levels_are_bracketed_never_snapped(monkeypatch):
+    """Snapping flip to the nearest row would move it up to half a strike step
+    and assert a precision the number does not have."""
+    cb = _stub_live(monkeypatch, {"available": True, "flip": 24067.22, "expiry": "2026-09-01"})
+    out = cb.resolve("NIFTY", date.today(), strikes=LADDER, grid_expiry="2026-09-01")
+    flip = next(x for x in out["levels"] if x["key"] == "flip")
+    assert flip["kind"] == "price"
+    assert flip["strike"] is None          # never pinned to a row
+    assert flip["between"] == [24000.0, 24100.0]
+    assert flip["in_ladder"] is True
+
+
+def test_strike_levels_land_on_a_row(monkeypatch):
+    cb = _stub_live(monkeypatch, {"available": True, "call_wall": 24200.0, "expiry": "E"})
+    out = cb.resolve("NIFTY", date.today(), strikes=LADDER, grid_expiry="E")
+    cw = next(x for x in out["levels"] if x["key"] == "call_wall")
+    assert cw["kind"] == "strike" and cw["strike"] == 24200.0 and cw["between"] is None
+
+
+def test_a_level_outside_the_rendered_ladder_is_flagged(monkeypatch):
+    """Off-screen is not the same as absent — the page needs to say which."""
+    cb = _stub_live(monkeypatch, {"available": True, "flip": 25500.0, "expiry": "E"})
+    out = cb.resolve("NIFTY", date.today(), strikes=LADDER, grid_expiry="E")
+    flip = next(x for x in out["levels"] if x["key"] == "flip")
+    assert flip["price"] == 25500.0 and flip["in_ladder"] is False
+
+
+@pytest.mark.parametrize(
+    "pin_source,expect_note",
+    [("dominant", False), ("wall_mid", True), ("", True), (None, True)],
+)
+def test_a_derived_pin_says_so(monkeypatch, pin_source, expect_note):
+    """`wall_mid` is the midpoint of two walls, not a gamma pin. Labelling it
+    PIN on a strike ladder asserts what the data does not support."""
+    cb = _stub_live(
+        monkeypatch,
+        {"available": True, "pin": 24100.0, "pin_source": pin_source, "expiry": "E"},
+    )
+    out = cb.resolve("NIFTY", date.today(), strikes=LADDER, grid_expiry="E")
+    pin = next(x for x in out["levels"] if x["key"] == "pin")
+    assert (pin["note"] is not None) is expect_note
+
+
+def test_archived_session_never_borrows_todays_levels(monkeypatch):
+    """The grid renders any archived day. Drawing today's call wall on a
+    two-week-old ladder invites reading a level into a session that never had
+    it, so an unresolvable level is omitted with a reason instead."""
+    from analysis.chain_buildup import levels as cb_levels
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        cb_levels, "_live_gamma",
+        lambda u: (called.append("live"), ({"available": True, "call_wall": 99999.0}, None))[1],
+    )
+    monkeypatch.setattr(cb_levels, "_historical_gamma", lambda u, d: ({}, "no_gamma_history_for_session"))
+    monkeypatch.setattr(cb_levels, "_fut_poc", lambda u, d, live: (None, "no_trail_yet"))
+
+    out = cb_levels.resolve("NIFTY", date.today() - timedelta(days=14), strikes=LADDER)
+    assert called == []                      # the live snapshot is never consulted
+    assert out["levels"] == []
+    assert out["source"] == "history"
+    assert set(out["skipped"]) == {"call_wall", "put_wall", "pin", "flip", "fut_poc"}
+
+
+def test_walls_absent_from_an_old_session_are_reported_not_invented(monkeypatch):
+    """Walls were only recorded from 2026-08-27; before that they cannot exist."""
+    from analysis.chain_buildup import levels as cb_levels
+
+    monkeypatch.setattr(
+        cb_levels, "_historical_gamma",
+        lambda u, d: ({"pin": 24100.0, "flip": 24080.0, "call_wall": None, "put_wall": None}, None),
+    )
+    monkeypatch.setattr(cb_levels, "_fut_poc", lambda u, d, live: (None, "no_trail_yet"))
+    out = cb_levels.resolve("NIFTY", date.today() - timedelta(days=5), strikes=LADDER)
+    assert {x["key"] for x in out["levels"]} == {"pin", "flip"}
+    assert out["skipped"]["call_wall"] == "not_recorded_this_session"
+
+
+def test_expiry_mismatch_is_reported(monkeypatch):
+    """A front-expiry call wall on a 30-DTE ladder is the wrong number."""
+    cb = _stub_live(monkeypatch, {"available": True, "call_wall": 24200.0, "expiry": "2026-09-01"})
+    same = cb.resolve("NIFTY", date.today(), strikes=LADDER, grid_expiry="2026-09-01")
+    diff = cb.resolve("NIFTY", date.today(), strikes=LADDER, grid_expiry="2026-09-29")
+    assert same["expiry_match"] is True
+    assert diff["expiry_match"] is False
+
+
+def test_gamma_outage_degrades_to_reasons_not_an_exception(monkeypatch):
+    """A gamma failure must grey one panel, never blank the grid."""
+    from analysis.chain_buildup import levels as cb_levels
+
+    monkeypatch.setattr(cb_levels, "_live_gamma", lambda u: ({}, "gamma_unavailable"))
+    monkeypatch.setattr(cb_levels, "_fut_poc", lambda u, d, live: (None, "poc_unavailable"))
+    out = cb_levels.resolve("NIFTY", date.today(), strikes=LADDER)
+    assert out["levels"] == []
+    assert out["skipped"]["call_wall"] == "gamma_unavailable"

@@ -3624,3 +3624,34 @@ export interface BuildupAlert {
   pe: BuildupAlertSide;
   ratio_threshold: number;
 }
+
+export type BuildupLevelKey = "call_wall" | "put_wall" | "pin" | "flip" | "fut_poc";
+
+export interface BuildupLevel {
+  key: BuildupLevelKey;
+  label: string;
+  /** "strike" lands on a row; "price" sits between two and is drawn as a rule. */
+  kind: "strike" | "price";
+  price: number | null;
+  strike: number | null;
+  between: [number | null, number | null] | null;
+  in_ladder: boolean;
+  source: "live" | "history";
+  /** Non-null when the level is weaker than its label implies (a derived pin). */
+  note: string | null;
+}
+
+export interface BuildupLevels {
+  underlying: string;
+  session_date: string;
+  is_live: boolean;
+  source: "live" | "history";
+  asof: string | null;
+  gamma_regime: string | null;
+  gamma_expiry: string | null;
+  grid_expiry: string | null;
+  /** false = levels belong to a different expiry than the ladder. */
+  expiry_match: boolean | null;
+  levels: BuildupLevel[];
+  skipped: Record<string, string>;
+}
