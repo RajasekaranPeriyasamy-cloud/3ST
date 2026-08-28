@@ -238,6 +238,8 @@ def append_history_point(
     atm_iv: float | None = None,
     pos_gex: float | None = None,
     neg_gex: float | None = None,
+    call_wall: float | None = None,
+    put_wall: float | None = None,
 ) -> list[dict[str, Any]]:
     """Append one in-session snapshot tick; skip after close / too-frequent polls.
 
@@ -247,6 +249,13 @@ def append_history_point(
     ``pos_gex`` / ``neg_gex`` are chart-only add-ons. Reversal / GEX-gate logic
     continues to key solely on ``total_gex`` (+ spot / OI) — do not wire
     component fields into ``detect_spot_reversals`` or ``_gex_sign``.
+
+    ``call_wall`` / ``put_wall`` are recorded (added 2026-08-27) purely so a
+    *past* session's walls can be recovered. Every other level on the tick had
+    history; the walls were live-only, which meant no desk could draw them on an
+    archived day and no study could ask whether they held. Like the collector's
+    strike width this is forward-only — a wall not written down now is gone.
+    They are read-only passengers here: nothing in this module keys on them.
     """
     key = _key(underlying, expiry)
     now = datetime.now(tz=IST)
@@ -287,6 +296,10 @@ def append_history_point(
         tick["pin_strike"] = round(float(pin_strike), 2)
     if atm_iv is not None:
         tick["atm_iv"] = round(float(atm_iv), 2)
+    if call_wall is not None:
+        tick["call_wall"] = round(float(call_wall), 2)
+    if put_wall is not None:
+        tick["put_wall"] = round(float(put_wall), 2)
 
     def _mutate(data: dict[str, Any]) -> list[dict[str, Any]]:
         series = data.setdefault("series", {})

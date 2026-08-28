@@ -15,6 +15,7 @@ import random
 import pytest
 
 from analysis.volume_profile import service as vp
+from analysis.volume_profile import tilt_history as vp_tilt
 
 IST = vp.IST
 
@@ -645,8 +646,16 @@ def test_poc_trail_groups_drift_into_levels_and_merges_revisits(monkeypatch) -> 
 
 
 def test_poc_trail_refuses_rather_than_drawing_a_partial_one(monkeypatch) -> None:
-    # Not one of the sampled underlyings — there is no trail to have.
-    assert vp.poc_trail("BANKNIFTY", day="2026-08-26")["reason"] == "not_sampled"
+    # Not one of the sampled underlyings — there is no trail to have. Picked
+    # from TILT_HISTORY_UNDERLYINGS rather than hardcoded, because this used to
+    # name BANKNIFTY and silently changed meaning the day BANKNIFTY was added to
+    # the sampler: the assertion still passed as written until it didn't, and a
+    # test whose premise can rot without failing is worse than no test.
+    unsampled = next(
+        u for u in ("CRUDEOIL", "NATURALGAS", "GOLD")
+        if u not in vp_tilt.TILT_HISTORY_UNDERLYINGS
+    )
+    assert vp.poc_trail(unsampled, day="2026-08-26")["reason"] == "not_sampled"
 
     # Sampled, but nothing recorded yet: a single point is not a trail.
     monkeypatch.setattr(

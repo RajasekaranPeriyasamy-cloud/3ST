@@ -47,9 +47,14 @@ from utils.logging import get_logger, log_event
 IST = ZoneInfo("Asia/Kolkata")
 _log = get_logger("volume_tilt_history")
 
-#: Only these two are sampled. Adding an underlying here starts a background
-#: Kite pull per checkpoint for it — deliberately not driven off INDEX_OPTIONS.
-TILT_HISTORY_UNDERLYINGS: tuple[str, ...] = ("NIFTY", "SENSEX")
+#: Sampled underlyings. Adding one here starts a background Kite pull per
+#: checkpoint for it — deliberately not driven off INDEX_OPTIONS, so growth is a
+#: decision rather than a side effect of listing a new contract.
+#:
+#: BANKNIFTY added 2026-08-27: it was the only cash index the Chain Build-Up
+#: levels overlay could not show a FUT POC for, and the gap was invisible until
+#: something asked for it. One more checkpoint pull every CHECKPOINT_MIN.
+TILT_HISTORY_UNDERLYINGS: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX")
 
 #: Session-elapsed minutes between stored points. 15 keeps a full session to ~25
 #: points, which is enough shape to compare against without storing every minute.

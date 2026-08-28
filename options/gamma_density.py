@@ -2286,6 +2286,8 @@ def build_gamma_snapshot(
                 atm_iv=atm_iv,
                 pos_gex=pos_gex,
                 neg_gex=neg_gex,
+                call_wall=call_wall,
+                put_wall=put_wall,
             )
             if not history:
                 history = get_history(underlying, exp)
