@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from datetime import date, datetime, time
 from typing import Any, Callable, TypeVar
@@ -11,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from config import DEFAULT_SESSION, INDEX_OPTIONS, MCX_SESSION, is_mcx_underlying
 from settings import data_dir
+from utils.atomic_json import atomic_write_json
 
 IST = ZoneInfo("Asia/Kolkata")
 HISTORY_FILE = data_dir() / "gamma_density_history.json"
@@ -139,11 +139,7 @@ def _load(*, strict: bool = False) -> dict[str, Any]:
 
 def _save(data: dict[str, Any]) -> None:
     """Atomic replace so concurrent readers never see a truncated JSON file."""
-    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2)
-    tmp = HISTORY_FILE.with_name(HISTORY_FILE.name + ".tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    os.replace(tmp, HISTORY_FILE)
+    atomic_write_json(HISTORY_FILE, data, indent=2)
 
 
 def _update_store(mutator: Callable[[dict[str, Any]], _T]) -> _T:

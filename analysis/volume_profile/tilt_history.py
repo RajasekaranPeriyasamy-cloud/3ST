@@ -41,6 +41,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from settings import data_dir
+from utils.atomic_json import atomic_write_json
 from utils.logging import get_logger, log_event
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -117,11 +118,7 @@ def _load() -> dict[str, Any]:
 
 
 def _save(data: dict[str, Any]) -> None:
-    path = history_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_json(history_file(), data, indent=2, sort_keys=True)
 
 
 def _prune(data: dict[str, Any]) -> None:

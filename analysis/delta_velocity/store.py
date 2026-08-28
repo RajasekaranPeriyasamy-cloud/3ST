@@ -19,6 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from settings import data_dir
+from utils.atomic_json import atomic_write_json
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -193,9 +194,5 @@ def load_state() -> dict[str, Any]:
 def save_state(patch: dict[str, Any]) -> dict[str, Any]:
     with _LOCK:
         state = {**load_state(), **patch}
-        path = root_dir() / STATE_FILE
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, indent=2, default=str)
-        tmp.replace(path)
+        atomic_write_json(root_dir() / STATE_FILE, state, indent=2, default=str)
     return state
