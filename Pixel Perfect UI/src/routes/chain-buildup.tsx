@@ -14,6 +14,7 @@ import type {
   BuildupLevels,
   BuildupScale,
   BuildupStatus,
+  BuildupTrackPoint,
 } from "@/lib/types";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -220,6 +221,14 @@ const LEVEL_TAG: Record<BuildupLevelKey, string> = {
   fut_poc: "POC",
 };
 
+const LEVEL_RGB: Record<BuildupLevelKey, string> = {
+  call_wall: "rgb(239 68 68)",
+  put_wall: "rgb(16 185 129)",
+  pin: "rgb(99 102 241)",
+  flip: "rgb(245 158 11)",
+  fut_poc: "rgb(14 165 233)",
+};
+
 const LEVEL_TONE: Record<BuildupLevelKey, string> = {
   call_wall: "bg-red-500/85 text-white",
   put_wall: "bg-emerald-500/85 text-white",
@@ -281,6 +290,7 @@ function Wing({
   metric,
   scale,
   classCodes,
+  trackMarks,
   scrollRef,
   onScroll,
 }: {
@@ -290,6 +300,7 @@ function Wing({
   metric: "delta" | "cum";
   scale: BuildupScale | undefined;
   classCodes: Record<BuildupClass, string>;
+  trackMarks: Map<string, { key: BuildupLevelKey; edge: boolean }[]>;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onScroll: () => void;
 }) {
@@ -319,6 +330,7 @@ function Wing({
                 const cell = row[side].cells[i];
                 const value = cell ? (metric === "cum" ? cell.cum : cell.d_oi) : null;
                 const { style, strong } = cellStyle(value ?? null, scale, side);
+                const marks = trackMarks.get(`${i}|${row.strike}`);
                 return (
                   <td
                     key={b.key}
@@ -330,6 +342,29 @@ function Wing({
                       cell?.breach ? "breach-ring font-bold" : ""
                     }`}
                   >
+                    {/* Level track: a hairline on the cell rather than a glyph,
+                        so it reads as a path across the session without
+                        competing with the ΔOI number it sits on. */}
+                    {marks?.map((m, mi) =>
+                      m.edge ? (
+                        <span
+                          key={m.key}
+                          className="pointer-events-none absolute inset-x-0 top-0 h-[2px]"
+                          style={{ background: LEVEL_RGB[m.key], opacity: 0.9 }}
+                        />
+                      ) : (
+                        <span
+                          key={m.key}
+                          className="pointer-events-none absolute inset-y-0"
+                          style={{
+                            background: LEVEL_RGB[m.key],
+                            opacity: 0.85,
+                            width: 3,
+                            left: 2 + mi * 4,
+                          }}
+                        />
+                      ),
+                    )}
                     {value == null ? (
                       <span className="text-muted-foreground/40">·</span>
                     ) : (
@@ -447,6 +482,8 @@ function ChainBuildupPage() {
       session_date: grid.session_date,
       expiry: grid.expiry,
       strikes: grid.rows.map((r) => r.strike).join(","),
+      track: "true",
+      bucket_ends: grid.buckets.map((b) => b.end).join(","),
     });
     let cancelled = false;
     api
@@ -456,7 +493,7 @@ function ChainBuildupPage() {
     return () => {
       cancelled = true;
     };
-  }, [showLevels, grid?.underlying, grid?.session_date, grid?.expiry, grid?.rows]);
+  }, [showLevels, grid?.underlying, grid?.session_date, grid?.expiry, grid?.rows, grid?.buckets]);
 
   // Expiry list follows the chosen session, not today.
   useEffect(() => {
@@ -571,6 +608,35 @@ function ChainBuildupPage() {
     }
     return { tagsByStrike: tags, rulesByStrike: rules };
   }, [levels, showLevels]);
+
+  // Where each level sat at every bucket, keyed "<bucketIndex>|<strike>" so the
+  // wing can ask one question per cell. A strike level marks the row it sat on;
+  // a price level marks the row it sat ABOVE, drawn on that cell's lower edge —
+  // the same convention the centre block uses, for the same reason.
+  const trackMarks = useMemo(() => {
+    const marks = new Map<string, { key: BuildupLevelKey; edge: boolean }[]>();
+    const pts = showLevels ? levels?.track?.points : undefined;
+    if (!pts || !grid) return marks;
+    const ladder = grid.rows.map((r) => r.strike).sort((a, b) => a - b);
+    const put = (i: number, strike: number, key: BuildupLevelKey, edge: boolean) => {
+      const k = `${i}|${strike}`;
+      marks.set(k, [...(marks.get(k) ?? []), { key, edge }]);
+    };
+    pts.forEach((pt: BuildupTrackPoint, i) => {
+      for (const key of ["call_wall", "put_wall", "pin"] as const) {
+        const v = pt[key];
+        if (v != null && ladder.includes(v)) put(i, v, key, false);
+      }
+      for (const key of ["flip", "fut_poc"] as const) {
+        const v = pt[key];
+        if (v == null) continue;
+        // The row immediately below the price: the level lies on its top edge.
+        const below = [...ladder].reverse().find((x) => x <= v);
+        if (below != null) put(i, below, key, true);
+      }
+    });
+    return marks;
+  }, [levels, showLevels, grid]);
 
   const scaleKey = metric === "cum" ? "cum" : "delta";
   const classCodes =
@@ -834,6 +900,14 @@ function ChainBuildupPage() {
               {SKIP_REASON[reason] ?? reason}
             </span>
           ))}
+          {levels.track ? (
+            <span className="text-muted-foreground">
+              track:{" "}
+              {(Object.keys(LEVEL_TAG) as BuildupLevelKey[])
+                .map((k) => `${LEVEL_TAG[k]} ${levels.track!.coverage[k] ?? 0}/${levels.track!.buckets}`)
+                .join(" · ")}
+            </span>
+          ) : null}
           {levels.expiry_match === false ? (
             <span className="font-medium text-amber-600 dark:text-amber-400">
               levels are for {levels.gamma_expiry}, ladder is {levels.grid_expiry} — not comparable
@@ -860,6 +934,7 @@ function ChainBuildupPage() {
               metric={metric}
               scale={grid?.scale.ce[scaleKey]}
               classCodes={classCodes}
+              trackMarks={trackMarks}
               scrollRef={ceRef}
               onScroll={mirror(ceRef, peRef)}
             />
@@ -1055,6 +1130,7 @@ function ChainBuildupPage() {
               metric={metric}
               scale={grid?.scale.pe[scaleKey]}
               classCodes={classCodes}
+              trackMarks={trackMarks}
               scrollRef={peRef}
               onScroll={mirror(peRef, ceRef)}
             />

@@ -275,3 +275,168 @@ def resolve(
         "levels": levels,
         "skipped": skipped,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — levels as of each bucket
+# ---------------------------------------------------------------------------
+
+#: How long a sampled level may be carried forward before it is treated as
+#: unknown. The gamma trail samples every ~75s, so a gap wider than this is a
+#: gap in the recording, not a level that simply did not move — and holding a
+#: two-hour-old flip across the afternoon would draw a line that was never there.
+MAX_CARRY_MIN = 15
+
+#: Level key -> the field it is stored under on a gamma trail point. Written as
+#: an explicit map rather than "same name unless pin", because it is not: the
+#: trail says ``pin_strike`` and ``flip_level`` where the snapshot says ``pin``
+#: and ``flip``. Mapping one and assuming the other silently returned an empty
+#: flip track on a session whose trail carried all 300 of them.
+TRACK_FIELDS: dict[str, str] = {
+    "call_wall": "call_wall",
+    "put_wall": "put_wall",
+    "pin": "pin_strike",
+    "flip": "flip_level",
+}
+TRACK_KEYS = tuple(TRACK_FIELDS)
+
+
+def _series_for(underlying: str, session_date: date, expiry: str | None) -> list[dict[str, Any]]:
+    """The intraday gamma trail for one (underlying, expiry, session).
+
+    Read from the store directly rather than through ``get_history``: that helper
+    builds its key with :func:`_today_ist`, so it can only ever return *today's*
+    series, and this desk renders archived days.
+    """
+    try:
+        from options.gamma_density_history import _load  # noqa: PLC2701 — read-only
+
+        store = _load(strict=False)
+    except Exception as exc:
+        log_event(logger, logging.WARNING, "chain_buildup_series_failed",
+                  underlying=underlying, error=str(exc)[:200])
+        return []
+
+    series = store.get("series") or {}
+    day = session_date.isoformat()
+    u = underlying.upper()
+    if expiry:
+        exact = series.get(f"{u}|{expiry}|{day}")
+        if exact:
+            return list(exact)
+    # No expiry given, or that pair was never recorded: fall back to whichever
+    # series for this underlying covers this session, longest first so a stub of
+    # three points does not win over a full day.
+    candidates = [v for k, v in series.items()
+                  if k.startswith(f"{u}|") and k.endswith(f"|{day}") and v]
+    return list(max(candidates, key=len)) if candidates else []
+
+
+def _as_of(points: list[tuple[datetime, dict[str, Any]]], when: datetime) -> dict[str, Any] | None:
+    """Last sample at or before ``when``, held forward within the carry limit.
+
+    Step function, never interpolation: a level is a *state*, and averaging two
+    flips produces a price the desk never published — the same reason a bucket's
+    OI is its last value rather than its mean.
+    """
+    best: dict[str, Any] | None = None
+    best_ts: datetime | None = None
+    for ts, point in points:
+        if ts <= when and (best_ts is None or ts > best_ts):
+            best_ts, best = ts, point
+    if best is None or best_ts is None:
+        return None
+    if (when - best_ts).total_seconds() > MAX_CARRY_MIN * 60:
+        return None
+    return best
+
+
+def _poc_by_minute(underlying: str, session_date: date, is_live: bool) -> list[tuple[int, int, float]]:
+    """POC segments as ``(from_minute, to_minute, poc)`` since the session open."""
+    try:
+        from analysis.volume_profile.service import poc_trail
+
+        trail = poc_trail(underlying, day=None if is_live else session_date.isoformat())
+    except Exception:
+        return []
+    if not trail.get("available"):
+        return []
+    out: list[tuple[int, int, float]] = []
+    for seg in trail.get("segments") or []:
+        poc = _num(seg.get("poc"))
+        f, t = seg.get("from_minute"), seg.get("to_minute")
+        if poc is None or f is None or t is None:
+            continue
+        out.append((int(f), int(t), poc))
+    return out
+
+
+def track(
+    underlying: str,
+    session_date: date,
+    bucket_ends: list[datetime],
+    *,
+    expiry: str | None = None,
+    session_start_min: int = 9 * 60 + 15,
+) -> dict[str, Any]:
+    """Where each level sat at the close of every bucket.
+
+    This is the view the static overlay cannot give: the ladder already has a
+    time axis, so a flip that migrated 200 points through the afternoon shows as
+    a line moving across the grid against the OI that built under it. A single
+    level drawn down the side is just a repeat of ``/gamma-density``.
+
+    Levels resolve independently — walls can be blank on an old session while pin
+    and flip are present — so ``coverage`` reports how many buckets each one
+    actually filled. "The wall did not move" and "the wall was never recorded"
+    must not look alike.
+    """
+    u = str(underlying).upper()
+    is_live = session_date == _now_ist().date()
+
+    raw = _series_for(u, session_date, expiry)
+    points: list[tuple[datetime, dict[str, Any]]] = []
+    for row in raw:
+        ts = row.get("t")
+        parsed = None
+        if ts:
+            try:
+                parsed = datetime.fromisoformat(str(ts))
+            except ValueError:
+                parsed = None
+        if parsed is None:
+            continue
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(IST).replace(tzinfo=None)
+        points.append((parsed, row))
+
+    segments = _poc_by_minute(u, session_date, is_live)
+    coverage = dict.fromkeys((*TRACK_KEYS, "fut_poc"), 0)
+    out: list[dict[str, Any]] = []
+
+    for end in bucket_ends:
+        entry: dict[str, Any] = {"key": end.strftime("%H:%M")}
+        sample = _as_of(points, end)
+        for key, field in TRACK_FIELDS.items():
+            value = _num(sample.get(field)) if sample else None
+            entry[key] = value
+            if value is not None:
+                coverage[key] += 1
+
+        minute = end.hour * 60 + end.minute - session_start_min
+        poc = next((p for f, t, p in segments if f <= minute <= t), None)
+        entry["fut_poc"] = poc
+        if poc is not None:
+            coverage["fut_poc"] += 1
+        out.append(entry)
+
+    return {
+        "underlying": u,
+        "session_date": session_date.isoformat(),
+        "expiry": expiry,
+        "available": bool(out) and any(coverage.values()),
+        "trail_points": len(points),
+        "buckets": len(out),
+        "coverage": coverage,
+        "points": out,
+    }

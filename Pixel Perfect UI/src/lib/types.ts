@@ -3654,4 +3654,27 @@ export interface BuildupLevels {
   expiry_match: boolean | null;
   levels: BuildupLevel[];
   skipped: Record<string, string>;
+  /** Present only when requested with track=true. */
+  track?: BuildupTrack;
+}
+
+export interface BuildupTrackPoint {
+  key: string;
+  call_wall: number | null;
+  put_wall: number | null;
+  pin: number | null;
+  flip: number | null;
+  fut_poc: number | null;
+}
+
+export interface BuildupTrack {
+  underlying: string;
+  session_date: string;
+  expiry: string | null;
+  available: boolean;
+  trail_points: number;
+  buckets: number;
+  /** Buckets each level actually filled — "did not move" vs "never recorded". */
+  coverage: Record<string, number>;
+  points: BuildupTrackPoint[];
 }

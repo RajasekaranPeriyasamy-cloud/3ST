@@ -3375,6 +3375,8 @@ def buildup_levels(
     session_date: str | None = None,
     expiry: str | None = None,
     strikes: str | None = None,
+    track: bool = False,
+    bucket_ends: str | None = None,
 ) -> dict[str, Any]:
     """Gamma reference levels to overlay on the build-up ladder.
 
@@ -3386,6 +3388,8 @@ def buildup_levels(
     price levels (flip, POC) between the two rows they fall between — they are
     never snapped to a row, which would move them by up to half a strike step.
     """
+    from datetime import datetime as _dt
+
     from analysis.chain_buildup import levels as cb_levels
     from analysis.chain_buildup import service as cb_service
 
@@ -3406,7 +3410,25 @@ def buildup_levels(
             except ValueError:
                 continue
 
-    return cb_levels.resolve(u, day, strikes=ladder, grid_expiry=expiry)
+    payload = cb_levels.resolve(u, day, strikes=ladder, grid_expiry=expiry)
+
+    # `track` answers a different question from the rest of this payload: not
+    # "where is the wall now" but "where was each level at the close of every
+    # bucket". It is opt-in because it walks the whole gamma trail, and the
+    # static overlay is useful without it.
+    if track and bucket_ends:
+        ends: list[_dt] = []
+        for part in bucket_ends.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ends.append(_dt.fromisoformat(part))
+            except ValueError:
+                continue
+        if ends:
+            payload["track"] = cb_levels.track(u, day, ends, expiry=expiry)
+    return payload
 
 
 @app.get("/buildup/status")

@@ -714,3 +714,99 @@ def test_gamma_outage_degrades_to_reasons_not_an_exception(monkeypatch):
     out = cb_levels.resolve("NIFTY", date.today(), strikes=LADDER)
     assert out["levels"] == []
     assert out["skipped"]["call_wall"] == "gamma_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — levels as of each bucket
+# ---------------------------------------------------------------------------
+
+
+def _trail(rows):
+    """(t, fields) points as the gamma trail stores them."""
+    return [dict(r, t=r["t"]) for r in rows]
+
+
+def _stub_trail(monkeypatch, rows, segments=()):
+    from analysis.chain_buildup import levels as cb
+
+    monkeypatch.setattr(cb, "_series_for", lambda u, d, e: _trail(rows))
+    monkeypatch.setattr(cb, "_poc_by_minute", lambda u, d, live: list(segments))
+    return cb
+
+
+def _ends(*hhmm):
+    return [datetime(2026, 8, 25, int(h[:2]), int(h[3:])) for h in hhmm]
+
+
+def test_track_reads_the_trails_field_names_not_the_snapshots():
+    """The trail says pin_strike/flip_level where the snapshot says pin/flip.
+    Mapping one and assuming the other returned an empty flip track on a session
+    whose trail carried all 300 of them."""
+    from analysis.chain_buildup import levels as cb
+
+    assert cb.TRACK_FIELDS["pin"] == "pin_strike"
+    assert cb.TRACK_FIELDS["flip"] == "flip_level"
+
+
+def test_track_resolves_each_bucket_to_the_last_sample_at_or_before_it(monkeypatch):
+    cb = _stub_trail(monkeypatch, [
+        {"t": "2026-08-25T09:40:00", "pin_strike": 24200.0, "flip_level": 24180.0},
+        {"t": "2026-08-25T10:10:00", "pin_strike": 24150.0, "flip_level": 24130.0},
+    ])
+    out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45", "10:15"))
+    assert [p["pin"] for p in out["points"]] == [24200.0, 24150.0]
+    assert [p["flip"] for p in out["points"]] == [24180.0, 24130.0]
+    assert out["coverage"]["pin"] == 2
+
+
+def test_track_holds_a_level_forward_but_not_indefinitely(monkeypatch):
+    """A level is a state, so it holds between samples — but a gap wider than the
+    carry limit is a gap in the RECORDING, not a level that sat still."""
+    cb = _stub_trail(monkeypatch, [{"t": "2026-08-25T09:40:00", "pin_strike": 24200.0}])
+    out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45", "11:00"))
+    assert out["points"][0]["pin"] == 24200.0          # 5 min later: held
+    assert out["points"][1]["pin"] is None             # 80 min later: unknown
+
+
+def test_track_never_interpolates_between_samples(monkeypatch):
+    """Averaging two flips produces a price the desk never published — the same
+    reason a bucket's OI is its last value, not its mean."""
+    cb = _stub_trail(monkeypatch, [
+        {"t": "2026-08-25T09:40:00", "flip_level": 24100.0},
+        {"t": "2026-08-25T09:50:00", "flip_level": 24200.0},
+    ])
+    out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45"))
+    assert out["points"][0]["flip"] == 24100.0          # not 24150
+
+
+def test_track_reports_coverage_per_level(monkeypatch):
+    """"The wall did not move" and "the wall was never recorded" must not look
+    alike, so each level reports how many buckets it actually filled."""
+    cb = _stub_trail(monkeypatch, [
+        {"t": "2026-08-25T09:40:00", "pin_strike": 24200.0, "call_wall": None},
+    ])
+    out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45", "09:50"))
+    assert out["coverage"]["pin"] == 2
+    assert out["coverage"]["call_wall"] == 0
+    assert out["available"] is True
+
+
+def test_track_says_unavailable_when_nothing_resolves(monkeypatch):
+    cb = _stub_trail(monkeypatch, [])
+    out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45"))
+    assert out["available"] is False and out["trail_points"] == 0
+
+
+def test_track_maps_poc_segments_onto_buckets(monkeypatch):
+    """POC arrives as minute ranges since the open, not as samples."""
+    cb = _stub_trail(monkeypatch, [], segments=[(0, 60, 24100.0), (61, 200, 24250.0)])
+    out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45", "12:00"))
+    assert out["points"][0]["fut_poc"] == 24100.0      # 30 min in
+    assert out["points"][1]["fut_poc"] == 24250.0      # 165 min in
+
+
+def test_track_tolerates_tz_aware_trail_stamps(monkeypatch):
+    """The trail writes +05:30; bucket ends are naive IST wall-clock."""
+    cb = _stub_trail(monkeypatch, [{"t": "2026-08-25T09:40:00+05:30", "pin_strike": 24200.0}])
+    out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45"))
+    assert out["points"][0]["pin"] == 24200.0
