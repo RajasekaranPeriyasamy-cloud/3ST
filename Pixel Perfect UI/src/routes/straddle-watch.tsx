@@ -61,7 +61,7 @@ function ChangeTone({
   value: number | null | undefined;
   pct?: number | null;
 }) {
-  if (value == null) return <span className="text-slate-500">—</span>;
+  if (value == null) return <span className="text-muted-foreground">—</span>;
   const up = value >= 0;
   return (
     <span className={up ? "text-emerald-600" : "text-rose-600"}>
@@ -168,12 +168,12 @@ function StraddleWatchPage() {
   const summary = snapshot?.summary;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 bg-[#f7f8fa] p-3 text-slate-800 md:p-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 bg-background p-3 text-foreground md:p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <CandlestickChart className="h-5 w-5 text-sky-700" />
           <h1 className="text-lg font-semibold tracking-tight">Straddle Watch</h1>
-          <span className="text-xs text-slate-500">Latest · read-only</span>
+          <span className="text-xs text-muted-foreground">Latest · read-only</span>
         </div>
         {authError ? (
           <Link to="/login" className="text-sm text-sky-700 underline">
@@ -182,21 +182,21 @@ function StraddleWatchPage() {
         ) : null}
       </div>
 
-      <div className="flex flex-col gap-3 rounded-sm border border-slate-200 bg-white px-3 py-3 shadow-sm lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex flex-col gap-3 rounded-sm border border-border bg-card px-3 py-3 shadow-sm lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex items-center gap-3 pb-1 text-sm">
             <label className="flex items-center gap-1.5">
               <input type="radio" checked readOnly className="accent-sky-600" />
               Latest
             </label>
-            <label className="flex items-center gap-1.5 text-slate-400">
-              <input type="radio" disabled className="accent-slate-400" />
+            <label className="flex items-center gap-1.5 text-muted-foreground/70">
+              <input type="radio" disabled className="accent-muted-foreground" />
               Historical
             </label>
           </div>
 
           <div className="space-y-1">
-            <Label className="text-[11px] uppercase tracking-wide text-slate-500">Select Symbol</Label>
+            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Select Symbol</Label>
             <Select
               value={underlying}
               onValueChange={(v) => {
@@ -205,7 +205,7 @@ function StraddleWatchPage() {
                 setSnapshot(null);
               }}
             >
-              <SelectTrigger className="h-9 w-[140px] bg-white">
+              <SelectTrigger className="h-9 w-[140px] bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -219,7 +219,7 @@ function StraddleWatchPage() {
           </div>
 
           <div className="space-y-1">
-            <Label className="text-[11px] uppercase tracking-wide text-slate-500">Expiry</Label>
+            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Expiry</Label>
             <Select
               value={expiry}
               onValueChange={(v) => {
@@ -228,7 +228,7 @@ function StraddleWatchPage() {
               }}
               disabled={expiriesLoading || !expiries.length}
             >
-              <SelectTrigger className="h-9 w-[130px] bg-white">
+              <SelectTrigger className="h-9 w-[130px] bg-card">
                 <SelectValue placeholder={expiriesLoading ? "…" : "Expiry"} />
               </SelectTrigger>
               <SelectContent>
@@ -242,13 +242,13 @@ function StraddleWatchPage() {
           </div>
 
           <div className="space-y-1">
-            <Label className="text-[11px] uppercase tracking-wide text-slate-500">Call Strike</Label>
+            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Call Strike</Label>
             <Select
               value={callStrike}
               onValueChange={setCallStrike}
               disabled={chainLoading || !strikes.length}
             >
-              <SelectTrigger className="h-9 w-[120px] bg-white">
+              <SelectTrigger className="h-9 w-[120px] bg-card">
                 <SelectValue placeholder="Call" />
               </SelectTrigger>
               <SelectContent>
@@ -262,13 +262,13 @@ function StraddleWatchPage() {
           </div>
 
           <div className="space-y-1">
-            <Label className="text-[11px] uppercase tracking-wide text-slate-500">Put Strike</Label>
+            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Put Strike</Label>
             <Select
               value={putStrike}
               onValueChange={setPutStrike}
               disabled={chainLoading || !strikes.length}
             >
-              <SelectTrigger className="h-9 w-[120px] bg-white">
+              <SelectTrigger className="h-9 w-[120px] bg-card">
                 <SelectValue placeholder="Put" />
               </SelectTrigger>
               <SelectContent>
@@ -282,7 +282,7 @@ function StraddleWatchPage() {
           </div>
 
           <Button
-            className="h-9 bg-sky-600 px-4 font-semibold tracking-wide text-white hover:bg-sky-700"
+            className="h-9 bg-primary px-4 font-semibold tracking-wide text-primary-foreground hover:bg-primary/90"
             disabled={!canFetch || loading}
             onClick={() => void loadChart(range)}
           >
@@ -296,21 +296,21 @@ function StraddleWatchPage() {
             {summary?.fut_symbol ?? "—"}{" "}
             <span className="font-semibold">{fmt(summary?.fut_ltp)}</span>{" "}
             <ChangeTone value={summary?.fut_chg} pct={summary?.fut_chg_pct} />{" "}
-            <span className="text-slate-500">({summary?.asof ?? "—"})</span>
+            <span className="text-muted-foreground">({summary?.asof ?? "—"})</span>
           </div>
           <div>
             Fair Price <span className="font-semibold">{fmt(summary?.fair_price)}</span>{" "}
             <ChangeTone value={summary?.fair_chg} pct={summary?.fair_chg_pct} />{" "}
             Lot Size <span className="font-semibold">{summary?.lot_size ?? "—"}</span>
           </div>
-          <div className="text-slate-700">
+          <div className="text-foreground/90">
             IV: {fmt(summary?.iv)} &nbsp; IVR: {fmt(summary?.ivr)} &nbsp; IVP: {fmt(summary?.ivp)}{" "}
             &nbsp; Max Pain: {summary?.max_pain ?? "—"} &nbsp; PCR: {fmt(summary?.pcr)}
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-1 border-b border-slate-200">
+      <div className="flex items-center gap-1 border-b border-border">
         {RANGES.map((r) => (
           <button
             key={r}
@@ -319,7 +319,7 @@ function StraddleWatchPage() {
               "px-3 py-1.5 text-sm font-medium",
               range === r
                 ? "border-b-2 border-sky-600 text-sky-700"
-                : "text-slate-500 hover:text-slate-800",
+                : "text-muted-foreground hover:text-foreground",
             )}
             disabled={!canFetch || loading}
             onClick={() => void loadChart(r)}

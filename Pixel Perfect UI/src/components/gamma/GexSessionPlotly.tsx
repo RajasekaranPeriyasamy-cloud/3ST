@@ -16,7 +16,9 @@ import {
   SESSION_CHART,
   SESSION_PLOT_INSET,
   SESSION_SHELL,
+  sessionChartTheme,
 } from "@/components/charts/sessionChartTheme";
+import { useTheme } from "@/hooks/useTheme";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -726,6 +728,7 @@ export function GexSessionPlotly({
   className,
 }: GexSessionPlotlyProps) {
   const plotRef = useRef<HTMLDivElement>(null);
+  const { isDark } = useTheme();
   const [showCePeOi, setShowCePeOi] = useState(true);
   const [showDoi, setShowDoi] = useState(true);
   const [showAtmIv, setShowAtmIv] = useState(true);
@@ -1263,7 +1266,7 @@ export function GexSessionPlotly({
     const atmIvAxisPos = overlaysOn && oiMax > 0 ? 0.74 : 0.98;
 
     const { paperBg, plotBg, grid, axis, zeroline, fontFamily, annotation, hoverBg, hoverBorder, hoverText } =
-      SESSION_CHART;
+      sessionChartTheme(isDark);
 
     const pocLevel = snap.session_poc?.poc;
     const hasPoc = pocLevel != null && Number.isFinite(pocLevel);
@@ -1539,8 +1542,8 @@ export function GexSessionPlotly({
                 showgrid: false,
                 zeroline: false,
                 showticklabels: false,
-                title: { text: "OI", font: { size: 10, color: SESSION_CHART.axis } },
-                tickfont: { color: SESSION_CHART.axis, size: 9 },
+                title: { text: "OI", font: { size: 10, color: axis } },
+                tickfont: { color: axis, size: 9 },
                 fixedrange: true,
                 visible: true,
               }
@@ -1633,6 +1636,7 @@ export function GexSessionPlotly({
     snap.session_poc,
     gexHistoryPartial,
     reversalGexGate,
+    isDark,
   ]);
 
   const hasGexSeries = series.gexX.length >= 1;
@@ -1737,13 +1741,13 @@ export function GexSessionPlotly({
       <div className="space-y-2 px-3 py-2 pr-28">
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <div className="flex min-w-0 items-baseline gap-1.5">
-            <span className="truncate font-semibold tracking-wide text-slate-800">{underlying}</span>
+            <span className="truncate font-semibold tracking-wide text-foreground">{underlying}</span>
             {expiryLabel ? (
-              <span className="truncate text-[10px] text-slate-500">{expiryLabel}</span>
+              <span className="truncate text-[10px] text-muted-foreground">{expiryLabel}</span>
             ) : null}
           </div>
           <div className="flex items-center gap-1.5">
-            <Label htmlFor="gex-session-reversal-tf" className="text-slate-500">
+            <Label htmlFor="gex-session-reversal-tf" className="text-muted-foreground">
               Reversal TF
             </Label>
             <Select
@@ -1760,7 +1764,7 @@ export function GexSessionPlotly({
               </SelectContent>
             </Select>
           </div>
-          <label className="flex items-center gap-1.5 text-slate-500">
+          <label className="flex items-center gap-1.5 text-muted-foreground">
             <Checkbox
               checked={reversalGexGate}
               onCheckedChange={(v) => onReversalGexGateChange(v === true)}
@@ -1769,7 +1773,7 @@ export function GexSessionPlotly({
           </label>
           {reversalGexGate ? (
             <div className="flex items-center gap-1.5">
-              <Label htmlFor="gex-session-gex-mode" className="text-slate-500">
+              <Label htmlFor="gex-session-gex-mode" className="text-muted-foreground">
                 GEX mode
               </Label>
               <Select
@@ -1786,7 +1790,7 @@ export function GexSessionPlotly({
               </Select>
             </div>
           ) : null}
-          <label className="flex items-center gap-1.5 text-slate-500">
+          <label className="flex items-center gap-1.5 text-muted-foreground">
             <Checkbox
               checked={reversalOiGate}
               onCheckedChange={(v) => onReversalOiGateChange(v === true)}
@@ -1794,33 +1798,33 @@ export function GexSessionPlotly({
             Require OI
           </label>
           <label
-            className="flex items-center gap-1.5 text-slate-500"
+            className="flex items-center gap-1.5 text-muted-foreground"
             title="CE/PE OI bars for ATM-nearest strikes in the Spot band; pan Spot/Strike to reveal more"
           >
             <Checkbox checked={showCePeOi} onCheckedChange={(v) => setShowCePeOi(v === true)} />
             CE/PE OI
           </label>
           <label
-            className="flex items-center gap-1.5 text-slate-500"
+            className="flex items-center gap-1.5 text-muted-foreground"
             title="Striped ΔOI ↑ / hollow ΔOI ↓ on the strike-pinned OI strip"
           >
             <Checkbox checked={showDoi} onCheckedChange={(v) => setShowDoi(v === true)} />
             ΔOI
           </label>
           <label
-            className="flex items-center gap-1.5 text-slate-500"
+            className="flex items-center gap-1.5 text-muted-foreground"
             title="ATM IV % on a dedicated right overlay axis (forward-filled after first sample)"
           >
             <Checkbox checked={showAtmIv} onCheckedChange={(v) => setShowAtmIv(v === true)} />
             ATM IV
           </label>
-          <span className="text-[10px] text-slate-500">{REVERSAL_LOCK_HINT[reversalTf]}</span>
+          <span className="text-[10px] text-muted-foreground">{REVERSAL_LOCK_HINT[reversalTf]}</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          <span className="font-medium text-slate-600">Levels</span>
+          <span className="font-medium text-foreground/80">Levels</span>
           {LEVEL_TOGGLES.map((t) => (
-            <label key={t.key} className="flex items-center gap-1.5 text-slate-500" title={t.title}>
+            <label key={t.key} className="flex items-center gap-1.5 text-muted-foreground" title={t.title}>
               <Checkbox
                 checked={levelOpts[t.key]}
                 onCheckedChange={(v) => setLevelOpts((prev) => ({ ...prev, [t.key]: v === true }))}
@@ -1828,7 +1832,7 @@ export function GexSessionPlotly({
               {t.label}
             </label>
           ))}
-          <span className="text-[10px] text-slate-500">
+          <span className="text-[10px] text-muted-foreground">
             horizontal on the Spot axis · levels outside the visible band pin to the plot edge (▲
             above / ▼ below)
           </span>
@@ -1882,7 +1886,7 @@ export function GexSessionPlotly({
                 {" · "}
                 {r.label}
                 {muted ? (
-                  <span className="ml-1 rounded bg-slate-500/15 px-1 text-[10px] text-slate-600">
+                  <span className="ml-1 rounded bg-muted px-1 text-[10px] text-muted-foreground">
                     {r.provisional === true ? "provisional" : "pre-GEX"}
                   </span>
                 ) : null}
@@ -1896,7 +1900,7 @@ export function GexSessionPlotly({
             })}
           </div>
         ) : gexWaiting ? null : (
-          <p className="text-[11px] text-slate-500">
+          <p className="text-[11px] text-muted-foreground">
             {gexHistoryPartial && gexHistoryStartedLabel && reversalGexGate
               ? `No ${reversalTf} pivots yet — none before ${gexHistoryStartedLabel}, and none passed the GEX gate in the recorded window.`
               : gexRelaxed && !reversalOiGate
@@ -1924,7 +1928,7 @@ export function GexSessionPlotly({
               }}
               aria-hidden
             />
-            <span className="text-slate-500">{c.label}</span>
+            <span className="text-muted-foreground">{c.label}</span>
             <span className="font-semibold tabular-nums" style={{ color: c.color }}>
               {c.value}
             </span>
@@ -1934,7 +1938,7 @@ export function GexSessionPlotly({
 
       <div className={SESSION_PLOT_INSET}>
         {!hasAnySeries ? (
-          <p className="px-4 py-16 text-center text-sm text-slate-500">
+          <p className="px-4 py-16 text-center text-sm text-muted-foreground">
             Day spot path loads from minute candles; GEX lines appear after the first recorded in-session sample.
           </p>
         ) : (
@@ -1947,18 +1951,18 @@ export function GexSessionPlotly({
           <div
             className={cn(
               "pointer-events-auto absolute right-2 top-2 z-10 max-w-[240px] rounded-md border px-2.5 py-2 text-[11px] leading-relaxed shadow-md",
-              "border-slate-200 bg-white/95 text-slate-800 backdrop-blur-sm",
+              "border-border bg-card/95 text-foreground backdrop-blur-sm",
             )}
             role="status"
           >
             <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 {infoPinned ? "Pinned" : "Strike"}
               </span>
               {infoPinned ? (
                 <button
                   type="button"
-                  className="text-[10px] text-slate-500 underline-offset-2 hover:underline"
+                  className="text-[10px] text-muted-foreground underline-offset-2 hover:underline"
                   onClick={() => {
                     setInfoPinned(false);
                     setInfoRow(null);
@@ -1976,20 +1980,20 @@ export function GexSessionPlotly({
               ))}
             </ul>
             {!infoPinned ? (
-              <p className="mt-1.5 text-[10px] text-slate-500">
+              <p className="mt-1.5 text-[10px] text-muted-foreground">
                 Click to pin · dbl-click chart to clear
               </p>
             ) : null}
           </div>
         ) : null}
         {!hasGexSeries && hasAnySeries ? (
-          <p className="absolute bottom-2 left-3 text-[10px] text-slate-400">
+          <p className="absolute bottom-2 left-3 text-[10px] text-muted-foreground/70">
             Waiting for in-session GEX samples…
           </p>
         ) : null}
       </div>
 
-      <p className="px-3 pb-3 text-[10px] text-slate-500">
+      <p className="px-3 pb-3 text-[10px] text-muted-foreground">
         Green = +VE GEX · Red = −VE GEX · Amber = Net Gamma (forward-filled after the
         first recorded sample; earlier session / gaps stay empty). Blue = spot (right
         axis). Pink = ATM IV % (own axis; forward-filled after first sample only).

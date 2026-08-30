@@ -6,6 +6,7 @@ import {
 } from "highcharts-react-official";
 
 import type { StraddleWatchSnapshot } from "@/lib/types";
+import { useTheme } from "@/hooks/useTheme";
 
 // Vite/CJS interop: some builds expose `{ default: Highcharts }` instead of the namespace.
 const Highcharts =
@@ -64,14 +65,25 @@ function ivAxisBounds(values: Array<number | null | undefined>): {
 
 export function StraddleWatchChart({ snapshot, loading }: Props) {
   const chartRef = useRef<HighchartsReactRefObject | null>(null);
+  const { isDark } = useTheme();
 
   const options = useMemo(() => {
     const series = snapshot?.series;
     const t = series?.t ?? [];
     const ivBounds = ivAxisBounds(series?.iv ?? []);
+    // Blue-black surface, soft off-white ink. Two series carry colours that only
+    // work on white -- Straddle Price (#111) and Call OI (dark red) -- so they
+    // get a light-on-dark counterpart rather than vanishing into the plot.
+    const surface = isDark ? "#1b2029" : "#ffffff";
+    const gridLine = isDark ? "rgba(148, 163, 184, 0.16)" : "#eef1f4";
+    const ink = isDark ? "#e6ebf2" : "#222";
+    const axisInk = isDark ? "rgba(212, 220, 232, 0.78)" : "#666";
+    const straddleInk = isDark ? "#e2e8f0" : "#111111";
+    const callOiInk = isDark ? "#f87171" : "#8B0000";
+    const ivInk = isDark ? "#a5b4fc" : "#5C6BC0";
     const opts = {
       chart: {
-        backgroundColor: "#ffffff",
+        backgroundColor: surface,
         height: 620,
         style: { fontFamily: "Segoe UI, Helvetica, Arial, sans-serif" },
       },
@@ -81,7 +93,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
       },
       title: {
         text: "Straddle Watch",
-        style: { fontSize: "16px", fontWeight: "600", color: "#222" },
+        style: { fontSize: "16px", fontWeight: "600", color: ink },
       },
       credits: { enabled: false },
       rangeSelector: { enabled: false },
@@ -96,7 +108,8 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         align: "center",
         verticalAlign: "top",
         y: 28,
-        itemStyle: { fontSize: "11px", fontWeight: "500" },
+        itemStyle: { fontSize: "11px", fontWeight: "500", color: axisInk },
+        itemHoverStyle: { color: ink },
       },
       tooltip: {
         shared: true,
@@ -107,8 +120,8 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         type: "datetime",
         ordinal: false,
         gridLineWidth: 1,
-        gridLineColor: "#eef1f4",
-        labels: { style: { fontSize: "10px", color: "#666" } },
+        gridLineColor: gridLine,
+        labels: { style: { fontSize: "10px", color: axisInk } },
         dateTimeLabelFormats: {
           minute: "%H:%M",
           hour: "%H:%M",
@@ -122,21 +135,21 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
           // Price pane (right)
           height: "62%",
           resize: { enabled: true },
-          title: { text: "Call / Put Price", style: { fontSize: "11px" } },
+          title: { text: "Call / Put Price", style: { fontSize: "11px", color: axisInk } },
           opposite: true,
-          gridLineColor: "#eef1f4",
-          labels: { style: { fontSize: "10px" } },
+          gridLineColor: gridLine,
+          labels: { style: { fontSize: "10px", color: axisInk } },
         },
         {
           // OI pane (right)
           top: "65%",
           height: "22%",
           offset: 0,
-          title: { text: "OI", style: { fontSize: "11px" } },
+          title: { text: "OI", style: { fontSize: "11px", color: axisInk } },
           opposite: true,
-          gridLineColor: "#eef1f4",
+          gridLineColor: gridLine,
           labels: {
-            style: { fontSize: "10px" },
+            style: { fontSize: "10px", color: axisInk },
             formatter() {
               return formatOi(Number(this.value));
             },
@@ -149,10 +162,10 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
           gridLineWidth: 0,
           title: {
             text: "IV %",
-            style: { fontSize: "11px", color: "#5C6BC0" },
+            style: { fontSize: "11px", color: ivInk },
           },
           labels: {
-            style: { fontSize: "10px", color: "#5C6BC0" },
+            style: { fontSize: "10px", color: ivInk },
             format: "{value:.1f}",
           },
           min: ivBounds.min,
@@ -189,7 +202,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         {
           type: "line",
           name: "Straddle Price",
-          color: "#111111",
+          color: straddleInk,
           yAxis: 0,
           lineWidth: 2,
           data: pairs(t, series?.straddle_price ?? []),
@@ -205,7 +218,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         {
           type: "line",
           name: "Call OI",
-          color: "#8B0000",
+          color: callOiInk,
           yAxis: 1,
           data: pairs(t, series?.call_oi ?? []),
           tooltip: {
@@ -235,7 +248,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
         {
           type: "line",
           name: "IV",
-          color: "#5C6BC0",
+          color: ivInk,
           yAxis: 2,
           visible: false,
           lineWidth: 2,
@@ -255,7 +268,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
       exporting: { enabled: true },
     } as Highcharts.Options;
     return opts;
-  }, [snapshot]);
+  }, [snapshot, isDark]);
 
   useEffect(() => {
     const chart = chartRef.current?.chart;
@@ -268,7 +281,7 @@ export function StraddleWatchChart({ snapshot, loading }: Props) {
   }, [loading, snapshot]);
 
   return (
-    <div className="relative w-full rounded-sm border border-slate-200 bg-white">
+    <div className="relative w-full rounded-sm border border-border bg-card">
       <HighchartsReact
         highcharts={Highcharts}
         constructorType="stockChart"

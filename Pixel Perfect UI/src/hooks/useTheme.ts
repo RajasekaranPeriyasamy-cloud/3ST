@@ -1,26 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
-import { applyTheme, resolveTheme, type ThemeMode } from "@/lib/theme";
+import { getTheme, setTheme, subscribeTheme, toggleTheme, type ThemeMode } from "@/lib/theme";
 
-export function useTheme() {
-  const [theme, setThemeState] = useState<ThemeMode>(() => resolveTheme());
-
-  useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
-
-  const setTheme = useCallback((next: ThemeMode) => {
-    setThemeState(next);
-    applyTheme(next);
-  }, []);
-
-  const toggleTheme = useCallback(() => {
-    setThemeState((prev) => {
-      const next: ThemeMode = prev === "dark" ? "light" : "dark";
-      applyTheme(next);
-      return next;
-    });
-  }, []);
-
-  return { theme, setTheme, toggleTheme };
+/**
+ * Read + write the app-wide theme. Backed by the module store in lib/theme.ts,
+ * so every consumer (toggle, Plotly charts, Toaster) re-renders on one flip.
+ */
+export function useTheme(): {
+  theme: ThemeMode;
+  isDark: boolean;
+  setTheme: (next: ThemeMode) => void;
+  toggleTheme: () => void;
+} {
+  const theme = useSyncExternalStore(subscribeTheme, getTheme, () => "dark" as ThemeMode);
+  return { theme, isDark: theme === "dark", setTheme, toggleTheme };
 }

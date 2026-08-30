@@ -47,10 +47,12 @@
       (function () {
         try {
           var t = localStorage.getItem("3st-theme");
-          if (t !== "light") document.documentElement.classList.add("dark");
-          else document.documentElement.classList.remove("dark");
+          var d = t !== "light";
+          document.documentElement.classList.toggle("dark", d);
+          document.documentElement.style.colorScheme = d ? "dark" : "light";
         } catch (e) {
           document.documentElement.classList.add("dark");
+          document.documentElement.style.colorScheme = "dark";
         }
       })();
     </script>
