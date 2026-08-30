@@ -331,6 +331,8 @@ def _side_row(
     cells: list[dict[str, Any]] = []
     prev_oi = baseline
     prev_ltp: float | None = None
+    prev_volume: float | None = None
+    first_volume: float | None = None
     latest_oi: float | None = None
     latest_ltp: float | None = None
 
@@ -347,6 +349,8 @@ def _side_row(
                     "ltp": None,
                     "d_price": None,
                     "volume": None,
+                    "d_volume": None,
+                    "cum_volume": None,
                     "cls": None,
                     "breach": False,
                 }
@@ -355,6 +359,12 @@ def _side_row(
 
         oi = point["oi"]
         ltp = point["ltp"]
+        volume = point.get("volume")
+        if first_volume is None and volume is not None:
+            # Anchor on the first bucket this leg was seen in, not on zero: a
+            # strike that entered the window at noon has not traded its whole
+            # day's volume since noon.
+            first_volume = volume
         d_oi = None if (oi is None or prev_oi is None) else oi - prev_oi
         d_price = None if (ltp is None or prev_ltp is None) else round(ltp - prev_ltp, 4)
         cum = None if (oi is None or baseline is None) else oi - baseline
@@ -369,6 +379,19 @@ def _side_row(
                 "ltp": ltp,
                 "d_price": d_price,
                 "volume": point.get("volume"),
+                # Archived volume is CUMULATIVE day volume per leg (verified
+                # monotonic, 99.9% coverage), so a bucket's traded volume is a
+                # difference — the same mechanic as delta-OI, and it telescopes
+                # the same way. Reporting the raw cumulative figure per bucket
+                # would read as "this bucket traded 6 crore".
+                "d_volume": (
+                    None
+                    if (volume is None or prev_volume is None)
+                    else max(0.0, volume - prev_volume)
+                ),
+                "cum_volume": (
+                    None if (volume is None or first_volume is None) else volume - first_volume
+                ),
                 "cls": classify(d_oi, d_price),
                 "breach": is_breach(
                     _pct(d_oi, prev_oi),
@@ -388,6 +411,8 @@ def _side_row(
         if ltp is not None:
             prev_ltp = ltp
             latest_ltp = ltp
+        if volume is not None:
+            prev_volume = volume
 
     total = None if (latest_oi is None or baseline is None) else latest_oi - baseline
     total_pct = _pct(total, baseline)
@@ -582,8 +607,21 @@ def build_grid(
         ],
         "rows": out_rows,
         "scale": {
-            "ce": {"delta": _scale(ce_cells, "d_oi"), "cum": _scale(ce_cells, "cum")},
-            "pe": {"delta": _scale(pe_cells, "d_oi"), "cum": _scale(pe_cells, "cum")},
+            # Volume gets its own scale: it is an order of magnitude larger than
+            # delta-OI on the same strike, so sharing one ceiling would leave
+            # every OI cell white the moment volume is displayed.
+            "ce": {
+                "delta": _scale(ce_cells, "d_oi"),
+                "cum": _scale(ce_cells, "cum"),
+                "vol": _scale(ce_cells, "d_volume"),
+                "cum_vol": _scale(ce_cells, "cum_volume"),
+            },
+            "pe": {
+                "delta": _scale(pe_cells, "d_oi"),
+                "cum": _scale(pe_cells, "cum"),
+                "vol": _scale(pe_cells, "d_volume"),
+                "cum_vol": _scale(pe_cells, "cum_volume"),
+            },
         },
         "totals": _totals(out_rows),
         "class_codes": CLASS_CODES,

@@ -3431,6 +3431,52 @@ def buildup_levels(
     return payload
 
 
+@app.get("/buildup/flow")
+def buildup_flow(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    timeframe_min: int = 5,
+    bucket_ends: str | None = None,
+) -> dict[str, Any]:
+    """Front-month future volume per bucket, for the strip under the ladder.
+
+    Separate from ``/buildup/grid`` for the same reason ``/buildup/levels`` is:
+    the grid is a pure archive read, this makes a Kite historical call. One
+    instrument per session, cached — cheap, but a futures-feed problem should
+    grey one strip rather than blank the ladder.
+
+    Carries volume only. Buy-minus-sell delta needs an aggressor, which no data
+    in this repo has yet — see ``analysis/chain_buildup/flow.py``.
+    """
+    from datetime import datetime as _dt
+
+    from analysis.chain_buildup import flow as cb_flow
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        u = cb_service._check_underlying(underlying)
+        day = cb_service._resolve_session(u, session_date)
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+    ends: list[_dt] = []
+    for part in (bucket_ends or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ends.append(_dt.fromisoformat(part))
+        except ValueError:
+            continue
+    if not ends:
+        raise _err(ValueError("bucket_ends is required — pass the grid's bucket end timestamps"))
+
+    try:
+        return cb_flow.underlying_flow(u, day, ends, timeframe_min=timeframe_min)
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+
 @app.get("/buildup/status")
 def buildup_status(underlying: str = "NIFTY") -> dict[str, Any]:
     """Archive coverage and defaults for the build-up desk."""

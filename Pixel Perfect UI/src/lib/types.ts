@@ -3500,6 +3500,9 @@ export interface BuildupCell {
   ltp: number | null;
   d_price: number | null;
   volume: number | null;
+  /** Traded volume IN this bucket (archive stores cumulative; this is the diff). */
+  d_volume: number | null;
+  cum_volume: number | null;
   cls: BuildupClass | null;
   breach: boolean;
 }
@@ -3545,8 +3548,8 @@ export interface BuildupGrid {
   buckets: BuildupBucket[];
   rows: BuildupRow[];
   scale: {
-    ce: { delta: BuildupScale; cum: BuildupScale };
-    pe: { delta: BuildupScale; cum: BuildupScale };
+    ce: { delta: BuildupScale; cum: BuildupScale; vol: BuildupScale; cum_vol: BuildupScale };
+    pe: { delta: BuildupScale; cum: BuildupScale; vol: BuildupScale; cum_vol: BuildupScale };
   };
   totals: {
     ce_oi: number;
@@ -3677,4 +3680,24 @@ export interface BuildupTrack {
   /** Buckets each level actually filled — "did not move" vs "never recorded". */
   coverage: Record<string, number>;
   points: BuildupTrackPoint[];
+}
+
+export interface BuildupFlowPoint {
+  key: string;
+  volume: number | null;
+  cum_volume: number | null;
+  close: number | null;
+}
+
+export interface BuildupFlow {
+  underlying: string;
+  session_date: string;
+  timeframe_min: number;
+  available: boolean;
+  reason: string | null;
+  coverage: number;
+  buckets: number;
+  max_volume: number | null;
+  total_volume: number | null;
+  points: BuildupFlowPoint[];
 }

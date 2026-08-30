@@ -810,3 +810,123 @@ def test_track_tolerates_tz_aware_trail_stamps(monkeypatch):
     cb = _stub_trail(monkeypatch, [{"t": "2026-08-25T09:40:00+05:30", "pin_strike": 24200.0}])
     out = cb.track("NIFTY", date(2026, 8, 25), _ends("09:45"))
     assert out["points"][0]["pin"] == 24200.0
+
+
+# ---------------------------------------------------------------------------
+# Traded volume per bucket
+# ---------------------------------------------------------------------------
+
+
+def _vol_rows(volumes, *, strike=24000.0):
+    rows = _rows([1_000_000] * len(volumes), strike=strike, ltp_by_minute=[10.0] * len(volumes))
+    for r, v in zip(rows, volumes, strict=True):
+        r["volume"] = v
+    return rows
+
+
+def test_bucket_volume_is_a_difference_not_the_cumulative_figure():
+    """The archive stores cumulative day volume per leg. Showing it raw per
+    bucket would read as "this bucket traded 6 crore"."""
+    rows = _vol_rows([100, 500, 900, 1500, 2000])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cell = grid["rows"][0]["ce"]["cells"][0]
+    assert cell["volume"] == 2000        # cumulative, as archived
+    assert cell["cum_volume"] == 0.0     # first bucket is the anchor
+
+
+def test_bucket_volume_telescopes_to_the_cumulative():
+    rows = []
+    for i in range(25):
+        r = _rows([1_000_000], ltp_by_minute=[10.0])[0]
+        r["ts"] = (START + timedelta(minutes=i)).isoformat()
+        r["volume"] = 1000 * (i + 1)
+        rows.append(r)
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cells = grid["rows"][0]["ce"]["cells"]
+    deltas = [c["d_volume"] for c in cells if c["d_volume"] is not None]
+    last_cum = [c["cum_volume"] for c in cells if c["cum_volume"] is not None][-1]
+    assert sum(deltas) == last_cum
+
+
+def test_cumulative_volume_anchors_on_the_legs_first_bucket():
+    """A strike that entered the window at noon has not traded its whole day's
+    volume since noon."""
+    rows = _vol_rows([5_000_000, 5_400_000, 5_900_000, 6_000_000, 6_100_000])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    assert grid["rows"][0]["ce"]["cells"][0]["cum_volume"] == 0.0
+
+
+def test_bucket_volume_never_goes_negative():
+    """Cumulative volume should only rise; a decrease means a bad tick or an
+    instrument roll, and a negative "traded volume" is not a thing."""
+    rows = _vol_rows([9_000, 8_000, 8_500, 9_000, 9_500])
+    rows += [dict(r, ts=(START + timedelta(minutes=6 + i)).isoformat(), volume=v)
+             for i, (r, v) in enumerate(zip(_vol_rows([1, 2]), [7_000, 7_500], strict=True))]
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    for c in grid["rows"][0]["ce"]["cells"]:
+        assert c["d_volume"] is None or c["d_volume"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# Underlying flow strip
+# ---------------------------------------------------------------------------
+
+
+def _flow_ends(*hhmm):
+    return [datetime(2026, 8, 27, int(h[:2]), int(h[3:])) for h in hhmm]
+
+
+def test_flow_aligns_bars_by_close_not_open(monkeypatch):
+    """Kite stamps a candle by its OPEN; the ladder buckets by close. Passing the
+    open through would put every bar one column early."""
+    from analysis.chain_buildup import flow
+
+    monkeypatch.setattr(flow, "_fetch_bars", lambda u, tf, d: [
+        {"date": "2026-08-27T09:15:00", "volume": 100.0, "close": 24000.0},
+        {"date": "2026-08-27T09:20:00", "volume": 250.0, "close": 24010.0},
+    ])
+    out = flow.underlying_flow("NIFTY", date(2026, 8, 27), _flow_ends("09:20", "09:25"), timeframe_min=5)
+    assert [p["volume"] for p in out["points"]] == [100.0, 250.0]
+
+
+def test_flow_cumulative_runs_across_the_rendered_buckets(monkeypatch):
+    from analysis.chain_buildup import flow
+
+    monkeypatch.setattr(flow, "_fetch_bars", lambda u, tf, d: [
+        {"date": "2026-08-27T09:15:00", "volume": 100.0, "close": 1.0},
+        {"date": "2026-08-27T09:20:00", "volume": 250.0, "close": 1.0},
+    ])
+    out = flow.underlying_flow("NIFTY", date(2026, 8, 27), _flow_ends("09:20", "09:25"), timeframe_min=5)
+    assert [p["cum_volume"] for p in out["points"]] == [100.0, 350.0]
+    assert out["total_volume"] == 350.0 and out["coverage"] == 2
+
+
+def test_flow_failure_keeps_the_same_shape_as_success(monkeypatch):
+    """A failure path that drops keys turns a degraded feed into an
+    AttributeError two layers up — which is what an expired Kite token did the
+    first time this ran."""
+    from analysis.chain_buildup import flow
+
+    ends = _flow_ends("09:20", "09:25")
+    monkeypatch.setattr(flow, "_fetch_bars", lambda u, tf, d: [
+        {"date": "2026-08-27T09:15:00", "volume": 100.0, "close": 1.0},
+    ])
+    good = flow.underlying_flow("NIFTY", date(2026, 8, 27), ends, timeframe_min=5)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("Incorrect `api_key` or `access_token`.")
+
+    monkeypatch.setattr(flow, "_fetch_bars", boom)
+    bad = flow.underlying_flow("NIFTY", date(2026, 8, 27), ends, timeframe_min=5)
+
+    assert set(good) == set(bad)
+    assert len(bad["points"]) == len(ends)
+    assert set(good["points"][0]) == set(bad["points"][0])
+    assert bad["available"] is False and bad["reason"] == "futures_bars_unavailable"
+
+
+def test_flow_rejects_an_unsupported_timeframe():
+    from analysis.chain_buildup import flow
+
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        flow.underlying_flow("NIFTY", date(2026, 8, 27), _flow_ends("09:20"), timeframe_min=7)

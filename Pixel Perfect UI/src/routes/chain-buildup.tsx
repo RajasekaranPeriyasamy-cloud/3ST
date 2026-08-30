@@ -13,6 +13,7 @@ import type {
   BuildupLevelKey,
   BuildupLevels,
   BuildupScale,
+  BuildupFlow,
   BuildupStatus,
   BuildupTrackPoint,
 } from "@/lib/types";
@@ -122,6 +123,32 @@ function centreCell(strong: boolean): string {
     "border-b border-border/40 text-center font-mono text-[10px] tabular-nums " +
     (strong ? "text-white" : "text-foreground")
   );
+}
+
+/** What the wing cells show. OI and volume are both per-bucket or cumulative,
+ *  but they never share a colour scale — volume is an order of magnitude larger
+ *  on the same strike, so one ceiling would leave every OI cell white. */
+type Metric = "delta" | "cum" | "vol" | "cum_vol";
+
+const METRICS: { value: Metric; label: string }[] = [
+  { value: "delta", label: "ΔOI / bucket" },
+  { value: "cum", label: "ΔOI cumulative" },
+  { value: "vol", label: "Volume / bucket" },
+  { value: "cum_vol", label: "Volume cumulative" },
+];
+
+function metricValue(cell: BuildupCell | undefined, metric: Metric): number | null {
+  if (!cell) return null;
+  switch (metric) {
+    case "delta":
+      return cell.d_oi;
+    case "cum":
+      return cell.cum;
+    case "vol":
+      return cell.d_volume;
+    case "cum_vol":
+      return cell.cum_volume;
+  }
 }
 
 /** Which column the ladder is ordered by. Every key reads off a value the grid
@@ -291,16 +318,18 @@ function Wing({
   scale,
   classCodes,
   trackMarks,
+  flow,
   scrollRef,
   onScroll,
 }: {
   side: "ce" | "pe";
   rows: BuildupRow[];
   buckets: { key: string }[];
-  metric: "delta" | "cum";
+  metric: Metric;
   scale: BuildupScale | undefined;
   classCodes: Record<BuildupClass, string>;
   trackMarks: Map<string, { key: BuildupLevelKey; edge: boolean }[]>;
+  flow: BuildupFlow | null;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onScroll: () => void;
 }) {
@@ -328,7 +357,7 @@ function Wing({
             <tr key={row.strike}>
               {buckets.map((b, i) => {
                 const cell = row[side].cells[i];
-                const value = cell ? (metric === "cum" ? cell.cum : cell.d_oi) : null;
+                const value = metricValue(cell, metric);
                 const { style, strong } = cellStyle(value ?? null, scale, side);
                 const marks = trackMarks.get(`${i}|${row.strike}`);
                 return (
@@ -383,6 +412,40 @@ function Wing({
             </tr>
           ))}
         </tbody>
+        {/* The strip lives INSIDE the wing table rather than beside it: the
+            columns scroll, and a separate element would have to mirror that
+            scroll to stay aligned. A tfoot cannot drift. */}
+        {flow ? (
+          <tfoot>
+            <tr>
+              {buckets.map((b, i) => {
+                const pt = flow.points[i];
+                const v = pt?.volume ?? null;
+                const ceiling = flow.max_volume ?? 0;
+                const h = v != null && ceiling > 0 ? Math.max(1, (v / ceiling) * 22) : 0;
+                return (
+                  <td
+                    key={b.key}
+                    style={{ width: COL_W, height: 26 }}
+                    title={
+                      v == null
+                        ? `${b.key}: no future bar`
+                        : `${b.key} · future volume ${compact(v)} · cum ${compact(pt?.cum_volume)}`
+                    }
+                    className="border-t border-border/60 bg-background/60 align-bottom"
+                  >
+                    <div className="flex h-[24px] items-end justify-center">
+                      <div
+                        style={{ height: h, width: COL_W - 12 }}
+                        className={v == null ? "" : "bg-sky-500/60"}
+                      />
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          </tfoot>
+        ) : null}
       </table>
     </div>
   );
@@ -395,7 +458,8 @@ function ChainBuildupPage() {
   const [timeframe, setTimeframe] = useState<number>(5);
   const [range, setRange] = useState<string>("atm10");
   const [baseline, setBaseline] = useState<string>("session_open");
-  const [metric, setMetric] = useState<"delta" | "cum">("delta");
+  const [metric, setMetric] = useState<Metric>("delta");
+  const [flow, setFlow] = useState<BuildupFlow | null>(null);
   const [widen, setWiden] = useState<boolean>(false);
   const [sync, setSync] = useState<boolean>(true);
   const [sortKey, setSortKey] = useState<SortKey>("strike");
@@ -494,6 +558,27 @@ function ChainBuildupPage() {
       cancelled = true;
     };
   }, [showLevels, grid?.underlying, grid?.session_date, grid?.expiry, grid?.rows, grid?.buckets]);
+
+  // Underlying flow strip. Its own request for the same reason levels have one:
+  // it makes a Kite historical call while the grid does not, so a futures-feed
+  // problem greys the strip instead of blanking the ladder.
+  useEffect(() => {
+    if (!grid) return;
+    const q = new URLSearchParams({
+      underlying: grid.underlying,
+      session_date: grid.session_date,
+      timeframe_min: String(grid.timeframe_min),
+      bucket_ends: grid.buckets.map((b) => b.end).join(","),
+    });
+    let cancelled = false;
+    api
+      .get<BuildupFlow>(`/buildup/flow?${q}`, { silent: true })
+      .then((r) => !cancelled && setFlow(r))
+      .catch(() => !cancelled && setFlow(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [grid?.underlying, grid?.session_date, grid?.timeframe_min, grid?.buckets]);
 
   // Expiry list follows the chosen session, not today.
   useEffect(() => {
@@ -638,7 +723,7 @@ function ChainBuildupPage() {
     return marks;
   }, [levels, showLevels, grid]);
 
-  const scaleKey = metric === "cum" ? "cum" : "delta";
+  const scaleKey = metric;
   const classCodes =
     grid?.class_codes ??
     ({
@@ -737,24 +822,17 @@ function ChainBuildupPage() {
           <option value="prev_close">Baseline: prev-day close</option>
         </select>
 
-        <div className="flex overflow-hidden rounded-md border">
-          <button
-            onClick={() => setMetric("delta")}
-            className={`px-2 py-1 text-xs ${
-              metric === "delta" ? "bg-primary text-primary-foreground" : "bg-background"
-            }`}
-          >
-            Δ / bucket
-          </button>
-          <button
-            onClick={() => setMetric("cum")}
-            className={`px-2 py-1 text-xs ${
-              metric === "cum" ? "bg-primary text-primary-foreground" : "bg-background"
-            }`}
-          >
-            Cumulative
-          </button>
-        </div>
+        <select
+          className="h-8 rounded-md border bg-background px-2 text-xs"
+          value={metric}
+          onChange={(e) => setMetric(e.target.value as Metric)}
+        >
+          {METRICS.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
 
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
           <input type="checkbox" checked={widen} onChange={(e) => setWiden(e.target.checked)} />
@@ -865,6 +943,25 @@ function ChainBuildupPage() {
         </div>
       ) : null}
 
+      {flow && !flow.available ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px]">
+          Underlying flow strip unavailable —{" "}
+          {flow.reason === "futures_bars_unavailable"
+            ? "front-month future bars could not be fetched (Kite session expired, or the feed is down)"
+            : flow.reason === "no_bars_for_session"
+              ? "no future bars for this session"
+              : flow.reason}
+          . Volume per strike is unaffected; it comes from the archive.
+        </div>
+      ) : null}
+      {flow?.available ? (
+        <div className="text-[11px] text-muted-foreground">
+          Flow strip: front-month future volume, {flow.coverage}/{flow.buckets} buckets ·{" "}
+          {compact(flow.total_volume)} total. Volume only — buy/sell delta needs an
+          aggressor no feed here provides yet.
+        </div>
+      ) : null}
+
       {showLevels && levels ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-[11px]">
           <span className="font-medium">Gamma levels</span>
@@ -935,6 +1032,7 @@ function ChainBuildupPage() {
               scale={grid?.scale.ce[scaleKey]}
               classCodes={classCodes}
               trackMarks={trackMarks}
+              flow={flow}
               scrollRef={ceRef}
               onScroll={mirror(ceRef, peRef)}
             />
@@ -1131,6 +1229,7 @@ function ChainBuildupPage() {
               scale={grid?.scale.pe[scaleKey]}
               classCodes={classCodes}
               trackMarks={trackMarks}
+              flow={flow}
               scrollRef={peRef}
               onScroll={mirror(peRef, ceRef)}
             />
