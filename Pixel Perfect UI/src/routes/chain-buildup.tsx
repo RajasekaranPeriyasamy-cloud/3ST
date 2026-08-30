@@ -83,13 +83,17 @@ function cellStyle(
   value: number | null,
   scale: BuildupScale | undefined,
   side: "ce" | "pe",
+  signed = false,
 ): { style: React.CSSProperties; strong: boolean } {
   if (value == null || value === 0) return { style: {}, strong: false };
   const ceiling = scale?.p95 && scale.p95 > 0 ? scale.p95 : Math.abs(value);
   const mag = Math.min(1, Math.abs(value) / ceiling);
   const alpha = 0.12 + 0.72 * mag;
   const rgb = HUE[side];
-  if (value > 0) {
+  if (value > 0 || signed) {
+    // A signed metric (delta) already carries direction in its hue, so it is
+    // always a solid fill. Hatching is reserved for OI unwinding, where hue is
+    // taken by the CE/PE side and direction has nowhere else to live.
     return { style: { backgroundColor: `rgba(${rgb},${alpha})` }, strong: mag > 0.5 };
   }
   // Unwinding: same hue, hatched. A paler fill alone is indistinguishable from
@@ -128,14 +132,20 @@ function centreCell(strong: boolean): string {
 /** What the wing cells show. OI and volume are both per-bucket or cumulative,
  *  but they never share a colour scale — volume is an order of magnitude larger
  *  on the same strike, so one ceiling would leave every OI cell white. */
-type Metric = "delta" | "cum" | "vol" | "cum_vol";
+type Metric = "delta" | "cum" | "vol" | "cum_vol" | "delta_vol" | "cum_delta_vol";
 
 const METRICS: { value: Metric; label: string }[] = [
   { value: "delta", label: "ΔOI / bucket" },
   { value: "cum", label: "ΔOI cumulative" },
   { value: "vol", label: "Volume / bucket" },
   { value: "cum_vol", label: "Volume cumulative" },
+  { value: "delta_vol", label: "Delta (buy−sell)" },
+  { value: "cum_delta_vol", label: "Cum Delta" },
 ];
+
+/** Volume metrics are one-signed; delta is genuinely two-signed and should read
+ *  that way — buying green, selling red — rather than borrowing the CE/PE hue. */
+const SIGNED_METRICS: Metric[] = ["delta_vol", "cum_delta_vol"];
 
 function metricValue(cell: BuildupCell | undefined, metric: Metric): number | null {
   if (!cell) return null;
@@ -148,6 +158,10 @@ function metricValue(cell: BuildupCell | undefined, metric: Metric): number | nu
       return cell.d_volume;
     case "cum_vol":
       return cell.cum_volume;
+    case "delta_vol":
+      return cell.delta_vol;
+    case "cum_delta_vol":
+      return cell.cum_delta_vol;
   }
 }
 
@@ -358,7 +372,15 @@ function Wing({
               {buckets.map((b, i) => {
                 const cell = row[side].cells[i];
                 const value = metricValue(cell, metric);
-                const { style, strong } = cellStyle(value ?? null, scale, side);
+                const signedMetric = SIGNED_METRICS.includes(metric);
+                const { style, strong } = cellStyle(
+                  value ?? null,
+                  scale,
+                  // Delta reads by direction, not by which side of the chain it
+                  // sits on: buying green, selling red, whichever wing it is in.
+                  signedMetric ? (value != null && value < 0 ? "ce" : "pe") : side,
+                  signedMetric,
+                );
                 const marks = trackMarks.get(`${i}|${row.strike}`);
                 return (
                   <td
@@ -941,6 +963,32 @@ function ChainBuildupPage() {
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
         </div>
+      ) : null}
+
+      {SIGNED_METRICS.includes(metric) && grid ? (
+        (() => {
+          let classified = 0;
+          let unclassified = 0;
+          for (const r of grid.rows) {
+            for (const sideKey of ["ce", "pe"] as const) {
+              for (const c of r[sideKey].cells) {
+                classified += Math.abs(c.delta_vol ?? 0);
+                unclassified += c.unclassified_vol ?? 0;
+              }
+            }
+          }
+          const total = classified + unclassified;
+          const pct = total > 0 ? (unclassified / total) * 100 : 100;
+          if (pct < 5) return null;
+          return (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px]">
+              <strong>{pct.toFixed(0)}% of this session&apos;s volume is unclassified.</strong>{" "}
+              Trade direction needs the bid/ask at the time of the trade, which has only been
+              archived since 2026-08-30 — earlier sessions have none, so a delta of zero here
+              means &quot;could not tell&quot;, not &quot;balanced&quot;.
+            </div>
+          );
+        })()
       ) : null}
 
       {flow && !flow.available ? (

@@ -3503,6 +3503,11 @@ export interface BuildupCell {
   /** Traded volume IN this bucket (archive stores cumulative; this is the diff). */
   d_volume: number | null;
   cum_volume: number | null;
+  /** Buy-minus-sell volume by the quote rule. 0 with unclassified_vol > 0 means
+   *  volume traded that could not be attributed — not a balanced market. */
+  delta_vol: number | null;
+  cum_delta_vol: number | null;
+  unclassified_vol: number | null;
   cls: BuildupClass | null;
   breach: boolean;
 }
@@ -3548,8 +3553,8 @@ export interface BuildupGrid {
   buckets: BuildupBucket[];
   rows: BuildupRow[];
   scale: {
-    ce: { delta: BuildupScale; cum: BuildupScale; vol: BuildupScale; cum_vol: BuildupScale };
-    pe: { delta: BuildupScale; cum: BuildupScale; vol: BuildupScale; cum_vol: BuildupScale };
+    ce: Record<string, BuildupScale>;
+    pe: Record<string, BuildupScale>;
   };
   totals: {
     ce_oi: number;

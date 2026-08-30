@@ -930,3 +930,117 @@ def test_flow_rejects_an_unsupported_timeframe():
 
     with pytest.raises(ValueError, match="Unsupported timeframe"):
         flow.underlying_flow("NIFTY", date(2026, 8, 27), _flow_ends("09:20"), timeframe_min=7)
+
+
+# ---------------------------------------------------------------------------
+# Phase C — quote-rule trade direction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "last,bid,ask,prev,expected",
+    [
+        (10.7, 10.5, 10.7, 10.6, features.BUY),      # lifted the offer
+        (10.8, 10.5, 10.7, 10.6, features.BUY),      # through the offer
+        (10.5, 10.5, 10.7, 10.6, features.SELL),     # hit the bid
+        (10.4, 10.5, 10.7, 10.6, features.SELL),     # through the bid
+        (10.6, 10.5, 10.7, 10.5, features.BUY),      # inside, uptick
+        (10.6, 10.5, 10.7, 10.7, features.SELL),     # inside, downtick
+        (10.6, 10.5, 10.7, 10.6, features.UNKNOWN),  # inside, no tick
+        (10.6, None, None, 10.5, features.BUY),      # no book, tick rule
+        (None, 10.5, 10.7, 10.6, features.UNKNOWN),  # nothing traded
+    ],
+)
+def test_quote_rule_truth_table(last, bid, ask, prev, expected):
+    assert features.classify_trade(last, bid, ask, prev) == expected
+
+
+def _flow_rows(samples, *, strike=24000.0, option_type="CE"):
+    """samples: (minute, cumulative_volume, last_price, bid, ask)."""
+    out = []
+    for minute, vol, last, bid, ask in samples:
+        out.append({
+            "ts": (START + timedelta(minutes=minute)).isoformat(),
+            "expiry": "2026-09-01", "strike": strike, "option_type": option_type,
+            "oi": 1_000_000, "ltp": last, "last_price": last,
+            "bid": bid, "ask": ask, "volume": vol, "spot": 24010.0,
+        })
+    return out
+
+
+def test_volume_at_the_offer_is_buy_side_delta():
+    rows = _flow_rows([(0, 1000, 10.6, 10.5, 10.7), (1, 1500, 10.7, 10.5, 10.7)])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cell = grid["rows"][0]["ce"]["cells"][0]
+    assert cell["delta_vol"] == 500.0
+    assert cell["unclassified_vol"] == 0.0
+
+
+def test_volume_at_the_bid_is_sell_side_delta():
+    rows = _flow_rows([(0, 1000, 10.6, 10.5, 10.7), (1, 1800, 10.5, 10.5, 10.7)])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    assert grid["rows"][0]["ce"]["cells"][0]["delta_vol"] == -800.0
+
+
+def test_direction_is_decided_per_minute_not_per_bucket():
+    """The whole reason flow walks the raw rows: a bucket whose book flips
+    mid-way must split, not take whichever side it happened to end on."""
+    rows = _flow_rows([
+        (0, 1000, 10.6, 10.5, 10.7),   # bucket 1 anchors
+        (6, 1600, 10.7, 10.5, 10.7),   # bucket 2: +600 bought
+        (7, 2000, 10.5, 10.5, 10.7),   # bucket 2: -400 sold
+    ])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cell = grid["rows"][0]["ce"]["cells"][1]
+    assert cell["delta_vol"] == 200.0            # 600 - 400, not +/-1000
+    assert cell["d_volume"] == 1000.0            # gross traded, unsigned
+
+
+def test_unclassifiable_volume_is_reported_not_hidden():
+    """A minute with no book has volume that happened and cannot be attributed.
+    Calling it flat would make delta look better-founded than it is."""
+    rows = _flow_rows([(0, 1000, None, None, None), (1, 1700, None, None, None)])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cell = grid["rows"][0]["ce"]["cells"][0]
+    assert cell["delta_vol"] == 0.0
+    assert cell["unclassified_vol"] == 700.0
+
+
+def test_buy_plus_sell_plus_unclassified_accounts_for_all_volume():
+    """The accounting identity that makes delta auditable."""
+    rows = _flow_rows([
+        (0, 1000, 10.6, 10.5, 10.7),      # bucket 1 anchors
+        (6, 1500, 10.7, 10.5, 10.7),      # +500 buy
+        (7, 1900, 10.5, 10.5, 10.7),      # -400 sell
+        (8, 2200, None, None, None),      # 300 unclassifiable
+    ])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cell = grid["rows"][0]["ce"]["cells"][1]
+    assert cell["d_volume"] == 1200.0                     # gross traded
+    assert cell["delta_vol"] == 100.0                     # 500 - 400
+    assert cell["unclassified_vol"] == 300.0
+    assert 500.0 + 400.0 + cell["unclassified_vol"] == cell["d_volume"]
+
+
+def test_cumulative_delta_accumulates_across_buckets():
+    rows = _flow_rows([
+        (0, 1000, 10.6, 10.5, 10.7),
+        (1, 1500, 10.7, 10.5, 10.7),      # bucket 1: +500
+        (6, 2100, 10.7, 10.5, 10.7),      # bucket 2: +600
+        (11, 2300, 10.5, 10.5, 10.7),     # bucket 3: -200
+    ])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cells = grid["rows"][0]["ce"]["cells"]
+    assert [c["delta_vol"] for c in cells] == [500.0, 600.0, -200.0]
+    assert [c["cum_delta_vol"] for c in cells] == [500.0, 1100.0, 900.0]
+
+
+def test_flow_ignores_a_cumulative_volume_that_goes_backwards():
+    rows = _flow_rows([
+        (0, 5000, 10.7, 10.5, 10.7),
+        (6, 4000, 10.7, 10.5, 10.7),   # cumulative volume went backwards
+    ])
+    grid = features.build_grid(rows, timeframe_min=5, atm=24000.0)
+    cell = grid["rows"][0]["ce"]["cells"][1]
+    assert cell["delta_vol"] == 0.0
+    assert cell["d_volume"] == 0.0     # clamped, never a negative "traded volume"

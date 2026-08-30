@@ -260,6 +260,121 @@ def _pct(delta: float | None, base: float | None) -> float | None:
     return round(delta / abs(base) * 100.0, 2)
 
 
+#: Trade-direction outcomes. ``UNKNOWN`` is a real answer, never folded into
+#: either side: a minute whose book was not recorded has volume that happened
+#: and cannot be attributed, and silently calling it flat would make delta look
+#: better-founded than it is.
+BUY, SELL, UNKNOWN = 1, -1, 0
+
+
+def classify_trade(
+    last_price: float | None,
+    bid: float | None,
+    ask: float | None,
+    prev_last: float | None,
+) -> int:
+    """Quote rule, with a tick-rule fallback inside the spread.
+
+    At or above the ask, the aggressor lifted the offer; at or below the bid,
+    they hit it. Between the two the quote says nothing, so the tick rule
+    decides on the direction of the price change — the standard Lee-Ready
+    construction for a feed with no per-trade side flag, which is every feed
+    this repo can reach.
+
+    **This is an approximation with a known bias, at a known resolution.** The
+    archive samples once a minute, so the whole minute's volume is classified by
+    the book as it stood at the *end* of it; a minute that traded both sides is
+    attributed to whichever side it finished on. It is materially better than
+    splitting volume by where a bar closed in its range — that estimator cannot
+    see the book at all — and materially worse than a real footprint, which no
+    Kite endpoint provides.
+    """
+    if last_price is None:
+        return UNKNOWN
+    if ask is not None and last_price >= ask:
+        return BUY
+    if bid is not None and last_price <= bid:
+        return SELL
+    if bid is None or ask is None:
+        # No book at all: the quote rule has nothing to say. Fall through to the
+        # tick rule rather than guessing a side.
+        pass
+    if prev_last is None or last_price == prev_last:
+        return UNKNOWN
+    return BUY if last_price > prev_last else SELL
+
+
+def flow_by_bucket(
+    rows: list[dict[str, Any]],
+    *,
+    timeframe_min: int,
+    expiry: str | None = None,
+    session_start: str = SESSION_START,
+) -> dict[tuple[float, str], dict[datetime, dict[str, float]]]:
+    """Signed traded volume per (strike, side, bucket), by the quote rule.
+
+    Works on the *minute* rows, not the bucketed ones: direction is decided per
+    sample and only then summed, because a bucket's opening and closing book can
+    disagree and collapsing first would throw away every classification but the
+    last.
+
+    Volume attributed to a minute is the increment of the leg's cumulative
+    volume since the previous sample — the same differencing the OI columns use.
+    """
+    per_leg: dict[tuple[float, str], list[dict[str, Any]]] = defaultdict(list)
+    start: datetime | None = None
+
+    for row in rows:
+        if expiry and str(row.get("expiry")) != str(expiry):
+            continue
+        ts = parse_ts(row.get("ts"))
+        strike = _num(row.get("strike"))
+        opt = str(row.get("option_type") or "").upper()
+        if ts is None or strike is None or opt not in ("CE", "PE"):
+            continue
+        if start is None:
+            start = _session_start_dt(ts, session_start)
+        # `**row` first: it carries a raw string `ts`, and spreading it after
+        # the parsed one silently puts the string back.
+        per_leg[(strike, opt)].append({**row, "ts": ts})
+
+    out: dict[tuple[float, str], dict[datetime, dict[str, float]]] = defaultdict(
+        lambda: defaultdict(lambda: {"buy": 0.0, "sell": 0.0, "unclassified": 0.0})
+    )
+    if start is None:
+        return out
+
+    for leg, samples in per_leg.items():
+        samples.sort(key=lambda r: r["ts"])
+        prev_volume: float | None = None
+        prev_last: float | None = None
+        for sample in samples:
+            volume = _num(sample.get("volume"))
+            last = _num(sample.get("last_price"))
+            traded = (
+                None
+                if (volume is None or prev_volume is None)
+                else max(0.0, volume - prev_volume)
+            )
+            if traded is not None:
+                # `is not None`, not truthiness: a bucket where nothing traded
+                # still gets an entry, so it reads as a delta of zero rather
+                # than as unknown. Blank means "no data"; this is data.
+                end = bucket_end(sample["ts"], timeframe_min, start)
+                bucket = out[leg][end]
+                if traded > 0:
+                    side = classify_trade(
+                        last, _num(sample.get("bid")), _num(sample.get("ask")), prev_last
+                    )
+                    key = "buy" if side == BUY else "sell" if side == SELL else "unclassified"
+                    bucket[key] += traded
+            if volume is not None:
+                prev_volume = volume
+            if last is not None:
+                prev_last = last
+    return out
+
+
 def bucket_legs(
     rows: list[dict[str, Any]],
     *,
@@ -320,6 +435,7 @@ def _side_row(
     pct_thresholds: list[float],
     cum_threshold: float,
     min_abs_oi: float,
+    flow: dict[datetime, dict[str, float]] | None = None,
 ) -> dict[str, Any]:
     """One side (CE or PE) of one strike: baseline, per-bucket cells, totals.
 
@@ -333,6 +449,7 @@ def _side_row(
     prev_ltp: float | None = None
     prev_volume: float | None = None
     first_volume: float | None = None
+    running_delta = 0.0
     latest_oi: float | None = None
     latest_ltp: float | None = None
 
@@ -351,6 +468,9 @@ def _side_row(
                     "volume": None,
                     "d_volume": None,
                     "cum_volume": None,
+                    "delta_vol": None,
+                    "cum_delta_vol": None,
+                    "unclassified_vol": None,
                     "cls": None,
                     "breach": False,
                 }
@@ -359,6 +479,14 @@ def _side_row(
 
         oi = point["oi"]
         ltp = point["ltp"]
+        bucket_flow = (flow or {}).get(end)
+        if bucket_flow is None:
+            signed_vol = unclassified = None
+        else:
+            signed_vol = bucket_flow["buy"] - bucket_flow["sell"]
+            unclassified = bucket_flow["unclassified"]
+            running_delta += signed_vol
+
         volume = point.get("volume")
         if first_volume is None and volume is not None:
             # Anchor on the first bucket this leg was seen in, not on zero: a
@@ -393,6 +521,9 @@ def _side_row(
                     None if (volume is None or first_volume is None) else volume - first_volume
                 ),
                 "cls": classify(d_oi, d_price),
+                "delta_vol": signed_vol,
+                "cum_delta_vol": running_delta if signed_vol is not None else None,
+                "unclassified_vol": unclassified,
                 "breach": is_breach(
                     _pct(d_oi, prev_oi),
                     d_oi,
@@ -556,6 +687,11 @@ def build_grid(
     series, bucket_ends, spot_by_bucket = bucket_legs(
         rows, timeframe_min=timeframe_min, expiry=expiry, session_start=session_start
     )
+    # Direction is decided per MINUTE and only then summed, so this walks the raw
+    # rows rather than the bucketed ones.
+    flows = flow_by_bucket(
+        rows, timeframe_min=timeframe_min, expiry=expiry, session_start=session_start
+    )
     baselines = baselines or {}
 
     bucket_keys = [end.strftime("%H:%M") for end in bucket_ends]
@@ -590,6 +726,7 @@ def build_grid(
                 pct_thresholds=per_bucket_thresholds,
                 cum_threshold=cum_pct_threshold,
                 min_abs_oi=min_abs_oi,
+                flow=flows.get((strike, opt)),
             )
             row[opt.lower()] = side
             sink.extend(side["cells"])
@@ -615,12 +752,16 @@ def build_grid(
                 "cum": _scale(ce_cells, "cum"),
                 "vol": _scale(ce_cells, "d_volume"),
                 "cum_vol": _scale(ce_cells, "cum_volume"),
+                "delta_vol": _scale(ce_cells, "delta_vol"),
+                "cum_delta_vol": _scale(ce_cells, "cum_delta_vol"),
             },
             "pe": {
                 "delta": _scale(pe_cells, "d_oi"),
                 "cum": _scale(pe_cells, "cum"),
                 "vol": _scale(pe_cells, "d_volume"),
                 "cum_vol": _scale(pe_cells, "cum_volume"),
+                "delta_vol": _scale(pe_cells, "delta_vol"),
+                "cum_delta_vol": _scale(pe_cells, "cum_delta_vol"),
             },
         },
         "totals": _totals(out_rows),
