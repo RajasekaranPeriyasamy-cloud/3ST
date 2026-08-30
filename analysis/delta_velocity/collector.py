@@ -137,6 +137,45 @@ def tracked_legs(underlying: str, spot: float, *, width: int = STRIKE_WIDTH) -> 
     return legs
 
 
+def _num_or_none(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
+def _top_of_book(quote: dict[str, Any]) -> dict[str, float | None]:
+    """Best bid/ask and their sizes, from the depth the quote already carries.
+
+    Recorded from 2026-08-28 so trade direction can be inferred later: with a
+    last traded price and the quote it printed against, volume can be classified
+    buyer- or seller-initiated (the quote rule). Without it there is no aggressor
+    anywhere in this repo's data, and Kite exposes no per-trade side at all.
+
+    Free in API terms — ``fetch_quote_batch`` has been returning this depth on
+    every leg every minute all along, and ``_mid_or_last`` read the top of it for
+    the IV mid and then discarded it.
+    """
+    depth = quote.get("depth") or {}
+    buy = (depth.get("buy") or [{}])[0]
+    sell = (depth.get("sell") or [{}])[0]
+
+    def _f(value: Any) -> float | None:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        return out if out > 0 else None
+
+    return {
+        "bid": _f(buy.get("price")),
+        "ask": _f(sell.get("price")),
+        "bid_qty": _f(buy.get("quantity")),
+        "ask_qty": _f(sell.get("quantity")),
+    }
+
+
 def _mid_or_last(quote: dict[str, Any]) -> float | None:
     """Prefer the bid/ask midpoint; fall back to last traded price.
 
@@ -194,11 +233,20 @@ def build_snapshot(
                 "expiry": leg["expiry"],
                 "strike": leg["strike"],
                 "option_type": leg["option_type"],
+                # NOTE: `ltp` is the bid/ask MID wherever depth is two-sided
+                # (see _mid_or_last) — it has never been the last traded price,
+                # despite the name. Kept as-is because 15 days of archive are
+                # written against that meaning and renaming would silently
+                # change what every historical read returns. `last_price` below
+                # is the real thing, added 2026-08-28, and is what a quote rule
+                # must classify against: a mid never trades.
                 "ltp": price,
+                "last_price": _num_or_none(quote.get("last_price")),
                 "oi": quote.get("oi"),
                 "volume": quote.get("volume") or quote.get("volume_traded"),
                 "iv": iv,
                 "delta": delta,
+                **_top_of_book(quote),
             }
         )
     return {

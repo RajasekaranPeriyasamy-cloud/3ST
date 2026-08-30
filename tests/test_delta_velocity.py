@@ -806,3 +806,55 @@ def test_prune_failure_does_not_kill_the_sampler(prune_env, monkeypatch):
     assert len(store.sessions_available("NIFTY")) == len(ages)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Top-of-book recording (added 2026-08-28 for later trade-direction inference)
+# ---------------------------------------------------------------------------
+
+
+def test_top_of_book_reads_the_depth_the_quote_already_carries():
+    from analysis.delta_velocity import collector
+
+    quote = {
+        "depth": {
+            "buy": [{"price": 10.5, "quantity": 300}, {"price": 10.4, "quantity": 1}],
+            "sell": [{"price": 10.7, "quantity": 450}],
+        }
+    }
+    assert collector._top_of_book(quote) == {
+        "bid": 10.5, "ask": 10.7, "bid_qty": 300.0, "ask_qty": 450.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "depth",
+    [
+        {},
+        {"buy": [], "sell": []},
+        {"buy": [{"price": 0, "quantity": 0}], "sell": [{"price": 0}]},
+        {"buy": [{"price": None}], "sell": [{"price": "x"}]},
+    ],
+)
+def test_top_of_book_is_none_not_zero_when_there_is_no_book(depth):
+    """A strike with no depth has an UNKNOWN bid, not a bid of zero — zero would
+    classify every trade as buyer-initiated once a quote rule reads it."""
+    from analysis.delta_velocity import collector
+
+    assert collector._top_of_book({"depth": depth}) == {
+        "bid": None, "ask": None, "bid_qty": None, "ask_qty": None,
+    }
+
+
+def test_archived_ltp_is_the_mid_and_last_price_is_separate():
+    """`ltp` has always been the bid/ask mid where depth is two-sided, despite
+    the name. A quote rule must classify against the price that actually
+    traded — a mid never does — so both are recorded."""
+    from analysis.delta_velocity import collector
+
+    quote = {
+        "depth": {"buy": [{"price": 10.0}], "sell": [{"price": 11.0}]},
+        "last_price": 11.0,
+    }
+    assert collector._mid_or_last(quote) == 10.5      # what lands in `ltp`
+    assert collector._num_or_none(quote["last_price"]) == 11.0
