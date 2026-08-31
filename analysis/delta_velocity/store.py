@@ -116,6 +116,20 @@ def to_rows(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     # surfaced here; PCR and the OI tiles read them.
                     "oi": leg.get("oi"),
                     "volume": leg.get("volume"),
+                    # Top of book, archived from 2026-08-30. This function is an
+                    # explicit allow-list, so a field added to the collector is
+                    # invisible to every consumer until it is named here too —
+                    # which is exactly how the quote rule came to report 100%
+                    # unclassified on a session whose archive held a bid on
+                    # 22,198 of 22,200 legs.
+                    "bid": leg.get("bid"),
+                    "ask": leg.get("ask"),
+                    "bid_qty": leg.get("bid_qty"),
+                    "ask_qty": leg.get("ask_qty"),
+                    # NB `ltp` above is the bid/ask MID (see collector); this is
+                    # the price that actually traded, and the only one a trade
+                    # classifier may use.
+                    "last_price": leg.get("last_price"),
                     "spot": snap.get("spot"),
                 }
             )

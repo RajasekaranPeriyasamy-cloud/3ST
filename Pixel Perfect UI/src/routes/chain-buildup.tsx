@@ -1005,8 +1005,9 @@ function ChainBuildupPage() {
       {flow?.available ? (
         <div className="text-[11px] text-muted-foreground">
           Flow strip: front-month future volume, {flow.coverage}/{flow.buckets} buckets ·{" "}
-          {compact(flow.total_volume)} total. Volume only — buy/sell delta needs an
-          aggressor no feed here provides yet.
+          {compact(flow.total_volume)} total. Volume only: the strike ladder classifies
+          direction from its archived book, but these are Kite OHLCV candles for the
+          future, which carry no bid/ask to classify against.
         </div>
       ) : null}
 

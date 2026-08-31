@@ -17,17 +17,24 @@ call, so it lives behind its own endpoint on the same principle as
 ``levels.py``: the grid stays a pure archive read, and a futures-feed problem
 greys one strip instead of blanking the ladder.
 
-Delta is deliberately absent
-----------------------------
-Buy-minus-sell volume needs an aggressor, and nothing in this repo's data has
-one yet: Kite exposes no per-trade side, and the bid/ask needed to infer it only
-started being archived on 2026-08-28 (``delta_velocity.collector._top_of_book``).
+Delta is absent HERE, and only here
+-----------------------------------
+The strike ladder does classify direction: it has an archived book per leg per
+minute, and on 2026-08-31 the quote rule left only 0.2% of volume unattributed.
+This strip cannot, for a different reason — it is built from Kite OHLCV candles
+for the future, which carry no bid or ask to classify against. Same desk, same
+session, two different data shapes.
+
 A "delta" derived from where a bar closed in its range — the geometric estimator
-in ``vendor/volume_footprint/engines.py`` — is available today and is NOT used
-here, because its own docstring is the reason: it "cannot know that price ran up
-and got sold back into". A wrong delta on a trading screen is worse than no
-delta. Volume is a measurement; that ships now, and delta follows when it can be
-one too.
+in ``vendor/volume_footprint/engines.py`` — would work on exactly this data and
+is deliberately NOT used, because its own docstring is the reason: it "cannot
+know that price ran up and got sold back into". Volume here is a measurement;
+a geometric delta would be a guess sitting next to a measured one, which is the
+worst possible pairing on one screen.
+
+Giving this strip a real delta means archiving the future's top of book the way
+``delta_velocity.collector`` archives the options' — a collector change, not a
+change here.
 """
 
 from __future__ import annotations

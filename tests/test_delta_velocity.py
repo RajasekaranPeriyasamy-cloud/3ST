@@ -858,3 +858,55 @@ def test_archived_ltp_is_the_mid_and_last_price_is_separate():
     }
     assert collector._mid_or_last(quote) == 10.5      # what lands in `ltp`
     assert collector._num_or_none(quote["last_price"]) == 11.0
+
+
+# ---------------------------------------------------------------------------
+# to_rows is an allow-list, and that is a trap
+# ---------------------------------------------------------------------------
+
+
+def test_to_rows_carries_every_field_the_collector_writes():
+    """``to_rows`` names its fields explicitly, so anything added to the
+    collector is invisible to every consumer until it is named here too.
+
+    That is not hypothetical: bid/ask/last_price were archived correctly from
+    2026-08-30 and dropped here, so the quote rule reported 100% unclassified on
+    a session whose archive held a bid on 22,198 of 22,200 legs. The data was
+    fine; the reader threw it away. This test compares the two ends rather than
+    listing today's fields, so the next addition fails here instead of silently
+    returning nothing.
+    """
+    leg = {
+        "tradingsymbol": "NIFTY2690124000CE",
+        "expiry": "2026-09-01",
+        "strike": 24000.0,
+        "option_type": "CE",
+        "ltp": 10.6,
+        "last_price": 10.7,
+        "oi": 5_000_000,
+        "volume": 1_234_000,
+        "iv": 0.12,
+        "delta": 0.51,
+        "bid": 10.5,
+        "ask": 10.7,
+        "bid_qty": 300.0,
+        "ask_qty": 450.0,
+    }
+    snapshot = {
+        "ts": "2026-08-31T09:16:00+05:30",
+        "session_date": "2026-08-31",
+        "underlying": "NIFTY",
+        "spot": 24010.0,
+        "legs": [leg],
+    }
+
+    row = store.to_rows([snapshot])[0]
+
+    # `tradingsymbol` is deliberately not carried: rows are keyed by
+    # (expiry, strike, option_type) and the symbol adds nothing to that.
+    dropped = {k for k in leg if k not in row} - {"tradingsymbol"}
+    assert not dropped, f"to_rows silently drops {sorted(dropped)} — add them to its field list"
+
+    assert row["bid"] == 10.5 and row["ask"] == 10.7
+    assert row["last_price"] == 10.7
+    assert row["ltp"] == 10.6  # the mid, and NOT the same number
