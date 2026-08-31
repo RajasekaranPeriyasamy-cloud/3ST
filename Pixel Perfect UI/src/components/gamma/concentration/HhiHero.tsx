@@ -195,17 +195,21 @@ export function HhiHero({
             value={fmt(snap.spot, 0)}
             hint={[dteLabel(snap.dte), formatDayMon(snap.expiry)].filter(Boolean).join(" · ")}
           />
+          {/* The γ peaks used to sit here. They are on the regime panel's σ ladder
+              with their distance from spot, which is the part that decides whether
+              a peak is reachable — a bare strike number here could not say that. */}
           <Tile
-            label="+γ peak"
-            value={fmt(conc?.pos_gamma_peak_strike)}
-            hint="most dealer long gamma"
-            color={POS_GAMMA}
+            label="Gini"
+            value={conc?.gini != null ? conc.gini.toFixed(3) : "—"}
+            hint={
+              conc?.gini != null ? "inequality, not concentration" : "needs a full strike window"
+            }
           />
           <Tile
-            label="−γ peak"
-            value={fmt(conc?.neg_gamma_peak_strike)}
-            hint="most dealer short gamma"
-            color={NEG_GAMMA}
+            label="Shape"
+            value={conc?.shape_quadrant ?? "—"}
+            hint={conc?.shape_quadrant ? "Ávila quadrant · HHI × Gini" : undefined}
+            valueClass="text-lg font-semibold"
           />
           <Tile
             label="5-session mean"

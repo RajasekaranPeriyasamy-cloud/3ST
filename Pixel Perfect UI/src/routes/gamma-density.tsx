@@ -129,35 +129,6 @@ function gexCrore(v: number | null | undefined): string {
   return (v / 1e7).toFixed(2);
 }
 
-/**
- * Lead with `pin_source`, because the tile's number alone is ambiguous.
- *
- * `pin_strike` is picked by three different rules and only `dominant` is a real
- * gamma pin. The `atm` fallback sits next to spot by construction, so the old
- * hint reported it as "stable" precisely when no pin existed — a false positive
- * on the tab that stays open all session. Stability is only claimed for a pin
- * that is actually a pin; otherwise the tile says what it really is.
- */
-function pinCandidateHint(snapshot: GammaSnapshot): string {
-  const conc = snapshot.concentration;
-  if (conc?.pin_strike == null) return "no pin";
-
-  const source = conc.pin_source;
-  if (source === "atm") return "ATM placeholder — not a gamma pin";
-  if (source === "wall_mid") return "wall midpoint — inferred, not a gamma pin";
-
-  const share =
-    conc.pin_share != null ? `${(conc.pin_share * 100).toFixed(0)}%` : "—";
-  const held = snapshot.pin_lock?.gates?.passed;
-  const prefix = source === "dominant" ? "gamma pin" : "pin";
-  if (held === true) return `${prefix} · pinned · share ${share}`;
-  if (held === false) return `${prefix} · not pinned · share ${share}`;
-  if (conc.pin_stable === true) return `${prefix} · stable · share ${share}`;
-  if (conc.pin_stable === false)
-    return `${prefix} · moving · ${conc.pin_stability_pct ?? "—"}% stable`;
-  return `${prefix} · share ${share}`;
-}
-
 const MOMENTUM_COMPONENT_LABELS: { key: keyof GammaMomentum["components"]; label: string }[] = [
   { key: "gex", label: "GEX" },
   { key: "squeeze", label: "Squeeze" },
@@ -837,78 +808,10 @@ function GammaDensityPage() {
             />
           </div>
 
-          <div className="gd-stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard
-              label="HHI Concentration"
-              value={
-                snapshot.concentration?.hhi != null
-                  ? snapshot.concentration.hhi.toFixed(2)
-                  : "—"
-              }
-              hint={
-                snapshot.concentration?.band
-                  ? `${
-                      snapshot.concentration.band === "mixed"
-                        ? "balanced"
-                        : snapshot.concentration.band === "diffuse"
-                          ? "dispersed"
-                          : "concentrated"
-                    } · top1 ${
-                      snapshot.concentration.top1_share != null
-                        ? `${(snapshot.concentration.top1_share * 100).toFixed(0)}%`
-                        : "—"
-                    }`
-                  : "same GEX, different shape"
-              }
-              tone={
-                snapshot.concentration?.band === "concentrated"
-                  ? "pos"
-                  : snapshot.concentration?.band === "diffuse"
-                    ? "neg"
-                    : "muted"
-              }
-            />
-            <StatCard
-              label="Conviction"
-              value={
-                snapshot.conviction?.score != null ? String(snapshot.conviction.score) : "—"
-              }
-              hint={
-                snapshot.conviction
-                  ? `${snapshot.conviction.direction}${
-                      snapshot.conviction.delta != null
-                        ? ` · Δ ${snapshot.conviction.delta > 0 ? "+" : ""}${snapshot.conviction.delta}`
-                        : ""
-                    }`
-                  : undefined
-              }
-              tone={
-                snapshot.conviction?.direction === "rising"
-                  ? "pos"
-                  : snapshot.conviction?.direction === "falling"
-                    ? "neg"
-                    : "muted"
-              }
-            />
-            <StatCard
-              label="Pin Candidate"
-              value={fmt(snapshot.concentration?.pin_strike)}
-              hint={pinCandidateHint(snapshot)}
-              tone="muted"
-            />
-            <StatCard
-              label="Dominant Strike"
-              value={fmt(snapshot.concentration?.dominant_strike)}
-              hint={
-                snapshot.concentration?.dominant_share != null
-                  ? `${(snapshot.concentration.dominant_share * 100).toFixed(0)}% of |GEX| · eff ${
-                      snapshot.concentration.effective_strikes ?? "—"
-                    }`
-                  : undefined
-              }
-              tone="muted"
-            />
-          </div>
+          {/* HHI / Conviction / Pin / Dominant used to sit here. They are all read
+              better on the Concentration tab (HHI hero, Pin strength, Expiry magnet),
+              and the legacy `conviction` score collided by name with the expiry
+              magnet's — two different numbers under one label on one page. */}
 
           <Card>
             <CardHeader className="py-3">
@@ -996,7 +899,9 @@ function GammaDensityPage() {
                 <p className="text-muted-foreground">{snapshot.market_read.vol_line}</p>
                 <p className="text-muted-foreground">{snapshot.market_read.shape_line}</p>
                 <p className="text-muted-foreground">{snapshot.market_read.change_line}</p>
-                <p className="text-muted-foreground">{snapshot.market_read.levels_line}</p>
+                {/* `levels_line` stays on the payload but is not drawn here — it
+                    restates Dominant / Pin / Walls from the Key Levels badges and
+                    the closes from Reference levels, both directly above. */}
               </CardContent>
             </Card>
           ) : null}

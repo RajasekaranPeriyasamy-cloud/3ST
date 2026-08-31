@@ -1453,10 +1453,12 @@ def build_gamma_market_read(
     pin_stable = concentration.get("pin_stable")
     pos = gamma_regime == "positive"
 
-    regime_line = (
-        f"{'Positive' if pos else 'Negative'} gamma · {band} dealer positioning"
-        + (f" · conviction {conviction.get('score')}" if conviction.get("score") is not None else "")
-    )
+    # `conviction` is still accepted (callers and tests pass it) but no longer
+    # printed: this is the legacy `compute_gamma_conviction` score, and the page
+    # also carries the expiry magnet's own conviction. Two different numbers under
+    # one word on one screen is worse than showing neither — the magnet's version
+    # ships its inputs and weights, so it is the one that stays.
+    regime_line = f"{'Positive' if pos else 'Negative'} gamma · {band} dealer positioning"
 
     if pos and band == "concentrated":
         vol_line = "Volatility likely suppressed — dealers hedge against moves near the pin"
