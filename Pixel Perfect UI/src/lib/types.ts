@@ -3706,3 +3706,76 @@ export interface BuildupFlow {
   total_volume: number | null;
   points: BuildupFlowPoint[];
 }
+
+// --- Straddle Watch (/straddle-watch/*) -------------------------------------
+//
+// Derived from what `options/straddle_watch.build_straddle_watch_snapshot`
+// actually returns, not from what the page happens to read. These were imported
+// by StraddleWatchChart.tsx and straddle-watch.tsx and exported by nothing —
+// three type errors that `vite build` never surfaced, because it does not
+// typecheck.
+
+export type StraddleWatchRange = "1D" | "5D" | "30D";
+
+export interface StraddleWatchLeg {
+  tradingsymbol: string;
+  exchange: string;
+  instrument_token: number;
+  ltp: number | null;
+}
+
+/** Flattened from three builders: _fut_quote_summary, _spot_fair_summary, and
+ *  the pricing block. Every field is nullable because each can independently
+ *  fail to resolve — a missing future quote does not blank the IV. */
+export interface StraddleWatchSummary {
+  fut_symbol: string | null;
+  fut_tradingsymbol: string | null;
+  fut_ltp: number | null;
+  fut_chg: number | null;
+  fut_chg_pct: number | null;
+  fut_token: number | null;
+  fut_expiry: string | null;
+  asof: string | null;
+  fair_price: number | null;
+  fair_chg: number | null;
+  fair_chg_pct: number | null;
+  lot_size: number | null;
+  iv: number | null;
+  ivr: number | null;
+  ivp: number | null;
+  max_pain: number | null;
+  pcr: number | null;
+  straddle_ltp: number | null;
+  straddle_bs: number | null;
+  spot: number | null;
+}
+
+/** Parallel arrays on one time axis — `t[i]` indexes every other series. Entries
+ *  are nullable rather than gap-free: a bar the feed did not carry is a hole,
+ *  and the chart must draw a break there rather than joining across it. */
+export interface StraddleWatchSeries {
+  t: string[];
+  call_price: (number | null)[];
+  put_price: (number | null)[];
+  straddle_price: (number | null)[];
+  straddle_vwap: (number | null)[];
+  call_oi: (number | null)[];
+  put_oi: (number | null)[];
+  iv: (number | null)[];
+}
+
+export interface StraddleWatchSnapshot {
+  ok: boolean;
+  mode: string;
+  underlying: string;
+  expiry: string;
+  call_strike: number;
+  put_strike: number;
+  atm_strike: number;
+  range: StraddleWatchRange;
+  ce: StraddleWatchLeg;
+  pe: StraddleWatchLeg;
+  summary: StraddleWatchSummary;
+  series: StraddleWatchSeries;
+  updated_at: string;
+}
