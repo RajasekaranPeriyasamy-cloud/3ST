@@ -2,11 +2,124 @@
 
 **Last updated:** 2026-08-31  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Gamma levels and order flow on the Chain Build-Up ladder
+**Session focus:** Verified health check, 1m/3m timeframes, virtualised wing columns
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-31 (later) — health that means something, 1m/3m, virtualised wings
+
+Three pieces, and each one's most useful output was a bug it exposed rather than
+the feature itself.
+
+### /health now verifies the token, not the file
+
+`kite_authenticated` read a session *file*. On 2026-08-30 it reported true while
+every Kite read failed with ``Incorrect `api_key` or `access_token` `` — the one
+flag anyone checks on a quiet morning, saying the opposite of the truth. This
+closes the open item recorded in the previous entry.
+
+`kite_auth.token_probe()` does the live check with `profile()`, the cheapest
+authenticated read Kite offers, which needs no instrument tokens and so cannot
+fail for a reason unrelated to auth. Four states rather than a boolean:
+
+| state | meaning |
+| --- | --- |
+| `no_session` | nothing stored |
+| `valid` | a read succeeded just now |
+| `invalid` | Kite rejected the token — log in again |
+| `unreachable` | the call failed for a reason that is NOT authentication |
+
+`unreachable` is the one that earns its keep. Collapsing it into `invalid` would
+tell an operator to re-login when the real problem is DNS, and send them to fix
+the wrong thing on a trading morning. So `kite_authenticated` goes false **only**
+on `invalid`; an unreachable probe leaves it at the stored value and reports
+itself in the new `kite_token` block.
+
+Cached 60s — /health is polled continuously and the answer changes about once a
+day (tokens expire ~06:00 IST), so a call per poll would burn rate limit to
+re-learn a known fact. Verified live: three consecutive /health calls share one
+`checked_at`.
+
+**`session_status()` is deliberately untouched.** It answers the cheaper question
+— is there a session file — and is called from `ltp_cache`, `execution_queue` and
+`live_workflow`. Giving it a network call would put Kite latency on the order
+path to answer a health question.
+
+**The mistake worth recording:** the probe first called
+`kite_auth.read_only_kite_client()` directly, which the offline guard does not
+cover, so I widened the guard to include it. That broke the six tests in
+`test_kite_client_cache.py` that exist to verify that accessor's memoisation. The
+failure was the right signal: *constructing* a client is harmless, *issuing a
+request* is not, and the guard is correctly placed at the latter. Routing the
+probe through `kite_client.kite_read_client` instead means it is blocked in tests
+for free, with no guard change at all.
+
+### 1m and 3m timeframes
+
+Both are native Kite candle intervals, so the widening path and futures strip
+need no client-side rollup. Thresholds measured rather than guessed: refitting
+over 48 session-files puts p95 at **3.73%** (1m) and **6.54%** (3m), and the
+fixed constants sit slightly tighter at 3.5 and 6.5, matching how the existing
+ones are set. Measured breach rates land at 5.4% and 5.0% against a 5% target —
+better calibrated than the coarser timeframes. A test now asserts a timeframe
+appears in **both** `PCT_THRESHOLDS` and `BASE_P95`, because one the fitted table
+misses silently degrades to `fixed`: honest, but not what "we support 1m" should
+mean.
+
+**The convention 1m makes visible.** The 09:15:00 open snapshot shares a bucket
+with 09:16:00, because 09:16 closes the 09:15-09:16 window — so twelve
+minute-samples give **eleven** 1m buckets, not twelve. I read it as an off-by-one
+first. It is the same half-open rule every timeframe uses, only noticeable when a
+bucket is one minute wide, and it is now pinned by a test that says so.
+
+### Virtualised wing columns
+
+Only the columns in view enter the DOM; the table keeps its declared width and
+the rest are leading/trailing spacer cells, so scrollbar geometry, sync-scroll
+and jump-to-latest are unchanged. Measured at 1m on a 213-column session:
+
+| | before | after |
+| --- | --- | --- |
+| columns rendered | 172 | 14 |
+| wing cells | 7,224 | 546 |
+| DOM nodes | 16,984 | 1,716 |
+| sort re-render | ~1000ms | 241ms |
+
+Six columns of overscan, windows computed per wing from its own scrollLeft and
+clientWidth, and the window state written only when the slice actually changes —
+scroll fires continuously, and re-rendering per event is the cost this removes.
+
+**The bug it exposed matters more than the speed.** Jump-to-latest depended on
+`buckets.length`, and a session grows a bucket every interval — at 1m, every
+minute. So each 60-second poll dragged the scroll back to the right edge and
+threw away wherever the operator was looking. Anchoring belongs to "which grid am
+I looking at", so it keys on underlying/session/timeframe/expiry now; an appended
+bucket is not a new view. That would have made 1m unusable however fast it
+rendered.
+
+### Verification honesty
+
+The DOM counts, timings and the window tracking scroll (scrollLeft 0 -> 09:16,
+mid -> 11:00, far -> 12:46, always 14 columns) are all measured.
+**Sync-scroll between the two wings is not.** The browser pane used to drive
+these checks reports `clientWidth: 0`, so nothing layout-dependent can be trusted
+in it — which is also why three earlier attempts to test scrolling produced a
+frozen window and sent me chasing a phantom bug. The sync logic is untouched by
+the virtualisation, but untouched is not tested. Worth a look on a real screen
+with 1m open and "Sync scroll" ticked.
+
+### Open
+
+- Sync-scroll unverified, as above.
+- Delta on the **futures strip** still needs the future's top of book archived
+  the way the option legs' now is — a collector change.
+- `StraddleWatchSnapshot` / `StraddleWatchRange` are imported by
+  `StraddleWatchChart.tsx` and `straddle-watch.tsx` and exported by nothing.
+  Pre-existing, and `vite build` will not catch it because it does not typecheck.
 
 ---
 
