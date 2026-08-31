@@ -50,7 +50,9 @@ from utils.logging import get_logger, log_event
 IST = ZoneInfo("Asia/Kolkata")
 logger = get_logger("chain_buildup.flow")
 
-_TIMEFRAME_KEY = {5: "5min", 15: "15min", 30: "30min", 60: "60min"}
+#: Every one of these is a native Kite candle interval (config.KITE_INTERVALS),
+#: so no client-side rollup is needed to line the strip up with the ladder.
+_TIMEFRAME_KEY = {1: "1min", 3: "3min", 5: "5min", 15: "15min", 30: "30min", 60: "60min"}
 
 _CACHE_LOCK = threading.RLock()
 #: ``(underlying, timeframe_min, session) -> list[bar dict]``

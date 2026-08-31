@@ -43,7 +43,7 @@ from analysis.chain_buildup import calibration
 #: Bucket sizes the desk offers. Each is also a native Kite candle interval
 #: (``config.KITE_INTERVALS``), so the historical widening path needs no
 #: client-side rollup to agree with the archive path.
-TIMEFRAMES_MIN: tuple[int, ...] = (5, 15, 30, 60)
+TIMEFRAMES_MIN: tuple[int, ...] = (1, 3, 5, 15, 30, 60)
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -60,7 +60,7 @@ LONG_UNWINDING = "long_unwinding"
 #: Per-bucket |delta-OI %| above which a cell counts as breached, by timeframe.
 #: Seeded from ``config.OI_TRACKER_DEFAULTS["pct_thresholds"]`` so the two desks
 #: speak the same language at 5/15/30m; 60m is this desk's own extrapolation.
-PCT_THRESHOLDS: dict[int, float] = {5: 8.0, 15: 15.0, 30: 25.0, 60: 35.0}
+PCT_THRESHOLDS: dict[int, float] = {1: 3.5, 3: 6.5, 5: 8.0, 15: 15.0, 30: 25.0, 60: 35.0}
 
 #: Cumulative |delta-OI %| against the baseline above which a *strike* counts as
 #: breached. Deliberately not the same number as the per-bucket threshold: a 25%

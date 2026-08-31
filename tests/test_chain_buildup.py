@@ -20,6 +20,7 @@ import pytest
 
 from analysis.chain_buildup import features, service
 from analysis.delta_velocity import store as dv_store
+from config import KITE_INTERVALS
 
 START = datetime(2026, 8, 27, 9, 15)
 
@@ -1044,3 +1045,61 @@ def test_flow_ignores_a_cumulative_volume_that_goes_backwards():
     cell = grid["rows"][0]["ce"]["cells"][1]
     assert cell["delta_vol"] == 0.0
     assert cell["d_volume"] == 0.0     # clamped, never a negative "traded volume"
+
+
+# ---------------------------------------------------------------------------
+# 1m / 3m timeframes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tf", [1, 3])
+def test_fine_timeframes_are_offered_and_fitted(tf):
+    """1m and 3m must be usable in BOTH threshold modes. A timeframe the fitted
+    table does not cover silently degrades to `fixed`, which is honest but not
+    what "we support 1m" should mean."""
+    assert tf in features.TIMEFRAMES_MIN
+    assert tf in features.PCT_THRESHOLDS
+    assert tf in features.calibration.BASE_P95
+
+
+@pytest.mark.parametrize("tf,expected", [(1, 11), (3, 4)])
+def test_fine_timeframes_bucket_at_their_own_resolution(tf, expected):
+    """12 minute-samples starting AT the open.
+
+    1m gives 11 buckets, not 12: the 09:15:00 sample and the 09:16:00 one share
+    the bucket that 09:16 closes. See the test below — that is the half-open
+    convention, not an off-by-one.
+    """
+    rows = _rows(list(range(1000, 1000 + 12)), ltp_by_minute=[10.0] * 12)
+    grid = features.build_grid(rows, timeframe_min=tf, atm=24000.0)
+    assert len(grid["buckets"]) == expected
+    assert grid["thresholds"]["pct"] == features.PCT_THRESHOLDS[tf]
+
+
+def test_the_open_snapshot_shares_the_first_one_minute_bucket():
+    """At 1m the session-open sample is not a bucket of its own.
+
+    09:16 closes the 09:15-09:16 window, and 09:15:00 falls inside it — so the
+    open snapshot and the first full minute land together, last value winning,
+    exactly as they would at any other timeframe. Worth pinning because at 1m it
+    is the one place the convention is visible: it looks like a lost
+    observation, and it is not.
+    """
+    rows = _rows([100, 250, 400], ltp_by_minute=[1.0, 2.0, 3.0])
+    grid = features.build_grid(
+        rows, timeframe_min=1, baselines={(24000.0, "CE"): 100.0}, atm=24000.0
+    )
+    cells = grid["rows"][0]["ce"]["cells"]
+    assert [b["key"] for b in grid["buckets"]] == ["09:16", "09:17"]
+    assert [c["oi"] for c in cells] == [250, 400]   # 100 merged into the first
+    assert [c["d_oi"] for c in cells] == [150, 150]
+
+
+@pytest.mark.parametrize("tf", [1, 3])
+def test_fine_timeframes_map_to_native_kite_intervals(tf):
+    """Both are real Kite candle intervals, so neither the widening path nor the
+    futures strip needs a client-side rollup to line up with the ladder."""
+    from analysis.chain_buildup import flow as cb_flow
+
+    assert cb_flow._TIMEFRAME_KEY[tf] in KITE_INTERVALS
+    assert service._timeframe_key(tf) in KITE_INTERVALS

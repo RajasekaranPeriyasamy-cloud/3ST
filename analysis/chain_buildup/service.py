@@ -248,7 +248,7 @@ def _session_open_baselines(
 
 
 def _timeframe_key(timeframe_min: int) -> str:
-    return {5: "5min", 15: "15min", 30: "30min", 60: "60min"}[timeframe_min]
+    return {1: "1min", 3: "3min", 5: "5min", 15: "15min", 30: "30min", 60: "60min"}[timeframe_min]
 
 
 def _candles_to_rows(

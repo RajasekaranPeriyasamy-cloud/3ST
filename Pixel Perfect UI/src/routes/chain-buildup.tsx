@@ -27,7 +27,7 @@ export const Route = createFileRoute("/chain-buildup")({
 });
 
 const UNDERLYINGS = ["NIFTY", "BANKNIFTY", "SENSEX"] as const;
-const TIMEFRAMES = [5, 15, 30, 60] as const;
+const TIMEFRAMES = [1, 3, 5, 15, 30, 60] as const;
 const RANGES: { value: string; label: string }[] = [
   { value: "atm5", label: "ATM ±5" },
   { value: "atm10", label: "ATM ±10" },
