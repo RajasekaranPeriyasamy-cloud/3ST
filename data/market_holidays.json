@@ -1,0 +1,26 @@
+{
+  "_readme": [
+    "Exchange holiday calendar for utils/market_calendar.py.",
+    "",
+    "Ships EMPTY on purpose. Holiday dates were not invented: a wrong date here",
+    "rejects a real trading session and loses that day's history permanently,",
+    "which is worse than the stale-row bug this file exists to help close.",
+    "",
+    "The weekend gate in utils/market_calendar.py needs no data and is already",
+    "complete — it closes the case actually observed (2026-08-22, a Saturday).",
+    "This file adds holiday coverage on top of that.",
+    "",
+    "To populate: copy the trading-holiday dates from the NSE/BSE annual circular",
+    "into 'holidays', add the year to 'coverage_years', and record the source.",
+    "Dates outside coverage_years fall back to weekend-only, reported as",
+    "'trading_unverified' rather than silently claimed as a trading day."
+  ],
+  "coverage_years": [],
+  "holidays": {
+    "NSE": [],
+    "BSE": [],
+    "MCX": []
+  },
+  "source": "",
+  "updated": ""
+}

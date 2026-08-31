@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from datetime import date, datetime, time
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 from config import DEFAULT_SESSION, INDEX_OPTIONS, MCX_SESSION, is_mcx_underlying
 from settings import data_dir
 from utils.atomic_json import atomic_write_json
+from utils.market_calendar import is_trading_day
 
 IST = ZoneInfo("Asia/Kolkata")
 HISTORY_FILE = data_dir() / "gamma_density_history.json"
@@ -183,11 +185,27 @@ def session_window(underlying: str) -> tuple[time, time]:
 
 
 def in_session(underlying: str, when: datetime | None = None) -> bool:
+    """True only inside the trading window **of a trading day**.
+
+    The calendar gate is not decoration. This function guards every write to
+    ``daily_hhi`` and ``daily_pin``, and it used to check time-of-day alone — so a
+    snapshot requested at 10:04 on a Saturday passed, and because the market was
+    shut Kite returned the previous session's last-traded quotes. The row recorded
+    Friday's book under Saturday's date (observed 2026-08-22: HHI 0.1029 against
+    Friday's 0.1034, in both buckets). A near-duplicate row is worse than a
+    missing one: it survives every sanity check and quietly biases the day-end
+    mean and percentile toward whatever the prior session happened to be.
+
+    ``analysis/delta_velocity/collector.py`` and ``analysis/iv_skew/runner.py``
+    already gated on weekday; this module was the outlier.
+    """
     now = when or datetime.now(tz=IST)
     if now.tzinfo is None:
         now = now.replace(tzinfo=IST)
     else:
         now = now.astimezone(IST)
+    if not is_trading_day(now.date(), "MCX" if is_mcx_underlying(underlying) else "NSE"):
+        return False
     start, end = session_window(underlying)
     t = now.timetz().replace(tzinfo=None)
     return start <= t <= end

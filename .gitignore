@@ -5,6 +5,7 @@ __pycache__/
 .streamlit/secrets.toml
 data/*
 !data/fpi_sectors_seed.json
+!data/market_holidays.json
 *.csv
 .venv/
 venv/
