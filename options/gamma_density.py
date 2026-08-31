@@ -2141,6 +2141,7 @@ def build_gamma_snapshot(
         daily_hhi_history=prior_daily_hhi or None,
         mass_basis=basis,
     )
+    hhi_stats_block: dict[str, Any] | None = None
     if include_history and concentration.get("hhi") is not None:
         try:
             from options.gamma_density_history import (
@@ -2183,6 +2184,27 @@ def build_gamma_snapshot(
                 if row.get("hhi") is not None
             ]
             concentration.update(_daily_hhi_stats(recent, hhi_now, basis=basis))
+
+            # Additive measurement-quality block. Computed here because this is
+            # the only scope where the basis-filtered day-end series exists.
+            # Pure functions, no I/O — and its own failure must not cost the
+            # caller the concentration stats above, hence the nested guard.
+            try:
+                from options.hhi_stats import build_hhi_stats
+
+                _sm = _strike_masses(strikes, basis)
+                hhi_stats_block = build_hhi_stats(
+                    underlying=underlying,
+                    concentration=concentration,
+                    strike_window=window,
+                    daily_series=daily_series,
+                    strikes=[k for k, _, _ in _sm],
+                    mass=[m for _, m, _ in _sm],
+                    legs_quoted=len(built_rows),
+                    legs_total=raw_total,
+                )
+            except Exception:
+                hhi_stats_block = None
         except Exception:
             pass
 
@@ -2620,6 +2642,9 @@ def build_gamma_snapshot(
         "gex_history_points": int(recording_meta.get("gex_history_points") or 0),
         "chain_legs_quoted": len(built_rows),
         "chain_legs_total": raw_total,
+        # Additive: measurement quality for the concentration index. None when
+        # history is off. Nothing downstream of the existing HHI fields reads it.
+        "hhi_stats": hhi_stats_block,
         "strike_window": window,
         "convexity_zones": convexity_zones,
         "strikes": strikes,
