@@ -3036,9 +3036,68 @@ export interface PricingDeskSnapshot {
   note?: string;
 }
 
+/** `bs` block of POST /pricing/calculate — `pricing.bs_engine.solve_iv_and_greeks`.
+ *
+ *  The four core greeks are always present: when no IV can be solved the engine
+ *  returns `{delta, gamma, theta, vega}` all null rather than omitting them. The
+ *  second-order greeks below it are NOT — that fallback branch drops them
+ *  entirely, which is why they are optional and the core four are not.
+ */
+export interface PricingBsResult {
+  option_type: "CE" | "PE";
+  spot: number;
+  strike: number;
+  tte_years: number;
+  risk_free_rate: number;
+  market_price: number | null;
+  /** Solved from `market_price`, in PERCENT. `iv_decimal` is the same number as a fraction. */
+  iv: number | null;
+  iv_decimal: number | null;
+  /** Percent. The vol fair value was priced at: the supplied model IV, else the solved one. */
+  model_iv: number | null;
+  bs_fair_value: number | null;
+  /** `market_price - bs_fair_value`, rupees. Null unless both exist. */
+  edge: number | null;
+  edge_pct: number | null;
+  rich_cheap: "rich" | "cheap" | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  vanna?: number | null;
+  rho?: number | null;
+  charm?: number | null;
+  vomma?: number | null;
+  zomma?: number | null;
+  speed?: number | null;
+  color?: number | null;
+}
+
+/** `heston` block — `pricing.heston_cos.heston_cos_price`.
+ *
+ *  Two shapes. On invalid inputs (spot/strike/tte <= 0) it returns only
+ *  `{price: null, error}`; everything else is absent, hence optional. The full
+ *  shape can still carry null prices when the expansion does not converge.
+ */
+export interface PricingHestonResult {
+  price: number | null;
+  /** Present only on the short shape above. */
+  error?: string;
+  model?: string;
+  option_type?: "CE" | "PE";
+  spot?: number;
+  strike?: number;
+  tte_years?: number;
+  call_price?: number | null;
+  put_price?: number | null;
+  params?: Record<string, number>;
+  n_terms?: number;
+}
+
 export interface PricingCalcResult {
-  bs: Record<string, number | string | null>;
-  heston?: Record<string, number | null> | null;
+  bs: PricingBsResult;
+  /** Null unless the request asked for it (`include_heston`). */
+  heston?: PricingHestonResult | null;
 }
 
 /** IV vs GARCH-forecast realized vol desk — GET /dashboard/iv-vs-garch/{config,data} */
