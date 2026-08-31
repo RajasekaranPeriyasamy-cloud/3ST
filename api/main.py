@@ -104,6 +104,7 @@ from kite_auth import (
     exchange_request_token,
     login_url,
     session_status,
+    token_probe,
 )
 from kite_client import (
     default_kite_date_range,
@@ -666,6 +667,19 @@ class EquityPinIn(BaseModel):
     exchange: str = "NSE"
 
 
+def _kite_authenticated_verified() -> bool:
+    """Stored session AND not known-rejected.
+
+    Kept separate from ``session_status`` on purpose: that function is a pure
+    file read called from order-adjacent hot paths (``ltp_cache``,
+    ``execution_queue``, ``live_workflow``), and giving it a network call would
+    put Kite latency on the order path to answer a health question.
+    """
+    if not session_status().get("authenticated", False):
+        return False
+    return token_probe().get("state") != "invalid"
+
+
 def _err(e: Exception, status: int = 400) -> HTTPException:
     return HTTPException(status_code=status, detail=friendly_kite_message(str(e)))
 
@@ -835,7 +849,17 @@ def health() -> dict[str, Any]:
         "uptime_sec": uptime,
         **cache_status(),
         "kite_configured": kite_ready(),
-        "kite_authenticated": session_status().get("authenticated", False),
+        # Verified, not merely stored. This used to report a session FILE, so on
+        # 2026-08-30 it said authenticated while every read failed with
+        # "Incorrect `api_key` or `access_token`" — the one flag an operator
+        # checks on a quiet morning, saying the opposite of the truth.
+        #
+        # Goes False only when Kite has actually REJECTED the token. A probe that
+        # could not reach Kite leaves this at the stored value and reports itself
+        # in `kite_token`: "log in again" is the wrong instruction when the
+        # network is down, and sends someone to fix the wrong thing.
+        "kite_authenticated": _kite_authenticated_verified(),
+        "kite_token": token_probe(),
         "kite_proxy_enabled": proxy_on,
         "kite_proxy_host": env("STATICIP_HOST") if proxy_on else None,
         "kite_allowed_egress_ip": allowed or None,
