@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ArrowLeft, Play, Power, RefreshCw, Save, ShieldOff, Square } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { LOT_SIZES } from "@/lib/instruments";
 import { pickNearestExpiry, prefetchOptionExpiries, useOptionExpiries } from "@/hooks/useOptionExpiries";
 import type {
   HealthResponse,
@@ -64,15 +65,6 @@ const UNDERLYING_OPTIONS: { value: RollingUnderlying; label: string }[] = [
   { value: "CRUDEOILM", label: "Crude Oil Mini" },
   { value: "NATURALGAS", label: "Natural Gas" },
 ];
-const LOT_SIZES: Record<RollingUnderlying, number> = {
-  NIFTY: 65,
-  BANKNIFTY: 30,
-  SENSEX: 20,
-  CRUDEOIL: 1,
-  CRUDEOILM: 1,
-  NATURALGAS: 1,
-};
-
 const MCX_UNDERLYINGS = new Set<RollingUnderlying>(["CRUDEOIL", "CRUDEOILM", "NATURALGAS"]);
 const MCX_SESSION_DEFAULTS = {
   session_start: "09:00",
