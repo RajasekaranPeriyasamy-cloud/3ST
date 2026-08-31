@@ -324,6 +324,51 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
   );
 }
 
+/** Columns rendered beyond the viewport on each side.
+ *
+ *  Enough that a fast scroll or a sync-scroll nudge from the other wing does not
+ *  expose blank space before the next frame, small enough that a 1m session
+ *  (~375 columns) still renders a few dozen cells per row instead of all of
+ *  them. Six was where blank edges stopped appearing while dragging the bar. */
+const OVERSCAN_COLS = 6;
+
+/** Which slice of the columns is worth putting in the DOM.
+ *
+ *  At 5m a session is ~75 columns and rendering all of them is free. At 1m it is
+ *  ~375, and with two wings and 21 strikes that was ~17k DOM nodes and about a
+ *  second per re-render — every sort, every metric change. The table keeps its
+ *  full width so the scrollbar, the sync-scroll and the "open on the latest
+ *  column" jump all behave exactly as before; only the cells between the
+ *  spacers actually exist. */
+function useColumnWindow(
+  scrollRef: React.RefObject<HTMLDivElement | null>,
+  total: number,
+): { start: number; end: number; measure: () => void } {
+  const [win, setWin] = useState({ start: 0, end: Math.min(total, 60) });
+
+  const measure = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const first = Math.max(0, Math.floor(el.scrollLeft / COL_W) - OVERSCAN_COLS);
+    const span = Math.ceil(el.clientWidth / COL_W) + OVERSCAN_COLS * 2;
+    const next = { start: first, end: Math.min(total, first + span) };
+    // Skip the state write when nothing moved: scroll fires continuously, and
+    // re-rendering the wing on every event is the cost this exists to avoid.
+    setWin((prev) => (prev.start === next.start && prev.end === next.end ? prev : next));
+  }, [scrollRef, total]);
+
+  useEffect(() => {
+    measure();
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure, total]);
+
+  return { start: win.start, end: win.end, measure };
+}
+
 function Wing({
   side,
   rows,
@@ -347,15 +392,29 @@ function Wing({
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onScroll: () => void;
 }) {
+  const { start, end, measure } = useColumnWindow(scrollRef, buckets.length);
+  const shown = buckets.slice(start, end);
+  // Spacer widths stand in for the columns that are not in the DOM, so the
+  // table's internal geometry matches its declared width and the rendered
+  // columns land exactly where unvirtualised ones would.
+  const padLeft = start * COL_W;
+  const padRight = Math.max(0, (buckets.length - end) * COL_W);
+
+  const handleScroll = () => {
+    measure();
+    onScroll();
+  };
+
   return (
-    <div ref={scrollRef} onScroll={onScroll} className="min-w-0 flex-1 overflow-x-auto">
+    <div ref={scrollRef} onScroll={handleScroll} className="min-w-0 flex-1 overflow-x-auto">
       <table
         className="border-separate border-spacing-0"
         style={{ width: buckets.length * COL_W }}
       >
         <thead>
           <tr>
-            {buckets.map((b) => (
+            {padLeft > 0 ? <th style={{ width: padLeft, height: HEAD_H }} /> : null}
+            {shown.map((b) => (
               <th
                 key={b.key}
                 style={{ width: COL_W, height: HEAD_H }}
@@ -364,12 +423,17 @@ function Wing({
                 {b.key}
               </th>
             ))}
+            {padRight > 0 ? <th style={{ width: padRight, height: HEAD_H }} /> : null}
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.strike}>
-              {buckets.map((b, i) => {
+              {padLeft > 0 ? <td style={{ width: padLeft }} /> : null}
+              {shown.map((b, local) => {
+                // Absolute index: cells, level marks and the flow strip are all
+                // keyed by position in the session, not position in the window.
+                const i = start + local;
                 const cell = row[side].cells[i];
                 const value = metricValue(cell, metric);
                 const signedMetric = SIGNED_METRICS.includes(metric);
@@ -431,6 +495,7 @@ function Wing({
                   </td>
                 );
               })}
+              {padRight > 0 ? <td style={{ width: padRight }} /> : null}
             </tr>
           ))}
         </tbody>
@@ -440,8 +505,9 @@ function Wing({
         {flow ? (
           <tfoot>
             <tr>
-              {buckets.map((b, i) => {
-                const pt = flow.points[i];
+              {padLeft > 0 ? <td style={{ width: padLeft }} /> : null}
+              {shown.map((b, local) => {
+                const pt = flow.points[start + local];
                 const v = pt?.volume ?? null;
                 const ceiling = flow.max_volume ?? 0;
                 const h = v != null && ceiling > 0 ? Math.max(1, (v / ceiling) * 22) : 0;
@@ -465,6 +531,7 @@ function Wing({
                   </td>
                 );
               })}
+              {padRight > 0 ? <td style={{ width: padRight }} /> : null}
             </tr>
           </tfoot>
         ) : null}
@@ -502,6 +569,7 @@ function ChainBuildupPage() {
   const peRef = useRef<HTMLDivElement>(null);
   const syncing = useRef(false);
   const lastAlertRef = useRef<{ ce: number; pe: number }>({ ce: 0, pe: 0 });
+  const anchoredView = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -612,15 +680,23 @@ function ChainBuildupPage() {
       .catch(() => setExpiries([]));
   }, [underlying, sessionDate]);
 
-  // Open on the latest columns: the live end of the session is what you want to
-  // see first, and at 5-minute buckets the grid is ~75 columns wide per wing.
+  // Open on the latest columns — once per view, not once per bucket.
+  //
+  // This used to depend on buckets.length, which grows every time the session
+  // does: at 1m that is every single minute, so each poll dragged the scroll
+  // back to the right edge and threw away wherever the operator was looking.
+  // Anchoring is a property of "which grid am I looking at", so it keys on the
+  // view and a newly appended bucket is not a new view.
   useEffect(() => {
     if (!grid) return;
+    const view = `${grid.underlying}|${grid.session_date}|${grid.timeframe_min}|${grid.expiry}`;
+    if (anchoredView.current === view) return;
+    anchoredView.current = view;
     for (const ref of [ceRef, peRef]) {
       const el = ref.current;
       if (el) el.scrollLeft = el.scrollWidth;
     }
-  }, [grid?.buckets.length, grid?.underlying, grid?.timeframe_min]);
+  }, [grid]);
 
   // Breach alert, mirroring the OI Tracker desk: fire when most of the newest
   // bucket breached. Gated on meta.is_live -- the grid renders any archived
