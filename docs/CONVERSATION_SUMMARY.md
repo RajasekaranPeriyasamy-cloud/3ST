@@ -1,12 +1,164 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-27  
+**Last updated:** 2026-08-31  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Test isolation — the unit suite was writing into the live `data/` directory
+**Session focus:** Gamma levels and order flow on the Chain Build-Up ladder
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-28 to 08-31 — gamma levels and order flow on the Build-Up ladder
+
+Two features on `/chain-buildup`, both built in phases so the forward-only parts
+landed before the parts that consume them. Ends with the one measurement that
+closes a question Phase C had left open by construction.
+
+### Gamma levels on the strike ladder
+
+Call wall, put wall, pin, gamma flip and futures POC, behind `/buildup/levels` and
+`analysis/chain_buildup/levels.py`. Four of the five already existed in
+`volume_profile.service.gamma_levels`; the work was in what could honestly be
+shown *when*.
+
+**Separate endpoint, not a grid field.** The grid is a pure archive read; levels
+reach `build_gamma_snapshot` -> `oi_movers` -> Kite historical, the path that once
+cost 80 seconds on a page load. Kept apart, a gamma outage greys one panel instead
+of blanking the ladder. It reuses `gamma_levels` for its shared 45-second cache and
+its `include_history=False`, so opening the page cannot append to the gamma trail
+or move a pin the sampler already recorded.
+
+**Strike levels land on a row; price levels do not.** Call wall, put wall and pin
+*are* strikes. Flip and POC are continuous prices falling between strikes, and
+snapping them to the nearest row would move them up to half a strike step and
+assert a precision they do not have. They carry the pair they sit between and draw
+as a rule.
+
+**An archived session never borrows today's numbers.** Walls had no history at all
+before this work; pin/flip come from `daily_pin` (2026-08-21 onward); POC from the
+tilt trail. Where a level cannot be resolved for the session asked for, it is
+omitted *with a reason the page names* — drawing today's call wall on a two-week-old
+ladder invites reading a level into a session that never had it.
+
+**A pin is often not a pin.** `pin_source` is frequently `wall_mid`, the midpoint of
+the two walls. The badge says "(derived)" rather than asserting a gamma pin the data
+does not support.
+
+**Phase 2, forward-only.** `append_history_point` now records `call_wall` /
+`put_wall`. Every other level on that tick had history; the walls alone were
+live-only, so no desk could draw them on a past day and no study could ask whether
+they held. BANKNIFTY added to `TILT_HISTORY_UNDERLYINGS` — the only cash index with
+no futures POC, a gap invisible until something asked for it.
+
+**Phase 3 — levels as of every bucket.** The ladder has a time axis, so levels are
+drawn as paths across it. Held forward between samples and never interpolated
+(averaging two flips gives a price the desk never published — the same reason a
+bucket's OI is its last value, not its mean), and held forward only
+`MAX_CARRY_MIN`: the trail samples every ~75s, so a wider gap is a gap in the
+*recording*, not a level sitting still. Coverage is reported per level, because
+"the wall did not move" and "the wall was never recorded" must not look alike.
+
+Bug found by checking a level that returned nothing rather than assuming it was
+absent from the data: the trail stores `pin_strike` and `flip_level` where the
+snapshot says `pin` and `flip`. Mapping one and assuming the other produced an
+empty flip track on a session whose trail carried all 300 of them. The mapping is
+an explicit dict now — the shape that cannot be half-done.
+
+### Order flow: volume, then delta
+
+**Volume was free.** The archive already stored cumulative day volume per leg
+(monotonic, 99.9% coverage, ~400 points/session), so a bucket's traded volume is a
+difference, and it telescopes exactly like delta-OI: measured on one ATM CE the
+per-bucket volumes sum to 300,214,135 against a final cumulative of 300,214,135.
+Volume gets its own colour scale — it is an order of magnitude larger than delta-OI
+on the same strike, and one shared ceiling would leave every OI cell white.
+
+**Phase B found data being thrown away.** `fetch_quote_batch` had been returning
+5-level depth on every leg every minute all along, and `_mid_or_last` read the top
+of it for an IV mid then discarded the rest. Now archived, at zero extra API cost.
+
+And the discovery that matters more than it looks: **the archived `ltp` has never
+been the last traded price.** `_mid_or_last` returns the bid/ask MID wherever depth
+is two-sided, which is most of the time. That is the better IV input and a
+defensible choice, but a trade classifier must work against a price that actually
+traded — a mid never does. `last_price` was added alongside rather than renaming
+`ltp`, because 15 days of archive are written against its current meaning and every
+historical read would have silently changed. It also means the four-quadrant
+classification's "delta-price" has always been delta-mid.
+
+**Phase C — quote rule with a tick-rule fallback.** Direction is decided per
+*minute* and only then summed: a bucket whose book flips mid-way must split, not be
+attributed to whichever side it closed on. Unclassified volume is a first-class
+output — `buy + sell + unclassified` always equals gross traded volume — because
+folding it into either side would make delta look better-founded than it is.
+
+### The measurement that closes Phase D
+
+`scripts/check_flow_classification.py` answers whether a once-a-minute book is
+enough to classify direction. On 2026-08-31 NIFTY:
+
+| bucket | traded | unclassified |
+| --- | --- | --- |
+| 09:00 | 1,203,231,965 | 0.3% |
+| 10:00 | 930,160,205 | 0.1% |
+| 11:00 | 536,963,635 | 0.2% |
+| overall | 2,670,355,805 | **0.2%** |
+
+Flat across moneyness: 0.3% / 0.1% / 0.1% for ATM+/-2, +/-3-5, +/-6+.
+
+**Minute snapshots are catching the market. Delta is usable, and Phase D — a tick
+collector — is not needed.** That was the open question and it is settled by
+measurement rather than assumption. The remaining caveat is structural and
+unchanged: a minute that traded both ways is attributed to whichever side it
+closed on.
+
+### The bug worth carrying forward
+
+Monday's page reported **100% of volume unclassified** while the archive held a bid
+on 22,198 of 22,200 legs. `store.to_rows` flattens snapshots through an explicit
+field list, and Phase B added bid/ask/last_price to the collector without naming
+them there. Every consumer reads through that function, so the quote rule genuinely
+saw no book and correctly said so.
+
+The uncomfortable part: the honest-unavailability banner — built precisely so a grid
+of zeros could not be mistaken for a balanced market — reported the truth about what
+it could see, and in doing so made a plumbing bug look like a data-availability
+fact. **A safeguard that accurately reports its own blindness can still hide the
+reason for it.**
+
+The regression test compares the collector's leg fields against `to_rows`' output
+rather than listing today's fields, so the next addition fails there instead of
+silently returning nothing. Listing them would have rebuilt the same trap a release
+later.
+
+### Two smaller ones
+
+- `/buildup/status` walks every archived session file — 2.4s in-process, **32s**
+  when the API is also sampling — and the page awaited it alongside the grid, so a
+  slow decorative call held the whole ladder blank. Widening `STRIKE_WIDTH` made
+  those files 2.3x bigger and pushed it over the edge. Status now loads
+  independently; it only feeds the session dropdown.
+- `flow.underlying_flow`'s failure path returned a different dict shape from its
+  success path, so a consumer reading `buckets` raised on a degraded feed. Found by
+  running it against an expired Kite token. Both shapes are identical now, with a
+  test pinning the parity.
+
+### Open
+
+- Delta on the **futures strip** still does not exist, and the reason is now
+  specific rather than general: that strip is built from Kite OHLCV candles, which
+  carry no bid/ask. Giving it a real delta means archiving the future's top of book
+  the way the option legs' now is — a collector change, not a change in `flow.py`.
+- `StraddleWatchSnapshot` and `StraddleWatchRange` are imported by
+  `StraddleWatchChart.tsx` and `straddle-watch.tsx` and exported by nothing. Three
+  type errors, pre-existing, and `vite build` will not catch them because it does
+  not typecheck.
+- `/health` reports `kite_authenticated: true` when a session *file* exists, not
+  when the token works. On 2026-08-30 it said authenticated while every read failed
+  with `Incorrect api_key or access_token`. Worth making that flag mean what it
+  says, since it is the first thing anyone checks on a quiet morning.
 
 ---
 
