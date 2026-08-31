@@ -1506,6 +1506,53 @@ export interface GammaReferenceLevels {
   prev_week_close?: number | null;
 }
 
+/** Additive measurement-quality block (options/hhi_stats.py). Never affects the
+ *  existing HHI fields — it says how much to believe them. */
+export interface HhiCohort {
+  n_total: number;
+  today_dte: number | null;
+  today_bucket: string | null;
+  eta_sq: number | null;
+  min_cohort_for_percentile: number;
+  mixed: { n: number; mean: number; percentile: number | null; vs_mean_pct?: number | null } | null;
+  cohort: {
+    bucket: string;
+    n: number;
+    mean: number;
+    vs_mean_pct: number | null;
+    percentile: number | null;
+  } | null;
+}
+
+export interface HhiContribution {
+  strike: number;
+  share: number;
+  share_sq: number;
+  pct_of_index: number;
+  cum_pct: number;
+  d_hhi: number;
+  rank: number;
+}
+
+export interface HhiStats {
+  n_strikes: number | null;
+  floor: number | null;
+  hhi: number | null;
+  hhi_norm: number | null;
+  se: number | null;
+  se_norm: number | null;
+  hill: { order: number | "inf"; n_eff: number | null }[] | null;
+  quality: {
+    dropped_share: number | null;
+    inflation: number | null;
+    legs_quoted: number | null;
+    legs_total: number | null;
+    legs_dropped_pct: number | null;
+  };
+  cohort: HhiCohort | null;
+  contributions: HhiContribution[] | null;
+}
+
 export interface GammaSnapshot {
   underlying: OiUnderlying;
   expiry: string;
@@ -1549,6 +1596,7 @@ export interface GammaSnapshot {
   strike_volume?: GammaStrikeVolume | null;
   regime?: GammaRegime | null;
   expiry_magnet?: ExpiryMagnet | null;
+  hhi_stats?: HhiStats | null;
   conviction?: GammaConviction | null;
   momentum?: GammaMomentum | null;
   market_read?: GammaMarketRead | null;

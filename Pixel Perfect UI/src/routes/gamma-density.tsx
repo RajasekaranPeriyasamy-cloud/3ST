@@ -48,6 +48,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MeasurementBoard } from "@/components/gamma/MeasurementBoard";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export const Route = createFileRoute("/gamma-density")({
@@ -744,6 +745,7 @@ function GammaDensityPage() {
           <TabsList className="report-controls">
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="concentration">Concentration</TabsTrigger>
+            <TabsTrigger value="measurement">Measurement</TabsTrigger>
           </TabsList>
 
           <TabsContent value="profile" className="mt-4 flex flex-col gap-6">
@@ -1255,6 +1257,12 @@ function GammaDensityPage() {
               pinWindow={pinWindow}
               onPinWindowChange={setPinWindow}
             />
+          </TabsContent>
+
+          {/* Additive third tab. Neither of the two above reads `hhi_stats`;
+              removing this block leaves them untouched. */}
+          <TabsContent value="measurement" className="mt-4">
+            <MeasurementBoard snapshot={snapshot} />
           </TabsContent>
         </Tabs>
       ) : (
