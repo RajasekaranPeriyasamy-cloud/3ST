@@ -338,7 +338,13 @@ far-side wall. Two different meanings behind one label.
 
 **What it is** — which strike is pulling settlement, ranked on **pressure**
 (gamma × probability of settling there), with a four-state ladder, conviction
-score, components, and a full pressure ladder.
+score, components, and a pressure ladder.
+
+**Ladder depth** — Top 5 / 10 / 20 / All, default **Top 10**. Strikes are picked
+by *pressure* and then laid out in *price* order, so the depth control keeps the
+strongest magnets rather than the highest strikes. When rows are hidden the
+ladder says how many of how many, and the spot divider stays on the board even
+when every surviving row sits on one side of it.
 
 **How to read it** — states run *No pin → Shifting → Stable → Locked*. **Time
 boost** says how much harder the clock is squeezing than at the reference

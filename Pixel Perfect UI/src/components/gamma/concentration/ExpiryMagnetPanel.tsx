@@ -1,6 +1,14 @@
+import { useState } from "react";
 import type { ExpiryMagnet, ExpiryPinState } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { CE_COLOR, PE_COLOR, fmt, gexIndian } from "./shared";
 
 /** The pin colour. Deliberately the same red the ladder and levels already use. */
@@ -99,7 +107,18 @@ function LadderRow({
   );
 }
 
+/** Ladder depth. Top 10 by default — the full window buries the leaders. */
+type LadderLimit = 5 | 10 | 20 | "all";
+const LADDER_LIMITS: { value: string; label: string }[] = [
+  { value: "5", label: "Top 5" },
+  { value: "10", label: "Top 10" },
+  { value: "20", label: "Top 20" },
+  { value: "all", label: "All" },
+];
+
 export function ExpiryMagnetPanel({ em }: { em: ExpiryMagnet | null | undefined }) {
+  const [limit, setLimit] = useState<LadderLimit>(10);
+
   if (!em) {
     return (
       <Card>
@@ -116,9 +135,24 @@ export function ExpiryMagnetPanel({ em }: { em: ExpiryMagnet | null | undefined 
   }
 
   const c = em.conviction;
-  const ladder = [...em.ladder].sort((a, b) => b.strike - a.strike);
   const rankByStrike = new Map(em.top.map((t) => [t.strike, t.rank]));
   const spot = em.pin - em.distance_pts;
+
+  // Pick by pressure, then lay the survivors out in price order — the ladder is a
+  // price axis, but "top N" is a ranking question. Doing it the other way round
+  // would keep the N highest *strikes*, which is not what anyone means.
+  const total = em.ladder.length;
+  const kept =
+    limit === "all"
+      ? em.ladder
+      : [...em.ladder].sort((a, b) => b.pressure - a.pressure).slice(0, limit);
+  const ladder = [...kept].sort((a, b) => b.strike - a.strike);
+
+  // Where spot falls in the price-ordered survivors. Filtering can leave every row
+  // on one side of spot, so anchor the divider on an index rather than on finding
+  // an adjacent pair that straddles it.
+  const spotAt = ladder.findIndex((r) => r.strike < spot);
+  const spotIndex = spotAt === -1 ? ladder.length : spotAt;
 
   return (
     <Card>
@@ -214,17 +248,40 @@ export function ExpiryMagnetPanel({ em }: { em: ExpiryMagnet | null | undefined 
 
         {/* Pressure by strike, high to low — a price ladder. */}
         <div className="space-y-1 border-t border-border/60 pt-3">
-          <div className="flex items-baseline justify-between pb-1">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pb-1">
             <span className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
               Dealer pressure by strike
             </span>
-            <span className="text-[11px] text-muted-foreground">
-              leader = 100% · Γ ₹Cr · net Γ
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">
+                leader = 100% · Γ ₹Cr · net Γ
+              </span>
+              <Select
+                value={String(limit)}
+                onValueChange={(v) => setLimit(v === "all" ? "all" : (Number(v) as LadderLimit))}
+              >
+                <SelectTrigger className="h-7 w-[5.5rem] text-sm" aria-label="Ladder depth">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LADDER_LIMITS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
+          {/* Say what is hidden — a truncated ladder must not read as the whole book. */}
+          {ladder.length < total ? (
+            <p className="pb-1 text-[11px] text-muted-foreground">
+              Showing the {ladder.length} strongest of {total} strikes by pressure.
+            </p>
+          ) : null}
           {ladder.map((row, i) => (
             <div key={row.strike}>
-              {i > 0 && ladder[i - 1].strike > spot && row.strike < spot ? (
+              {i === spotIndex ? (
                 <div className="my-1 flex items-center gap-2">
                   <span className="h-px flex-1 bg-sky-500/40" aria-hidden />
                   <span className="font-mono text-[11px] tabular-nums text-sky-600 dark:text-sky-400">
@@ -240,6 +297,16 @@ export function ExpiryMagnetPanel({ em }: { em: ExpiryMagnet | null | undefined 
               />
             </div>
           ))}
+          {/* Spot below every surviving row — the divider still belongs on the board. */}
+          {spotIndex === ladder.length && ladder.length > 0 ? (
+            <div className="my-1 flex items-center gap-2">
+              <span className="h-px flex-1 bg-sky-500/40" aria-hidden />
+              <span className="font-mono text-[11px] tabular-nums text-sky-600 dark:text-sky-400">
+                spot {fmt(spot)}
+              </span>
+              <span className="h-px flex-1 bg-sky-500/40" aria-hidden />
+            </div>
+          ) : null}
         </div>
 
         {/* Conviction is a summary of its parts, and says so. */}
