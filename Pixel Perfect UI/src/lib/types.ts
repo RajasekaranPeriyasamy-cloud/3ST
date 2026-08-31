@@ -163,7 +163,6 @@ export interface ActiveTradeRow {
   trade_mode: "paper" | "live";
   entry_mode?: EntryMode;
   timeframe?: Timeframe;
-  signal?: "long" | "short" | null;
   entry_side?: "BUY" | "SELL" | null;
   entry_price?: number | null;
   quantity: number;
