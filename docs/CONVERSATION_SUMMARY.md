@@ -2,11 +2,131 @@
 
 **Last updated:** 2026-08-31  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Verified health check, 1m/3m timeframes, virtualised wing columns
+**Session focus:** Frontend typecheck taken from 23 errors to zero — two were live defects
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
 > **When you ask to “review points”** — read **[Execution architecture — phase reminders](#execution-architecture--phase-reminders)** for Phases 3–4 checklist, open decisions, and acceptance criteria.
+
+---
+
+## Session 2026-08-31 (last) — 23 tsc errors to zero, and what two of them were hiding
+
+`vite build` does not typecheck, so `npx tsc --noEmit` was the only thing
+looking at these and nothing was reading its output. Six commits, every one a
+frontend type fix, and the point of the entry is that **two of the twenty-three
+were live defects** rather than notation.
+
+### The two that mattered
+
+**The execution taskbar named the wrong exit rung.** `exit_triggers` was typed
+`Record<string, unknown>`, and the taskbar read
+`exit_triggers?.next_exit?.label`. Writing the real type made `.price`
+typecheck and `.label` fail — and that asymmetry *was* the finding.
+`_leg_exit_params` builds each ladder rung as
+`{order, category, price, triggered, rule, enabled, ...}`; a row names itself
+with `category`, and the only `*_label` keys sit one level up. So `.label`
+always missed, the label fell through to `zone_exit_label`, and the price on
+the next line came from `next_exit`. Measured by calling the producer on a short
+leg (entry 214.5, ATR trail 208, ST1 205, LTP 190):
+
+    next_exit       = {"category": "Entry", "price": 214.5, ...}   # no "label"
+    zone_exit_label = "ST1"
+
+    before: "ST1 @ 214.50"    <- ST1's name against Entry's price. ST1 is at 205.
+    after : "Entry @ 214.50"
+
+Fixed in the UI, not by adding `label` to the producer: `rolling_straddle.py`
+places orders and this is a display concern. The taskbar's *actions* were never
+driven by this string, so no runner behaviour moved.
+
+**`RollingStraddleConfig` was missing `timeframe`** — eight errors — while
+`/live/rolling-straddle/config` returns `"5min"` and the page renders it
+unconditionally. Fixing it exposed a ninth: `entry_mode` sat on
+`StrategySettings`, the base both `Selection` and `RollingStraddleConfig`
+extend, so the straddle config demanded a key its own store never writes. Every
+backend reference is in desk_trades / live_workflow / watchlist_activation /
+watchlist_runner / reconcile and none in `rolling_straddle*`, so it moved to
+`Selection`.
+
+**The correction inside that fix is the reusable part.** I moved `entry_mode`
+across as *required* first, which would have reproduced the identical defect one
+interface along: `WatchlistItem extends Selection`, and the live watchlist holds
+31 items with the key absent from every one. Every backend read is
+`item.get("entry_mode") or <default>`. Typing a field required because the
+happy-path payload happens to carry it is the bug this whole batch is made of.
+
+### The rest, and the one pattern under them
+
+Four more, each a different face of *the type was never written down*:
+
+- `/pricing/calculate` returned `Record<string, number | string | null>`, so
+  `string` was in the union at all eight `fmt()` / `edgeTone()` call sites.
+- `ActiveTradeRow` declared `signal` twice, identically. Both lines arrived in
+  the same 2026-07-25 commit.
+- survivor.tsx kept a private three-entry lot-size table while
+  `RollingUnderlying` has six; rolling-straddle.tsx already had a complete copy.
+  Now one `src/lib/instruments.ts`, exhaustive over the union on purpose.
+- rrg.tsx typed `QUADRANT_LABEL` as `Record<string, string>` while
+  `QUADRANT_ORDER` beside it was already `Record<RrgQuadrant, number>` — two of
+  three maps strict, and the count-badge path went through the loose one.
+
+**A `Record<string, unknown>` standing in for a real payload is not laxness, it
+is a place where a typo renders "—" forever.** `bs.delta` and `bs.dleta` type
+identically under it. Both live defects above lived in exactly such a bag; the
+other four were the compiler complaining about notation. Casting at the eight
+pricing call sites would have silenced those errors and kept the cause.
+
+### Verification, and where it stopped
+
+Degraded paths are where the optionality is actually decided, so the payload
+types were probed against the running API rather than read off the source:
+
+- **No solvable IV** — greeks fall back to `{delta, gamma, theta, vega}` all
+  null and the seven second-order greeks are *absent*, not null. So the core
+  four are required and the rest optional, the opposite grouping to what the
+  success payload alone suggests.
+- **Heston with `tte_years=0`** returns `{price: null, error: "invalid inputs"}`
+  and nothing else, so every other field on that block is optional too.
+
+Type-only commits were argued as no-ops by construction, and that claim was
+checked rather than asserted: `types.ts` declares no `const`/`function`/`class`/
+`enum`, so it emits no JavaScript at all. The two commits that touch
+JS-emitting files were verified as such — rebuilt, restarted, and read off the
+prebuilt :8001 bundle (survivor "Qty OK (lot 65)", rolling-straddle "NIFTY
+lot = 65", rrg's quadrant filter listing all four labels from the map).
+
+**What was not verified: the taskbar's exit column on screen.** The queue held no
+active leg and the Kite token was expired, which is why that evidence comes from
+the producer instead. Worth one glance on a live leg.
+
+### The lot-size coincidence, stated because it nearly read as a bug
+
+survivor's short table looked like a live defect and was not — but only by luck.
+It read `LOT_SIZES[u] ?? 1`, and every MCX lot size in `INDEX_OPTIONS` is 1, so
+the missing rows and the fallback returned the same number. Worth recording as a
+near miss rather than a clean bill: the table would have been wrong the moment
+an MCX lot size stopped being 1.
+
+### Open
+
+- `execution_queue.py:114` reads `params.get("next_exit")` inside
+  `if not params:`, where `params` is `{}` by construction — that stub's
+  `next_exit` is always None. Harmless, and it only fires before a ladder
+  exists, but it reads as though it carried a value across.
+- The backend defaults `entry_mode` to `"manual"` in three places and
+  `"signal"` in `watchlist_runner.py:99`. That flag decides whether an item arms
+  itself on a signal or waits to be fired by hand.
+- survivor's dropdown offers three underlyings while rolling-straddle offers all
+  six and `survivor_store.validate` accepts all six, so MCX is reachable on that
+  desk only by hand-editing `data/survivor_config.json`. Whether the survivor
+  runner *should* trade MCX is a desk decision, not a typing one.
+- MCX membership is still open-coded in ~6 components (oi-movers, oi-tracker,
+  iv-skew, gamma-density, useOptionExpiries, AnalyticsDeskContext).
+  `src/lib/instruments.ts` is the obvious home if that is ever tidied.
+- **`tsc --noEmit` is at zero and nothing enforces it.** CI runs pytest and
+  ruff; the frontend is unchecked, which is how 23 errors accumulated unseen.
+  A typecheck job would hold the line now that the line is worth holding.
 
 ---
 
