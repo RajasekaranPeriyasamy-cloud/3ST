@@ -34,8 +34,13 @@ function QueueRow({
 }) {
   const side = item.side?.toUpperCase() ?? "—";
   const qty = item.qty ?? 0;
+  // `category`, not `label`: the exit-ladder rows name themselves with
+  // `category` ("Entry" | "ATR" | "ST1" | "SL" | "Target") and never carry a
+  // `label`. Reading `.label` here always missed, so the row fell through to
+  // `zone_exit_label` while the price below came from `next_exit` — pairing the
+  // ST1 zone's name with whichever rung was actually nearest.
   const exitLine =
-    item.exit_triggers?.next_exit?.label ??
+    item.exit_triggers?.next_exit?.category ??
     item.exit_triggers?.zone_exit_label ??
     item.exit_triggers?.st_exit_label ??
     null;

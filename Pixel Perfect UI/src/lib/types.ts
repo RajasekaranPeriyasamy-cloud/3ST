@@ -2418,6 +2418,65 @@ export interface RollingStraddleConfig extends StrategySettings {
   entry_exit_enabled?: boolean;
 }
 
+/** One rung of the rolling-straddle exit ladder — `_leg_exit_params` in
+ *  execution/rolling_straddle.py builds these as plain dict literals.
+ *
+ *  Note there is no `label` field. The row names itself with `category`; the
+ *  only `*_label` keys the producer emits (`zone_exit_label`,
+ *  `trade_side_label`) sit one level up on ExecutionExitTriggers.
+ */
+export interface ExitLevel {
+  order: number;
+  category: "Entry" | "ATR" | "ST1" | "SL" | "Target";
+  /** Null on a rung the runner cannot price yet — those carry `missing: true`. */
+  price: number | null;
+  triggered: boolean;
+  /** Human-readable condition, e.g. "Long: 5min close below entry 214.50". */
+  rule: string;
+  /** False for a rung switched off by config (ATR TSL disabled, say). */
+  enabled: boolean;
+  distance?: number;
+  source?: string;
+  missing?: boolean;
+  dynamic?: boolean;
+}
+
+/** `exit_triggers` on an execution-queue item.
+ *
+ *  Two disjoint shapes reach this field, which is why every key is optional:
+ *  the rolling-straddle source passes the leg's whole `exit_params` (or a
+ *  three-key stub when the ladder has not been built), and the watchlist source
+ *  passes `{exit_label, exit_line, st_exit_price, st_exit_label}`. Both are
+ *  produced in execution/execution_queue.py.
+ */
+export interface ExecutionExitTriggers {
+  next_exit?: ExitLevel | null;
+  exit_levels?: ExitLevel[];
+  position_side?: "long" | "short" | null;
+  trade_side_label?: string;
+  zone_exit_label?: string | null;
+  zone_exit_level?: number | null;
+  zone_exit_triggered?: boolean;
+  zone_exit_at_ltp?: boolean;
+  zone_exit_ltp_distance?: number;
+  in_hold_zone?: boolean;
+  st1?: number | null;
+  signal_close?: number | null;
+  force_exit?: string | null;
+  force_exit_due?: boolean;
+  session_end?: string | null;
+  timeframe?: string;
+  st_method?: string | null;
+  entry_exit_enabled?: boolean;
+  atr_tsl_enabled?: boolean;
+  entry_source?: "fill" | "kite_avg" | null;
+  /** Watchlist source only. */
+  exit_label?: string | null;
+  exit_line?: number | null;
+  st_exit_price?: number | null;
+  st_exit_label?: string | null;
+}
+
 export interface ExecutionQueueItem {
   leg_id: string;
   source: string;
@@ -2435,7 +2494,7 @@ export interface ExecutionQueueItem {
   entry_price?: number | null;
   ltp?: number | null;
   pnl?: number | null;
-  exit_triggers?: Record<string, unknown> | null;
+  exit_triggers?: ExecutionExitTriggers | null;
   signal_note?: string | null;
   actions: string[];
   meta?: Record<string, unknown>;
