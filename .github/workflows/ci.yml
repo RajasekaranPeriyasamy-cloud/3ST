@@ -30,6 +30,37 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
 
+  typecheck:
+    runs-on: ubuntu-latest
+    # Blocking, unlike `lint` below, and the difference is deliberate: ruff has a
+    # pre-existing backlog to grandfather in, `tsc --noEmit` has none. It went
+    # from 23 errors to 0 on 2026-08-31 and this job exists to keep it there.
+    #
+    # Nothing else in the repo looks at these. `vite build` does not typecheck —
+    # it transpiles and strips types — so the frontend was effectively unchecked
+    # and the 23 accumulated unseen. Two of them were live defects, not notation:
+    # the execution taskbar read `next_exit.label`, a key the exit-ladder rows
+    # never carry, and so labelled an exit price with the wrong rung's name.
+    defaults:
+      run:
+        working-directory: "Pixel Perfect UI"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          # Relative to the repo root, not to working-directory above.
+          cache-dependency-path: "Pixel Perfect UI/package-lock.json"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
   lint:
     runs-on: ubuntu-latest
     # Non-blocking for now: the codebase predates this workflow and has a
