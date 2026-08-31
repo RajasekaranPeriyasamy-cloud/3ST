@@ -21,14 +21,14 @@ Nothing here is trading advice. It describes what the instruments measure.
 ## Contents
 
 **Profile tab** — [meta strip](#meta-strip) · [GEX × Vanna](#gex--vanna) ·
-[the eight tiles](#the-eight-tiles) · [reference levels](#reference-levels) ·
+[the four tiles](#the-four-tiles) · [reference levels](#reference-levels) ·
 [market read](#market-read) · [squeeze / momentum](#squeeze--momentum) ·
 [session chart](#session-chart) · [strike chart](#strike-chart) ·
 [per-strike detail](#per-strike-detail--convexity-zones) · [settings](#settings-that-change-the-numbers)
 
 **Concentration tab** — [index strip & γ mass](#index-strip--γ-mass) ·
 [HHI hero](#hhi-hero) · [Γ ladder](#γ-ladder) · [builders & side HHI](#hhi-builders--callput-γ-hhi) ·
-[structure & shape](#structure--shape) · [expiry magnet](#expiry-magnet) ·
+[expiry magnet](#expiry-magnet) ·
 [structural regime](#structural-regime) · [pin strength](#pin-strength) ·
 [volume confluence](#volume-confluence) · [history](#30-session--intraday-hhi) ·
 [OI movers](#oi-change--top-movers)
@@ -73,7 +73,7 @@ move rather than calming it.
 **Blind spot** — it collapses two continuous quantities into one label. Read the
 tiles for magnitude.
 
-## The eight tiles
+## The four tiles
 
 ### Gamma Regime
 **What it is** — sign of total GEX: *Positive γ* (dampening) or *Negative γ* (amplifying).
@@ -98,30 +98,6 @@ tiles for magnitude.
 **How to read it** — the ruler for every other distance on the page.
 **In the market** — `±174 → 24,079–24,427` is the market's own 68% band to expiry.
 **Blind spot** — straddle-derived, so it inherits any ATM mispricing, and it collapses as expiry nears — the same band means something different at 4 DTE and 1 DTE.
-
-### HHI Concentration
-**What it is** — gamma concentration, 0→1, with the band label and top-1 share.
-**How to read it** — high = few strikes matter; low = spread.
-**In the market** — `0.11 · balanced · top1 20%` is a spread book. That is *not* a pinning setup, whatever the pin tile says.
-**Blind spot** — depends on the strike window and the mass basis. Widening the window mechanically lowers it. See [README](README.md#concentration-tab--hhi-measurement-basis).
-
-### Conviction
-**What it is** — the legacy composite score from `compute_gamma_conviction`.
-**How to read it** — direction of travel (rising / falling) is more informative than the level.
-**In the market** — a rising conviction while HHI falls means the other inputs are carrying it.
-**Blind spot** — it is a blend with unfitted weights and predates the newer measures. Prefer *Structural Regime* and *Pin Strength*.
-
-### Pin Candidate
-**What it is** — the strike price tends toward, plus its source and stability.
-**How to read it** — **read the source phrase first.** `gamma pin` is real; `ATM placeholder — not a gamma pin` means no pin exists and the number is just the ATM strike.
-**In the market** — the ATM placeholder tracks spot by construction, so it looks *most* stable exactly when there is no pin. That is why the label leads.
-**Blind spot** — stability here comes from the legacy 12-tick lookback, which is tick-counted rather than time-boxed. The Concentration tab's *Pin Strength* is the better read.
-
-### Dominant Strike
-**What it is** — the single largest gamma strike, with its share and effective-strike count.
-**How to read it** — when dominant = pin, the two agree. When they differ, the pin came from a wall midpoint or the ATM fallback.
-**In the market** — `24,300 · 20% of |GEX| · eff 8.72` — one strike holds a fifth, but ~9 strikes matter. A leader, not a monopoly.
-**Blind spot** — largest is not strongest. A big stack far from spot cannot pull. See [Expiry Magnet](#expiry-magnet).
 
 ## Reference levels
 
@@ -277,9 +253,18 @@ change, a 0→1 gauge with the 5-session mean and band cuts marked, and six tile
 mean tick, and the two band cuts. Band label is *compressed / balanced /
 dispersed*.
 
+The tile row carries net dealer γ, spot, **Gini**, **Shape**, the 5-session mean
+and the percentile. **Gini is inequality, not concentration** — HHI asks "do a
+few strikes dominate", Gini asks "is the distribution lopsided". They diverge,
+and *Shape* (the Ávila quadrant) is the two read together.
+
 **In the market** — `0.115 balanced` against a 5-session mean of `0.247` says
 today is unusually **spread** — the book is less concentrated than it has been.
 D/D of `+24.9%` off a low base is not the same as being concentrated.
+
+That divergence, live: `HHI 0.11 balanced` with `Gini 0.76 unequal-balanced` —
+no strike dominates, yet the distribution is very uneven. A few medium strikes
+and a long tail of nothing.
 
 **Blind spot** — percentile is inclusive of today and drawn from however many
 sessions have been recorded on the current basis (9 at time of writing, not 30).
@@ -318,21 +303,6 @@ side; the put book has a tighter structure than the call book.
 
 **Blind spot** — side HHIs are always gross by construction. If the headline is
 on the net basis, they are not on the same footing.
-
-## Structure & shape
-
-**What it is** — spot / pin / cliff, the Gini coefficient, the Ávila quadrant,
-market-read lines, and top-1 / top-5 / effective-strikes.
-
-**How to read it** — **Gini is inequality, not concentration.** HHI asks "do a
-few strikes dominate"; Gini asks "is the distribution lopsided". They diverge.
-
-**In the market** — `HHI 0.11 balanced` with `Gini 0.76 unequal-balanced` is
-exactly that divergence: no strike dominates, but the distribution is very
-uneven — a few medium strikes and a long tail of nothing.
-
-**Blind spot** — cliff is the flip if it falls inside the window, otherwise the
-far-side wall. Two different meanings behind one label.
 
 ## Expiry magnet
 

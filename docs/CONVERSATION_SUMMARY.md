@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-31  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Frontend typecheck taken from 23 errors to zero — two were live defects
+**Session focus:** Gamma Density page de-duplicated — and three display defects it surfaced
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
@@ -10,7 +10,68 @@ This file captures recent development context from Cursor agent sessions. Full c
 
 ---
 
-## Session 2026-08-31 (last) — 23 tsc errors to zero, and what two of them were hiding
+## Session 2026-08-31 (last) — Gamma Density de-duplication
+
+The page had grown by accretion: Profile was the original board, Concentration
+was where newer instruments landed, and both had come to answer "where is the
+pin?" and "how concentrated?". A census of *readouts* (chart overlays excluded —
+a pin line on a chart is context, not repetition) found the pin stated **6**
+times, gamma regime **5**, flip and band label **4** each.
+
+**The organizing rule now is one tab per question:** Profile owns *evidence*
+(price context, both charts, per-strike detail, reference levels, OI, momentum);
+Concentration owns *judgement* (regime, HHI, pin, magnet, confluence). Each fact
+appears once, in the tab that owns it.
+
+What went:
+
+- **Four Profile StatCards** — HHI Concentration, Conviction, Pin Candidate,
+  Dominant Strike. All superseded, and `docs/gamma-density/MANUAL.md` already
+  told the reader to prefer the Concentration versions. A page that documents
+  which of its own tiles to ignore is telling you to delete them.
+- **The `Structure & shape` card.** Its spot/pin/cliff triple is strictly worse
+  than the regime panel's σ ladder, which carries all nine levels with distances;
+  its Top1/Top5/Eff and band already sat in the HHI hero. Gini + the Ávila
+  quadrant were the only unique content and moved into the hero's tile row,
+  displacing the two γ-peak tiles (those are on the σ ladder *with* their σ
+  distance, which is the part that decides whether a peak is reachable).
+- **`market_read.levels_line`** is no longer rendered — it restated the Key
+  Levels badges and Reference-levels closes directly above it. Kept on the
+  payload; `test_gamma_reference_levels.py` pins it.
+
+**The conviction collision.** `build_gamma_market_read` appended the legacy
+`compute_gamma_conviction` score to `regime_line`, so the page showed
+"conviction 48" a few inches from the expiry magnet's "conviction 73" — two
+different formulas under one word. The clause is gone; the magnet's version
+stays because it ships its inputs, weights and a `calibrated: False` flag.
+
+**Not done, deliberately:** merging the 30-session and intraday HHI charts. They
+already sit side by side at equal weight under "How today compares"; a toggle
+would hide one behind a click. That was a bad idea in the plan, dropped once the
+layout was actually read.
+
+### Three defects the reorganisation surfaced
+
+Reading the rendered page rather than the source found bugs a static audit had
+missed:
+
+1. **`+360.7 steps`** in Volume confluence. Not a maths error — `36` and `0.7`
+   were rendered adjacent with only a margin between them and no separator, so
+   they read as one absurd number. `+2364.7` was `236` and `4.7`. Now `·`-joined,
+   matching the regime panel's `−36 · 0.72 step`.
+2. **The pin gap hung off the POC row**, whose label made it read as the POC's
+   own offset — while the row actually labelled `Pin vs POC` showed only an
+   in/outside-value badge and no distance. Moved to the row that names it.
+3. **The same pair carried opposite signs on one screen.** `options/regime.py`
+   computes `gap_pts = poc − pin` (pinned by `test_regime.py`), but the UI
+   labelled that row `Pin vs POC` — reading "the pin is 36 *below* the POC" when
+   it sat above. Relabelled `POC vs pin` rather than flipping a tested payload
+   field.
+
+Suite green at 1175. `npm run typecheck` clean; eslint delta zero on every file
+touched (the frontend's pre-existing prettier debt was left alone per CLAUDE.md).
+
+## Session 2026-08-31 — 23 tsc errors to zero, and what two of them were hiding
 
 `vite build` does not typecheck, so `npx tsc --noEmit` was the only thing
 looking at these and nothing was reading its output. Six commits, every one a
