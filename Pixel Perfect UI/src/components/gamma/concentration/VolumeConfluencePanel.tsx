@@ -36,8 +36,10 @@ function Gap({
     <span className="font-mono tabular-nums" style={tone ? { color: tone } : undefined}>
       {d >= 0 ? "+" : "−"}
       {Math.abs(d).toFixed(0)}
+      {/* The separator is load-bearing: without it "36" and "0.7" abut and read
+          as one number ("+360.7 steps"). Matches the regime panel's "· 0.7 step". */}
       <span className="ml-1 text-[11px] text-muted-foreground">
-        {Math.abs(steps).toFixed(1)} step{Math.abs(steps) === 1 ? "" : "s"}
+        · {Math.abs(steps).toFixed(1)} step{Math.abs(steps) === 1 ? "" : "s"}
       </span>
     </span>
   );
@@ -116,11 +118,10 @@ export function VolumeConfluencePanel({
 
       <CardContent className="space-y-3">
         <div className="space-y-1.5">
-          <Row
-            label="POC (most business)"
-            value={fmt(vp.poc, 0)}
-            extra={<Gap from={vp.poc} to={pin} step={strikeStep} />}
-          />
+          {/* The pin gap used to hang off this row, which reads as the POC's own
+              offset. It belongs on the "Pin vs POC" row below, whose label says
+              exactly what the number measures. */}
+          <Row label="POC (most business)" value={fmt(vp.poc, 0)} />
           <Row
             label="Value area"
             value={`${fmt(vp.val, 0)} – ${fmt(vp.vah, 0)}`}
@@ -134,18 +135,21 @@ export function VolumeConfluencePanel({
             label="Pin vs POC"
             value={pin != null ? fmt(pin, 0) : "—"}
             extra={
-              pinInsideVa == null ? null : (
-                <Badge
-                  variant="outline"
-                  className={`h-5 px-1.5 text-[11px] ${
-                    pinInsideVa
-                      ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
-                      : "border-amber-500/40 text-amber-700 dark:text-amber-300"
-                  }`}
-                >
-                  {pinInsideVa ? "in value" : "outside value"}
-                </Badge>
-              )
+              <span className="flex items-baseline gap-2">
+                <Gap from={vp.poc} to={pin} step={strikeStep} />
+                {pinInsideVa == null ? null : (
+                  <Badge
+                    variant="outline"
+                    className={`h-5 px-1.5 text-[11px] ${
+                      pinInsideVa
+                        ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                        : "border-amber-500/40 text-amber-700 dark:text-amber-300"
+                    }`}
+                  >
+                    {pinInsideVa ? "in value" : "outside value"}
+                  </Badge>
+                )}
+              </span>
             }
           />
           <Row

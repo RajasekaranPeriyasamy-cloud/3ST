@@ -102,7 +102,11 @@ export function RegimePanel({ regime }: { regime: GammaRegime | null | undefined
         {/* Confluence — the question neither gamma nor volume can answer alone. */}
         <div className="space-y-1.5 border-t border-border/60 pt-3">
           <div className="flex items-baseline justify-between gap-2 text-xs">
-            <span className="text-muted-foreground">Pin vs POC</span>
+            {/* `gap_pts` is poc − pin (options/regime.py), so the label reads in
+                that direction. Labelled "Pin vs POC" it said the pin sat below the
+                POC when it sat above — the volume panel showed the same pair with
+                the opposite sign. */}
+            <span className="text-muted-foreground">POC vs pin</span>
             <span className="flex items-baseline gap-2">
               <span className="font-mono tabular-nums">
                 {fmt(c?.pin)} / {fmt(c?.poc)}
