@@ -37,7 +37,6 @@ export interface StrategySettings {
   tsl_mode: RiskMode;
   tsl_value: number;
   product_type?: "MIS" | "NRML";
-  entry_mode: EntryMode;
 }
 
 export interface InstrumentHit {
@@ -75,6 +74,21 @@ export interface SpreadConfig {
 }
 
 export interface Selection extends StrategySettings {
+  /** Whether this selection arms on a signal or waits to be fired by hand.
+   *
+   *  Lives here rather than on StrategySettings because it is a *selection*
+   *  concern, not a strategy-parameter one: every backend reference is in
+   *  desk_trades / live_workflow / watchlist_* / reconcile, and the rolling
+   *  straddle config — the other type extending StrategySettings — has no such
+   *  field. Requiring it in the shared base made RollingStraddleConfig demand a
+   *  key its own store never writes.
+   *
+   *  Optional because the backend treats it that way: every read is
+   *  `item.get("entry_mode") or <default>` (desk_trades, live_workflow,
+   *  watchlist_activation, watchlist_runner), and the live watchlist carries 31
+   *  items with the key absent from all of them. Typing it required would have
+   *  reproduced the same defect one interface along. */
+  entry_mode?: EntryMode;
   instrument_token: number | null;
   exchange: string | null;
   tradingsymbol: string | null;
@@ -2379,6 +2393,14 @@ export type OrderSizeMode = "lots" | "qty";
 export interface RollingStraddleConfig extends StrategySettings {
   underlying: RollingUnderlying;
   expiry: string;
+  /** Candle the runner reads for signals and for the bar-close exit.
+   *
+   *  Required, not optional: `rolling_straddle_store` ships it in the defaults
+   *  so every config the API returns carries one, and the page renders
+   *  `config.timeframe` unconditionally. It was simply absent from this type —
+   *  eight tsc errors on a desk that places real orders, invisible because
+   *  `vite build` does not typecheck. */
+  timeframe: Timeframe;
   entry_start: string;
   order_type: "MARKET" | "LIMIT";
   product: "MIS" | "NRML";
