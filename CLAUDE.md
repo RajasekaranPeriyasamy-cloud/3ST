@@ -20,6 +20,7 @@ This file provides guidance to Claude (Claude Code / Cowork) when working with c
 | Volume Footprint | `/volume-footprint` | `analysis/volume_profile/` + `vendor/volume_footprint/` |
 | Chain Build-Up | `/chain-buildup` | `analysis/chain_buildup/` (API prefix `/buildup`) |
 | Options Arbitrage | `/opt-arb` | `analysis/opt_arb/` (API prefix `/oarb`) |
+| Live Market News | `/news` | `analysis/news_desk/` (API prefix `/newsfeed`) |
 
 Legacy **Streamlit** UI (`app.py`) still exists but is not actively developed — treat `Pixel Perfect UI` + FastAPI as canonical.
 
@@ -119,6 +120,20 @@ options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG
                   strike set drifts with spot; wider strike ranges opt into Kite historical
                   OI candles (`widen=true`), capped at MAX_WIDEN_LEGS and cached per
                   (token, timeframe, session). Read-only; places no orders.
+                — analysis/news_desk/ (added 2026-09-02): Live Market News desk. Ten
+                  publisher RSS feeds + NSE corporate announcements, lexicon sentiment by
+                  default (NEWS_SENTIMENT_PROVIDER=anthropic is an opt-in, daily-capped
+                  upgrade that also produces the category tags). Imports nothing from
+                  broker/ execution/ risk/; places no orders.
+                  **Its HTTP goes through analysis/news_desk/net.py, never bare requests.**
+                  apply_kite_proxy_env() pins HTTP(S)_PROXY process-wide AND deletes
+                  NO_PROXY, so any bare requests call routes publisher traffic through
+                  metered static-IP order egress and fails with ProxyError — invisible
+                  outside the API process. net.py sets trust_env = False.
+                  Ticker resolution (tickers.py) is the soft spot: generic single words,
+                  ETF rows and sub-6-char lowercase tokens are refused on purpose. Read
+                  its module docstring before loosening a guard. Aliases:
+                  data/news_aliases.json.
                 — analysis/opt_arb/ (added 2026-08-25): option-to-option arbitrage scanner.
                   Scan-and-alert only — imports nothing from broker/ execution/ risk/ and
                   places no orders. Prices every leg at bid/ask (never LTP) and nets every
@@ -156,6 +171,8 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | `equity_reports.json` + `equity_reports/*.md` | `analysis/equity_report/store.py` |
 | `equity_pins.json` | `analysis/equity_report/pins.py` |
 | `opt_arb_config.json` | `analysis/opt_arb/store.py` |
+| `news_items.json`, `news_desk_config.json` | `analysis/news_desk/store.py` |
+| `news_aliases.json` | `analysis/news_desk/tickers.py` (user-extensible) |
 
 There is no single source of truth across runners for "what legs are open" today — that's exactly the gap `position_ledger.py` exists to close, once runners migrate to it.
 

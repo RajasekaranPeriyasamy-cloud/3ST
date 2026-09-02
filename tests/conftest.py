@@ -163,6 +163,9 @@ _REDIRECTS: tuple[tuple[str, str | None, str | None], ...] = (
     ("analysis.equity_report.store", "BODY_DIR", "equity_reports"),
     ("analysis.equity_report.pins", "PINS_FILE", "equity_pins.json"),
     ("analysis.opt_arb.store", "CONFIG_FILE", "opt_arb_config.json"),
+    ("analysis.news_desk.store", "ITEMS_FILE", "news_items.json"),
+    ("analysis.news_desk.store", "CONFIG_FILE", "news_desk_config.json"),
+    ("analysis.news_desk.tickers", "ALIAS_FILE", "news_aliases.json"),
 )
 
 

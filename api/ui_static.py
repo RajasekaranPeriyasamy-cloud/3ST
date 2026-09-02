@@ -37,6 +37,7 @@ _API_PREFIXES = (
     "/vol-surface",
     "/iv-smile",
     "/arbitrage",
+    "/newsfeed",  # SPA page is /news, which does not start with this prefix
     "/oarb",  # SPA page is /opt-arb, which does not start with this prefix
     "/buildup",  # SPA page is /chain-buildup, which does not start with this prefix
     "/rrg",

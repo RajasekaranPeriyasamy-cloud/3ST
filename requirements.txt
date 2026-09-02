@@ -23,3 +23,6 @@ cryptography>=42.0.0
 anthropic>=0.116.0
 # Equity Report alternate provider; >=2.3.0 for the Interactions API
 google-genai>=2.3.0
+
+# Live Market News desk: RSS/Atom/RDF parsing with tolerant date handling.
+feedparser>=6.0.11
