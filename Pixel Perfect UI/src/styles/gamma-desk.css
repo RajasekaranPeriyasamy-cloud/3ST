@@ -1,0 +1,253 @@
+/*
+ * Gamma Density desk — "plot room".
+ *
+ * The desk is a dealer-positioning map, so the visual reference is an
+ * engineering plot on ruled paper rather than a SaaS dashboard.
+ *
+ * The governing rule, and the reason this file is almost colourless:
+ * **chrome is achromatic so that every colour in the viewport belongs to data.**
+ * CE red, PE green, ±γ teal/rose, HHI band amber/sky, the indigo volume tint —
+ * each already means something an operator reads at speed. A decorative accent
+ * would compete with all of them. Personality is carried by type, rule weight,
+ * paper texture and one orchestrated page load instead.
+ *
+ * Scope: everything is nested under `.gamma-desk`, applied on the route wrapper
+ * only. Nothing here can leak into the other ~20 desks.
+ *
+ * Not touched: any colour that encodes a value. Data hues live in
+ * `components/gamma/concentration/shared.ts` and the chart modules.
+ */
+
+.gamma-desk {
+  /* Achromatic ladder — light. Warm-neutral, like plotter paper. */
+  --gd-paper: 42 38 34;
+  --gd-rule: 0 0 0;
+  --gd-rule-a: 0.14;
+  --gd-hairline-a: 0.07;
+  --gd-grid-a: 0.028;
+  --gd-card: 255 253 250;
+  --gd-vignette-a: 0.05;
+
+  font-family:
+    "Archivo", "DM Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "cv05" 1;
+  position: relative;
+  isolation: isolate;
+}
+
+.dark .gamma-desk {
+  /* Graphite, not black — black kills the hairlines the layout is built on. */
+  --gd-paper: 232 230 226;
+  --gd-rule: 255 255 255;
+  --gd-rule-a: 0.16;
+  --gd-hairline-a: 0.09;
+  --gd-grid-a: 0.035;
+  --gd-card: 20 22 26;
+  --gd-vignette-a: 0.5;
+}
+
+/* ── Paper ──────────────────────────────────────────────────────────────
+   Fixed so the grid stays still while content scrolls — the page reads as
+   something laid ON the paper rather than printed with it. */
+.gamma-desk::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    /* plot ruling: 8px fine, 64px major */
+    linear-gradient(to right, rgb(var(--gd-rule) / var(--gd-grid-a)) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--gd-rule) / var(--gd-grid-a)) 1px, transparent 1px),
+    linear-gradient(to right, rgb(var(--gd-rule) / calc(var(--gd-grid-a) * 1.8)) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--gd-rule) / calc(var(--gd-grid-a) * 1.8)) 1px, transparent 1px),
+    radial-gradient(120% 80% at 50% 0%, transparent 40%, rgb(0 0 0 / var(--gd-vignette-a)) 100%);
+  background-size:
+    8px 8px,
+    8px 8px,
+    64px 64px,
+    64px 64px,
+    100% 100%;
+}
+
+/* ── Type ───────────────────────────────────────────────────────────────
+   Three voices: editorial serif states, grotesque labels, engineered figures. */
+.gamma-desk h1 {
+  font-family: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(1.9rem, 1.3rem + 1.4vw, 2.6rem);
+  letter-spacing: -0.015em;
+  line-height: 1.05;
+}
+
+/* The desk's own name set in italic — it is a masthead, not a heading. */
+.gamma-desk h1::first-line {
+  font-style: normal;
+}
+
+.gamma-desk [data-slot="card-title"],
+.gamma-desk .gd-section-title {
+  font-family: "Archivo", ui-sans-serif, sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* Figures. Plex Mono's digits hold together at the 10–11px this desk lives at,
+   and its tabular default stops columns jittering between polls. */
+.gamma-desk .font-mono,
+.gamma-desk .tabular-nums,
+.gamma-desk code,
+.gamma-desk kbd {
+  font-family: "IBM Plex Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Uppercase micro-labels get tracking; at 10px they otherwise clot. */
+.gamma-desk .uppercase {
+  letter-spacing: 0.09em;
+}
+
+/* ── Surfaces ───────────────────────────────────────────────────────────
+   Hairline plates, not floating pills. Shadows removed: on ruled paper a
+   drop shadow reads as a mistake. */
+.gamma-desk .rounded-xl,
+.gamma-desk .rounded-lg {
+  border-radius: 3px;
+}
+
+.gamma-desk [class*="shadow"] {
+  box-shadow: none !important;
+}
+
+.gamma-desk .bg-card {
+  background-color: rgb(var(--gd-card) / 0.86);
+  backdrop-filter: blur(6px);
+  border-color: rgb(var(--gd-rule) / var(--gd-rule-a));
+  position: relative;
+}
+
+/* A weighted top rule — the plate's "header bar", the one place a card asserts
+   itself. Inherits currentColor so a coloured card keeps its own identity. */
+.gamma-desk .bg-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(
+    to right,
+    rgb(var(--gd-rule) / calc(var(--gd-rule-a) * 2.2)),
+    rgb(var(--gd-rule) / 0) 60%
+  );
+  pointer-events: none;
+}
+
+.gamma-desk .border,
+.gamma-desk .border-border\/70,
+.gamma-desk .border-border\/60 {
+  border-color: rgb(var(--gd-rule) / var(--gd-hairline-a));
+}
+
+/* ── Masthead rule ──────────────────────────────────────────────────────
+   Draws in on load; the only "reveal" that touches a chart-free area. */
+.gamma-desk > header {
+  position: relative;
+  padding-bottom: 0.85rem;
+}
+
+.gamma-desk > header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 1px;
+  width: 100%;
+  background: linear-gradient(
+    to right,
+    rgb(var(--gd-rule) / calc(var(--gd-rule-a) * 2)),
+    rgb(var(--gd-rule) / 0)
+  );
+  transform-origin: left;
+  animation: gd-rule 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── One orchestrated load ──────────────────────────────────────────────
+   Staggered plates on mount. Deliberately not applied to anything that
+   re-renders on a poll: animating a number as it updates makes a live tape
+   harder to read, which is the opposite of the point. */
+.gamma-desk .gd-stagger > * {
+  animation: gd-rise 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.gamma-desk .gd-stagger > *:nth-child(1) { animation-delay: 40ms; }
+.gamma-desk .gd-stagger > *:nth-child(2) { animation-delay: 100ms; }
+.gamma-desk .gd-stagger > *:nth-child(3) { animation-delay: 160ms; }
+.gamma-desk .gd-stagger > *:nth-child(4) { animation-delay: 220ms; }
+.gamma-desk .gd-stagger > *:nth-child(5) { animation-delay: 280ms; }
+.gamma-desk .gd-stagger > *:nth-child(6) { animation-delay: 340ms; }
+.gamma-desk .gd-stagger > *:nth-child(7) { animation-delay: 400ms; }
+.gamma-desk .gd-stagger > *:nth-child(8) { animation-delay: 460ms; }
+
+@keyframes gd-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes gd-rule {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+/* ── Tabs read as index tabs on a folder, not pills ─────────────────── */
+.gamma-desk [role="tablist"] {
+  background: transparent;
+  border-bottom: 1px solid rgb(var(--gd-rule) / var(--gd-hairline-a));
+  border-radius: 0;
+  gap: 0.25rem;
+  padding: 0;
+}
+
+.gamma-desk [role="tab"] {
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  box-shadow: none;
+  font-family: "Archivo", ui-sans-serif, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding-inline: 0.9rem;
+}
+
+.gamma-desk [role="tab"][data-state="active"] {
+  background: rgb(var(--gd-card) / 0.9);
+  border: 1px solid rgb(var(--gd-rule) / var(--gd-hairline-a));
+  border-bottom-color: transparent;
+  margin-bottom: -1px;
+}
+
+/* ── Charts keep their own light canvas; frame it rather than fight it ── */
+.gamma-desk .js-plotly-plot,
+.gamma-desk .recharts-wrapper {
+  border-radius: 2px;
+}
+
+/* An operator who has asked for less motion is not asking for a slower desk. */
+@media (prefers-reduced-motion: reduce) {
+  .gamma-desk .gd-stagger > *,
+  .gamma-desk > header::after {
+    animation: none !important;
+  }
+}

@@ -1,12 +1,103 @@
-"""MCX commodity support for rolling straddle."""
+"""MCX commodity support for rolling straddle.
+
+Several tests here exercise ``execution.rolling_straddle`` functions that write
+through to the store without saying so — ``_ensure_state_underlying`` and
+``status_bundle`` both reach ``clear_spot_state_for_underlying`` ->
+``save_state`` + ``append_log``. Until 2026-08-27 those writes landed in the
+live ``data/rolling_straddle_{state,log}.json``, which passed in isolation and
+failed against the running desk. The per-test redirect now comes from
+``tests/conftest.py``'s autouse ``isolate_real_data_writes``; the explicit
+``monkeypatch.setattr(store, ...)`` calls below are kept because they also pin
+*what* each file starts out holding.
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import date, timedelta
 
+import pytest
+
 from execution.rolling_straddle_store import apply_underlying_defaults, lot_size_for, save_config
 from options.chain import atm_strike, list_expiries, nearest_expiry, resolve_expiry
+
+# Kite lists MCX options roughly a month apart; three contracts is enough for
+# "nearest", "not the stale one" and expiry-correction to mean anything.
+_SEEDED_EXPIRY_OFFSETS_DAYS = (12, 43, 71)
+
+_SEEDED_UNDERLYINGS = (
+    # (name, strike step, plausible level to centre strikes on)
+    ("CRUDEOIL", 50.0, 7900.0),
+    ("CRUDEOILM", 50.0, 7900.0),
+    ("NATURALGAS", 5.0, 265.0),
+)
+
+
+def _seed_expiries() -> list[date]:
+    """Derived from today, never hardcoded — a pinned date silently stops
+    testing anything the moment it passes (see CLAUDE.md)."""
+    return [date.today() + timedelta(days=d) for d in _SEEDED_EXPIRY_OFFSETS_DAYS]
+
+
+def _instrument_rows() -> list[dict]:
+    rows: list[dict] = []
+    token = 100_000
+    for name, step, centre in _SEEDED_UNDERLYINGS:
+        for expiry in _seed_expiries():
+            code = f"{expiry:%y%b}".upper()
+            for i in range(-2, 3):
+                strike = centre + i * step
+                for itype in ("CE", "PE"):
+                    token += 1
+                    rows.append(
+                        {
+                            "instrument_token": token,
+                            "exchange": "MCX",
+                            "segment": "MCX-OPT",
+                            "name": name,
+                            "tradingsymbol": f"{name}{code}{strike:g}{itype}",
+                            "instrument_type": itype,
+                            "expiry": expiry.isoformat(),
+                            "strike": strike,
+                            "lot_size": 1,
+                            "tick_size": 0.1,
+                        }
+                    )
+    return rows
+
+
+@pytest.fixture(autouse=True)
+def seeded_mcx_instruments(tmp_path, monkeypatch):
+    """Seed a synthetic MCX instrument cache for this module.
+
+    These tests read ``data/kite_instruments.json``, which is gitignored — so
+    they passed on a developer machine with a Kite login and failed in CI with
+    ``RuntimeError: Instrument cache empty``. That is why CI has been red on
+    main. Seeding the cache keeps the real code path under test
+    (``list_expiries`` -> ``load_instruments`` -> ``CACHE_FILE``) rather than
+    stubbing it out, without depending on an artifact CI cannot have.
+
+    ``options.chain`` does ``from instruments import CACHE_FILE``, binding it at
+    import time, so patching ``instruments.CACHE_FILE`` alone would leave
+    ``chain`` pointed at the real path — the same trap ``conftest.py`` documents
+    for the Kite client accessors. Both bindings are patched, and both
+    mtime-keyed caches are cleared on the way in *and* out so neither leaks into
+    another test module.
+    """
+    import instruments
+    from options import chain
+
+    path = tmp_path / "kite_instruments.json"
+    path.write_text(json.dumps(_instrument_rows()), encoding="utf-8")
+
+    monkeypatch.setattr(instruments, "CACHE_FILE", path)
+    monkeypatch.setattr(chain, "CACHE_FILE", path)
+
+    instruments._invalidate_df_cache()
+    chain._EXPIRIES_CACHE.clear()
+    yield
+    instruments._invalidate_df_cache()
+    chain._EXPIRIES_CACHE.clear()
 
 
 def test_crudeoil_expiries_from_instruments_cache():

@@ -41,6 +41,10 @@ from analysis.delta_velocity.runner import is_alive as delta_velocity_alive
 from analysis.delta_velocity.runner import last_report as delta_velocity_last_report
 from analysis.delta_velocity.runner import start as start_delta_velocity_runner
 from analysis.delta_velocity.runner import stop as stop_delta_velocity_runner
+from analysis.iv_skew import build_iv_skew, iv_skew_config
+from analysis.iv_skew import runner as iv_skew_runner
+from analysis.iv_skew import store as iv_skew_store
+from analysis.theta_decay.features import DEFAULT_HORIZON_MIN as THETA_DEFAULT_HORIZON_MIN
 from execution.arming import arm, disarm, get_arm_state, set_mode
 from execution.rolling_straddle import close_all, close_leg, adopt_leg, unlink_leg, start_runner, status_bundle as rs_status_bundle, stop_runner, tick
 from execution.rolling_straddle_store import get_config as rs_get_config
@@ -100,6 +104,7 @@ from kite_auth import (
     exchange_request_token,
     login_url,
     session_status,
+    token_probe,
 )
 from kite_client import (
     default_kite_date_range,
@@ -188,6 +193,7 @@ async def _lifespan(app: FastAPI):
     start_analytics_scheduler()
     start_report_runner()
     start_delta_velocity_runner()
+    iv_skew_runner.start()
     threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
     await start_ltp_feed()
     try:
@@ -223,6 +229,7 @@ async def _lifespan(app: FastAPI):
     stop_analytics_scheduler()
     stop_report_runner()
     stop_delta_velocity_runner()
+    iv_skew_runner.stop()
 
 
 app = FastAPI(title="3ST Kite Algo API", version="0.2.0", lifespan=_lifespan)
@@ -660,6 +667,19 @@ class EquityPinIn(BaseModel):
     exchange: str = "NSE"
 
 
+def _kite_authenticated_verified() -> bool:
+    """Stored session AND not known-rejected.
+
+    Kept separate from ``session_status`` on purpose: that function is a pure
+    file read called from order-adjacent hot paths (``ltp_cache``,
+    ``execution_queue``, ``live_workflow``), and giving it a network call would
+    put Kite latency on the order path to answer a health question.
+    """
+    if not session_status().get("authenticated", False):
+        return False
+    return token_probe().get("state") != "invalid"
+
+
 def _err(e: Exception, status: int = 400) -> HTTPException:
     return HTTPException(status_code=status, detail=friendly_kite_message(str(e)))
 
@@ -829,7 +849,17 @@ def health() -> dict[str, Any]:
         "uptime_sec": uptime,
         **cache_status(),
         "kite_configured": kite_ready(),
-        "kite_authenticated": session_status().get("authenticated", False),
+        # Verified, not merely stored. This used to report a session FILE, so on
+        # 2026-08-30 it said authenticated while every read failed with
+        # "Incorrect `api_key` or `access_token`" — the one flag an operator
+        # checks on a quiet morning, saying the opposite of the truth.
+        #
+        # Goes False only when Kite has actually REJECTED the token. A probe that
+        # could not reach Kite leaves this at the stored value and reports itself
+        # in `kite_token`: "log in again" is the wrong instruction when the
+        # network is down, and sends someone to fix the wrong thing.
+        "kite_authenticated": _kite_authenticated_verified(),
+        "kite_token": token_probe(),
         "kite_proxy_enabled": proxy_on,
         "kite_proxy_host": env("STATICIP_HOST") if proxy_on else None,
         "kite_allowed_egress_ip": allowed or None,
@@ -843,6 +873,7 @@ def health() -> dict[str, Any]:
         "spread_templates": list(SPREAD_TEMPLATES.keys()),
         "st_methods": ["heikin_ashi", "regular", "hybrid"],
         "delta_velocity_runner_alive": delta_velocity_alive(),
+        "iv_skew_runner_alive": iv_skew_runner.is_alive(),
         **analytics_scheduler_status(),
         **report_runner_status(),
         "anthropic_ready": anthropic_ready(),
@@ -2269,6 +2300,143 @@ def oi_var_snapshot(
         raise _err(e) from e
 
 
+@app.get("/volume-footprint/config")
+def volume_footprint_config() -> dict[str, Any]:
+    from analysis.volume_profile import MIN_PROFILE_BARS, PROFILE_CACHE_TTL_SEC
+
+    return {
+        "underlyings": list(INDEX_OPTIONS.keys()),
+        "engine": "geometric",
+        # Surfaced so the page can state plainly that the buy/sell split is
+        # inferred from candle geometry, not measured from an aggressor feed.
+        "estimate": True,
+        "min_profile_bars": MIN_PROFILE_BARS,
+        "cache_ttl_sec": PROFILE_CACHE_TTL_SEC,
+        "value_area_pct": 70.0,
+        "imbalance_pct": 300.0,
+        "tilt_dead_zone_pp": 5.0,
+    }
+
+
+@app.get("/volume-footprint/contracts")
+def volume_footprint_contracts(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+) -> dict[str, Any]:
+    """Futures contracts available for the near/far selector, nearest first."""
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import list_contracts
+
+        _require_kite_session()
+        return {"underlying": u, "contracts": list_contracts(u)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/volume-footprint/levels")
+def volume_footprint_levels(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+) -> dict[str, Any]:
+    """GEX reference levels for the profile chart: spot, walls, flip, pin, γ peaks.
+
+    Its own endpoint rather than part of the snapshot, for two reasons: the page
+    can fetch both in parallel and still draw the profile if the option chain is
+    unavailable, and ``include_history=False`` keeps this off the session trail —
+    calling the full gamma snapshot from a second page would double-write history
+    ticks and pin samples.
+    """
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import gamma_levels
+
+        _require_kite_session()
+        return gamma_levels(u)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/volume-footprint/oi-ladder")
+def volume_footprint_oi_ladder(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+) -> dict[str, Any]:
+    """Per-strike session-open OI, current OI and ΔOI, merged with session volume.
+
+    Shares one history-free gamma snapshot with ``/volume-footprint/levels``, so
+    fetching both costs a single option-chain pull. Kept a separate endpoint for
+    the same reason ``levels`` is: the profile must still draw when the chain is
+    unavailable.
+    """
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import strike_oi_ladder
+
+        _require_kite_session()
+        return strike_oi_ladder(u)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/volume-footprint/tilt-history")
+def volume_footprint_tilt_history(
+    underlying: str = Query("NIFTY", description="NIFTY | SENSEX"),
+    window: int = Query(30, ge=5, le=120, description="prior sessions to rank against"),
+) -> dict[str, Any]:
+    """Today's session tilt ranked against prior sessions at the same session minute.
+
+    Never ranks a partial session against completed ones: both sides of the
+    comparison are read at the same elapsed-minute checkpoint. See
+    ``analysis/volume_profile/tilt_history.py`` for why that matters.
+    """
+    try:
+        u = underlying.upper()
+        from analysis.volume_profile.tilt_history import (
+            TILT_HISTORY_UNDERLYINGS,
+            tilt_comparison,
+        )
+
+        if u not in TILT_HISTORY_UNDERLYINGS:
+            raise RuntimeError(f"Tilt history is sampled for {list(TILT_HISTORY_UNDERLYINGS)} only")
+        _require_kite_session()
+        return tilt_comparison(u, window=window)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/volume-footprint/snapshot")
+def volume_footprint_snapshot(
+    underlying: str = Query("NIFTY", description="NIFTY | BANKNIFTY | SENSEX | MCX symbol"),
+    expiry: str | None = Query(
+        None, description="Futures contract expiry (YYYY-MM-DD); default front month"
+    ),
+) -> dict[str, Any]:
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        from analysis.volume_profile import get_volume_profile
+
+        _require_kite_session()
+        return get_volume_profile(u, expiry=expiry)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
 @app.get("/gamma-density/config")
 def gamma_density_config() -> dict[str, Any]:
     return gamma_config()
@@ -2299,6 +2467,10 @@ def gamma_density_snapshot(
         None,
         description="gross (|CE γ|+|PE γ|, default) | net (|CE γ+PE γ|) — HHI mass basis",
     ),
+    pin_window: str | None = Query(
+        None,
+        description="15m | 30m (default) | 60m | session — trailing window for pin strength",
+    ),
 ) -> dict[str, Any]:
     try:
         u = underlying.upper()
@@ -2319,6 +2491,7 @@ def gamma_density_snapshot(
             reversal_gex_mode=reversal_gex_mode,
             reversal_oi_gate=reversal_oi_gate,
             mass_basis=mass_basis,
+            pin_window=pin_window,
         )
     except HTTPException:
         raise
@@ -2597,6 +2770,114 @@ def iv_smile_snapshot(
         raise
     except Exception as e:
         raise _err(e) from e
+
+
+@app.get("/skew/config")
+def iv_skew_get_config() -> dict[str, Any]:
+    """IV Skew desk config.
+
+    Prefix is ``/skew`` rather than ``/iv-skew`` so the SPA page at ``/iv-skew``
+    does not collide with an API prefix — a hard browser load of a colliding
+    path returns a JSON 404 (see CLAUDE.md, and ``/velocity`` for the same
+    reason).
+    """
+    return iv_skew_config()
+
+
+@app.get("/skew/snapshot")
+def iv_skew_snapshot(
+    underlying: str = Query("NIFTY", description="Index or MCX underlying"),
+    expiry: str | None = Query(None, description="YYYY-MM-DD; omit for the nearest expiries"),
+    max_expiries: int | None = Query(None, ge=1, le=6),
+    target_delta: float | None = Query(None, gt=0.01, lt=0.5),
+) -> dict[str, Any]:
+    """25Δ risk reversal and butterfly per expiry, forward-based."""
+    try:
+        u = underlying.upper()
+        if u not in INDEX_OPTIONS:
+            raise RuntimeError(f"Unknown underlying. Use {list(INDEX_OPTIONS.keys())}")
+        _require_kite_session()
+        return build_iv_skew(
+            u,
+            expiries=[expiry] if expiry else None,
+            max_expiries=max_expiries,
+            target_delta=target_delta,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _err(e) from e
+
+
+def _skew_underlying(underlying: str) -> str:
+    u = underlying.upper()
+    if u not in iv_skew_runner.underlyings():
+        raise _err(RuntimeError(f"Unknown underlying. Use {list(iv_skew_runner.underlyings())}"))
+    return u
+
+
+@app.get("/skew/status")
+def iv_skew_status() -> dict[str, Any]:
+    """Sampler health and the last cycle's per-underlying result."""
+    return {
+        "alive": iv_skew_runner.is_alive(),
+        "underlyings": list(iv_skew_runner.underlyings()),
+        "sample_interval_min": iv_skew_runner.SAMPLE_INTERVAL_MIN,
+        "last_report": iv_skew_runner.last_report(),
+    }
+
+
+@app.get("/skew/coverage")
+def iv_skew_coverage(underlying: str = "NIFTY") -> dict[str, Any]:
+    """What the archive holds, and which sessions have been rolled up."""
+    return iv_skew_store.coverage(_skew_underlying(underlying))
+
+
+@app.get("/skew/series")
+def iv_skew_series(
+    underlying: str = "NIFTY",
+    session_date: str | None = Query(None, description="YYYY-MM-DD; omit for the latest archived"),
+) -> dict[str, Any]:
+    """Intraday samples for one archived session.
+
+    Read-only over the archive: never fetches, so it cannot be slowed by Kite and
+    returns nothing for a session that was not sampled.
+    """
+    u = _skew_underlying(underlying)
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+
+    # Latest archived, not today — before the open there is no file for today.
+    day = day or iv_skew_store.latest_session(u)
+    samples = iv_skew_store.load_session(u, day) if day else []
+    return {
+        "underlying": u,
+        "session_date": day.isoformat() if day else None,
+        "samples": len(samples),
+        "points": samples,
+    }
+
+
+@app.get("/skew/daily")
+def iv_skew_daily(
+    underlying: str = "NIFTY",
+    rank: int = Query(0, ge=0, le=5, description="0 = nearest expiry"),
+    clean_only: bool = Query(True, description="Exclude sessions whose chain was degraded"),
+    limit: int | None = Query(None, ge=1, le=2000),
+) -> dict[str, Any]:
+    """The daily RR series — the desk's actual purpose.
+
+    Keyed by expiry *rank* rather than contract, because expiries roll; ``dte``
+    rides along on each point so the resulting sawtooth is visible rather than
+    silently confounding the trend.
+    """
+    u = _skew_underlying(underlying)
+    # Lazy, idempotent: any completed session missing a daily row is rolled up
+    # here, so the series is correct even if the sampler was down at the close.
+    iv_skew_store.ensure_rollup(iv_skew_runner.underlyings())
+    return iv_skew_store.daily_series(u, rank=rank, clean_only=clean_only, limit=limit)
 
 
 @app.get("/arbitrage/config")
@@ -2948,6 +3229,568 @@ def velocity_chart(
     except ValueError as exc:
         raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
     return dv_chart.session_chart(u, day, expiry=expiry)
+
+
+@app.get("/decay/chart")
+def decay_chart(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+    horizon_min: int = THETA_DEFAULT_HORIZON_MIN,
+) -> dict[str, Any]:
+    """Theta burn rate and decay capture for one archived session.
+
+    Prefix is ``/decay`` rather than ``/theta`` so the SPA page at
+    ``/theta-decay`` does not collide: ``api.ui_static.is_api_path`` matches on
+    ``startswith``, so a ``/theta`` prefix would turn a hard browser load of the
+    page into a JSON 404 (see CLAUDE.md).
+
+    Reads the delta-velocity archive — this desk has no collector of its own.
+    """
+    from analysis.theta_decay import chart as td_chart
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+    if horizon_min < 1 or horizon_min > 375:
+        raise _err(RuntimeError("horizon_min must be between 1 and 375 (one trading session)"))
+    return td_chart.session_chart(u, day, expiry=expiry, horizon_min=horizon_min)
+
+
+@app.get("/decay/velocity")
+def decay_velocity(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+) -> dict[str, Any]:
+    """Clock-removed theta velocity and its lag profile against spot moves.
+
+    Split from ``/decay/chart`` on cost — it is ~2s against that endpoint's
+    ~1.4s — and on strength. Measured 2026-08-12 it correlates 0.12-0.16 with
+    spot moves and *lags* them, so it is a diagnostic rather than a signal.
+    """
+    from analysis.theta_decay import chart as td_chart
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    try:
+        day = date.fromisoformat(session_date) if session_date else None
+    except ValueError as exc:
+        raise _err(RuntimeError(f"Bad session_date {session_date!r}, expected YYYY-MM-DD")) from exc
+    return td_chart.velocity_chart(u, day, expiry=expiry)
+
+
+@app.get("/decay/status")
+def decay_status(underlying: str = "NIFTY") -> dict[str, Any]:
+    """What the theta desk can currently see.
+
+    Its coverage *is* the delta-velocity archive's coverage — same files, same
+    collector — so this reports that rather than pretending to own a feed.
+    """
+    from analysis.theta_decay import features as td_features
+
+    u = underlying.upper()
+    if u not in dv_collector.UNDERLYINGS:
+        raise _err(RuntimeError(f"Unknown underlying {underlying}. Use {list(dv_collector.UNDERLYINGS)}"))
+    return {
+        "source": "analysis/delta_velocity archive (shared; no separate collector)",
+        "collector_alive": delta_velocity_alive(),
+        "underlyings": list(dv_collector.UNDERLYINGS),
+        "coverage": delta_velocity_store.coverage(u),
+        "defaults": {
+            "horizon_min": td_features.DEFAULT_HORIZON_MIN,
+            "min_premium": td_features.MIN_PREMIUM,
+            "min_theta_share": td_features.MIN_THETA_SHARE,
+            "max_vega_share": td_features.MAX_VEGA_SHARE,
+            "risk_free_rate": td_features.RISK_FREE,
+            "dividend_yield": td_features.DIVIDEND_YIELD,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Option Chain Build-Up desk (/buildup)
+#
+# Prefix is ``/buildup`` so the SPA page at ``/chain-buildup`` does not collide:
+# ``api.ui_static.is_api_path`` matches on ``startswith``, and "/chain-buildup"
+# does not start with "/buildup". See CLAUDE.md.
+#
+# Read-only, and collector-free -- it reads the delta-velocity minute archive,
+# the same way the theta-decay desk does. Never places an order.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/buildup/grid")
+def buildup_grid(
+    underlying: str = "NIFTY",
+    expiry: str | None = None,
+    session_date: str | None = None,
+    timeframe_min: int = 5,
+    strike_range: str = "atm10",
+    baseline_mode: str = "session_open",
+    widen: bool = True,
+    pct_threshold: float | None = None,
+    cum_pct_threshold: float | None = None,
+    min_abs_oi: float | None = None,
+    threshold_mode: str = "fixed",
+) -> dict[str, Any]:
+    """Strike x time-bucket OI build-up grid for one expiry.
+
+    ``widen=false`` keeps the response purely archive-backed (no Kite calls);
+    ``true`` lets a wide ``strike_range`` reach past the collector's ATM window
+    via historical OI candles, capped and reported in ``meta.widen``.
+
+    Breach thresholds mirror the OI Tracker desk: ``pct_threshold`` defaults per
+    timeframe, ``cum_pct_threshold`` marks a whole strike, and ``min_abs_oi`` is
+    the absolute floor a move must clear before any percentage may call it a
+    breach. All three are echoed back in ``thresholds``.
+
+    ``threshold_mode="adaptive"`` replaces the flat percentage with the fitted
+    p95 for this (timeframe, DTE, time-of-day) from
+    ``analysis/chain_buildup/calibration.py``. ``thresholds.mode`` reports what
+    was actually applied, which is not always what was asked for.
+    """
+    from analysis.chain_buildup import features as cb_features
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        return cb_service.get_grid(
+            underlying,
+            expiry=expiry,
+            session_date=session_date,
+            timeframe_min=timeframe_min,
+            strike_range=strike_range,
+            baseline_mode=baseline_mode,
+            widen=widen,
+            pct_threshold=pct_threshold,
+            cum_pct_threshold=(
+                cb_features.CUM_PCT_THRESHOLD if cum_pct_threshold is None else cum_pct_threshold
+            ),
+            min_abs_oi=cb_features.MIN_ABS_OI if min_abs_oi is None else min_abs_oi,
+            threshold_mode=threshold_mode,
+        )
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/buildup/expiries")
+def buildup_expiries(underlying: str = "NIFTY", session_date: str | None = None) -> dict[str, Any]:
+    """Expiries the chosen session actually archived, nearest first."""
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        return {
+            "underlying": underlying.upper(),
+            "session_date": session_date,
+            "expiries": cb_service.expiries(underlying, session_date),
+        }
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/buildup/levels")
+def buildup_levels(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    expiry: str | None = None,
+    strikes: str | None = None,
+    track: bool = False,
+    bucket_ends: str | None = None,
+) -> dict[str, Any]:
+    """Gamma reference levels to overlay on the build-up ladder.
+
+    Separate from ``/buildup/grid`` on purpose: the grid is a pure archive read
+    with no Kite call, while this reaches the gamma snapshot. Keeping them apart
+    means a gamma outage greys one panel instead of blanking the grid.
+
+    ``strikes`` is an optional comma-separated ladder, used only to bracket the
+    price levels (flip, POC) between the two rows they fall between — they are
+    never snapped to a row, which would move them by up to half a strike step.
+    """
+    from datetime import datetime as _dt
+
+    from analysis.chain_buildup import levels as cb_levels
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        u = cb_service._check_underlying(underlying)
+        day = cb_service._resolve_session(u, session_date)
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+    ladder: list[float] = []
+    if strikes:
+        for part in strikes.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ladder.append(float(part))
+            except ValueError:
+                continue
+
+    payload = cb_levels.resolve(u, day, strikes=ladder, grid_expiry=expiry)
+
+    # `track` answers a different question from the rest of this payload: not
+    # "where is the wall now" but "where was each level at the close of every
+    # bucket". It is opt-in because it walks the whole gamma trail, and the
+    # static overlay is useful without it.
+    if track and bucket_ends:
+        ends: list[_dt] = []
+        for part in bucket_ends.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ends.append(_dt.fromisoformat(part))
+            except ValueError:
+                continue
+        if ends:
+            payload["track"] = cb_levels.track(u, day, ends, expiry=expiry)
+    return payload
+
+
+@app.get("/buildup/flow")
+def buildup_flow(
+    underlying: str = "NIFTY",
+    session_date: str | None = None,
+    timeframe_min: int = 5,
+    bucket_ends: str | None = None,
+) -> dict[str, Any]:
+    """Front-month future volume per bucket, for the strip under the ladder.
+
+    Separate from ``/buildup/grid`` for the same reason ``/buildup/levels`` is:
+    the grid is a pure archive read, this makes a Kite historical call. One
+    instrument per session, cached — cheap, but a futures-feed problem should
+    grey one strip rather than blank the ladder.
+
+    Carries volume only. Buy-minus-sell delta needs an aggressor, which no data
+    in this repo has yet — see ``analysis/chain_buildup/flow.py``.
+    """
+    from datetime import datetime as _dt
+
+    from analysis.chain_buildup import flow as cb_flow
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        u = cb_service._check_underlying(underlying)
+        day = cb_service._resolve_session(u, session_date)
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+    ends: list[_dt] = []
+    for part in (bucket_ends or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ends.append(_dt.fromisoformat(part))
+        except ValueError:
+            continue
+    if not ends:
+        raise _err(ValueError("bucket_ends is required — pass the grid's bucket end timestamps"))
+
+    try:
+        return cb_flow.underlying_flow(u, day, ends, timeframe_min=timeframe_min)
+    except ValueError as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/buildup/status")
+def buildup_status(underlying: str = "NIFTY") -> dict[str, Any]:
+    """Archive coverage and defaults for the build-up desk."""
+    from analysis.chain_buildup import service as cb_service
+
+    try:
+        payload = cb_service.status(underlying)
+    except ValueError as exc:
+        raise _err(exc) from exc
+    payload["collector_alive"] = delta_velocity_alive()
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Options Arbitrage desk (/oarb)
+#
+# Prefix is ``/oarb`` rather than ``/options-arbitrage`` for two reasons: the
+# SPA page at ``/opt-arb`` must not start with an API prefix (``is_api_path``
+# matches on ``startswith``), and ``/options`` is already an API prefix, so
+# anything beginning ``/options`` would be swallowed. See CLAUDE.md.
+#
+# Read-only. This desk never places an order.
+# ---------------------------------------------------------------------------
+
+
+class OptArbConfigIn(BaseModel):
+    min_net_rs: float | None = None
+    lots: int | None = None
+    require_clean: bool | None = None
+    require_depth: bool | None = None
+    families: list[str] | None = None
+    strike_window: int | None = None
+    rate_pct: float | None = None
+    underlyings: list[dict[str, str]] | None = None
+    rates: dict[str, dict[str, float | bool]] | None = None
+
+
+@app.get("/oarb/config")
+def oarb_config() -> dict[str, Any]:
+    from analysis.opt_arb import store as oarb_store
+
+    return oarb_store.config()
+
+
+@app.post("/oarb/config")
+def oarb_config_save(body: OptArbConfigIn) -> dict[str, Any]:
+    from analysis.opt_arb import store as oarb_store
+
+    return oarb_store.save_config(body.model_dump(exclude_none=True))
+
+
+@app.post("/oarb/config/reset")
+def oarb_config_reset() -> dict[str, Any]:
+    from analysis.opt_arb import store as oarb_store
+
+    return oarb_store.reset_config()
+
+
+@app.get("/oarb/pairs")
+def oarb_pairs() -> dict[str, Any]:
+    """Big/mini registry with its live clean-vs-carry classification.
+
+    Reads the instrument dump only — no quotes, so it answers without a market
+    session and is the right thing to look at before trusting any pair row.
+    """
+    from analysis.opt_arb import universe as oarb_universe
+
+    rows = oarb_universe.pair_registry()
+    return {
+        "pairs": rows,
+        "counts": {"total": len(rows), "clean": sum(1 for r in rows if r["clean"])},
+    }
+
+
+@app.get("/oarb/scan")
+def oarb_scan(
+    families: str | None = None,
+    lots: int | None = None,
+    min_net: float | None = None,
+    require_clean: bool | None = None,
+    require_depth: bool | None = None,
+) -> dict[str, Any]:
+    """Full sweep, ranked by net-of-charges rupee edge."""
+    from analysis.opt_arb import scanner as oarb_scanner
+
+    fams = [f.strip() for f in families.split(",") if f.strip()] if families else None
+    try:
+        return oarb_scanner.scan_all(
+            families=fams,
+            lots=lots,
+            min_net=min_net,
+            require_clean=require_clean,
+            require_depth=require_depth,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/underlying")
+def oarb_underlying(
+    name: str = "NIFTY",
+    exchange: str = "NFO",
+    expiry: str | None = None,
+    families: str | None = None,
+    lots: int | None = None,
+    min_net: float | None = None,
+    require_depth: bool | None = None,
+) -> dict[str, Any]:
+    """Butterfly / vertical / box violations for one underlying and expiry."""
+    from analysis.opt_arb import scanner as oarb_scanner
+
+    fams = [f.strip() for f in families.split(",") if f.strip()] if families else None
+    try:
+        return oarb_scanner.scan_underlying(
+            name.upper(),
+            exchange.upper(),
+            expiry,
+            families=fams,
+            lots=lots,
+            min_net=min_net,
+            require_depth=require_depth,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/xcontract")
+def oarb_xcontract(
+    pair: str | None = None,
+    expiry: str | None = None,
+    lots: int | None = None,
+    min_net: float | None = None,
+    require_clean: bool = True,
+    require_depth: bool = True,
+) -> dict[str, Any]:
+    """Big-vs-mini scan, optionally pinned to one pair and expiry."""
+    from analysis.opt_arb import store as oarb_store
+    from analysis.opt_arb.detectors import xcontract as oarb_xc
+
+    cfg = oarb_store.config()
+    try:
+        return oarb_xc.scan(
+            pair_keys=[pair.upper()] if pair else None,
+            expiry=expiry,
+            lots=int(lots or cfg["lots"]),
+            min_net=float(min_net if min_net is not None else cfg["min_net_rs"]),
+            require_clean=require_clean,
+            require_depth=require_depth,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/xsheet")
+def oarb_xsheet(
+    pair: str = "GOLD_GOLDM",
+    expiry: str | None = None,
+    option_type: str = "CE",
+    lots: int | None = None,
+    threshold: float = 0.0,
+) -> dict[str, Any]:
+    """Big-vs-mini strike grid — BUY and SELL of the spread at every strike.
+
+    Cells are **net of charges**, and the header basis is labelled as carry when
+    the two contracts reference different futures months.
+    """
+    from analysis.opt_arb import store as oarb_store
+    from analysis.opt_arb import universe as oarb_universe
+    from analysis.opt_arb.detectors import xcontract as oarb_xc
+
+    found = oarb_universe.pair_by_key(pair)
+    if found is None:
+        known = [p.key for p in oarb_universe.MINI_PAIRS]
+        raise _err(RuntimeError(f"Unknown pair {pair!r}. Use one of {known}"))
+    cfg = oarb_store.config()
+    try:
+        return oarb_xc.sheet(
+            found,
+            expiry=expiry,
+            option_type=option_type.upper(),
+            lots=int(lots or cfg["lots"]),
+            threshold=threshold,
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+@app.get("/oarb/sheet")
+def oarb_sheet(
+    name: str = "NIFTY",
+    exchange: str = "NFO",
+    expiry: str | None = None,
+    option_type: str = "CE",
+    widths: str | None = None,
+    strike_window: int | None = None,
+    lots: int | None = None,
+) -> dict[str, Any]:
+    """Combo-butterfly worksheet: body strikes down, wing widths across.
+
+    BUY is priced on the wings' asks and the body's bid, SELL the other way
+    round, so a green cell is one you could actually hit rather than one that
+    only exists at the mid.
+    """
+    from analysis.opt_arb import store as oarb_store
+    from analysis.opt_arb import universe as oarb_universe
+    from analysis.opt_arb.detectors import butterfly as oarb_fly
+
+    cfg = oarb_store.config()
+    grid = None
+    if widths:
+        grid = [float(w) for w in widths.split(",") if w.strip()]
+    target = expiry
+    if not target:
+        listed = oarb_universe.option_expiries(name.upper(), exchange.upper())
+        target = listed[0] if listed else None
+    if not target:
+        raise _err(RuntimeError(f"No listed option expiry for {exchange.upper()}:{name.upper()}"))
+    try:
+        return oarb_fly.sheet(
+            name.upper(),
+            exchange.upper(),
+            target,
+            option_type=option_type.upper(),
+            widths=grid,
+            strike_window=int(strike_window or cfg["strike_window"]),
+            lots=int(lots or cfg["lots"]),
+        )
+    except Exception as exc:
+        raise _err(exc) from exc
+
+
+class OptArbPayoffLeg(BaseModel):
+    side: Literal["BUY", "SELL"]
+    option_type: str | None = None
+    strike: float | None = None
+    price: float = 0.0
+    units: float = 0.0
+    exchange: str | None = None
+    tradingsymbol: str | None = None
+
+
+class OptArbPayoffIn(BaseModel):
+    legs: list[OptArbPayoffLeg]
+    spot: float | None = None
+    charges: float = 0.0
+
+
+@app.post("/oarb/payoff")
+def oarb_payoff(body: OptArbPayoffIn) -> dict[str, Any]:
+    """Expiry payoff curve for an arbitrary leg set.
+
+    Scan rows already carry their own ``payoff`` block; this is for a structure
+    assembled by hand, or for re-pricing one at a different size.
+    """
+    from analysis.opt_arb import payoff as oarb_payoff
+
+    return oarb_payoff.build(
+        [leg.model_dump() for leg in body.legs],
+        spot=body.spot,
+        charges=body.charges,
+    )
+
+
+@app.get("/oarb/expiries")
+def oarb_expiries(name: str = "NIFTY", exchange: str = "NFO") -> dict[str, Any]:
+    from analysis.opt_arb import universe as oarb_universe
+
+    return {
+        "underlying": name.upper(),
+        "exchange": exchange.upper(),
+        "expiries": oarb_universe.option_expiries(name.upper(), exchange.upper()),
+        "segment": oarb_universe.cost_segment(exchange.upper(), name.upper()),
+        "physically_settled": oarb_universe.is_physically_settled(
+            exchange.upper(), name.upper()
+        ),
+    }
+
+
+@app.get("/oarb/costs")
+def oarb_costs(
+    segment: str = "NFO",
+    side: str = "BUY",
+    price: float = 100.0,
+    units: float = 75.0,
+) -> dict[str, Any]:
+    """Charge preview for one leg — the floor any edge has to clear."""
+    from analysis.opt_arb import costs as oarb_costs
+
+    leg = oarb_costs.leg_cost(segment.upper(), side.upper(), price, units)  # type: ignore[arg-type]
+    return {"rates_asof": oarb_costs.RATES_ASOF, "leg": leg.as_dict()}
 
 
 @app.get("/api/meta")

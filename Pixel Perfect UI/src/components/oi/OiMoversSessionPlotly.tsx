@@ -4,10 +4,11 @@ import type { Config, Data, Layout } from "plotly.js";
 
 import type { OiMoversHistoryPoint, OiMoversSnapshot } from "@/lib/types";
 import {
-  SESSION_CHART,
   SESSION_PLOT_INSET,
   SESSION_SHELL,
+  sessionChartTheme,
 } from "@/components/charts/sessionChartTheme";
+import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 
 const CE_RED = "#ef4444";
@@ -144,6 +145,7 @@ export interface OiMoversSessionPlotlyProps {
  */
 export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotlyProps) {
   const plotRef = useRef<HTMLDivElement>(null);
+  const { isDark } = useTheme();
   const chartRaw = (snap.chart_series?.length ? snap.chart_series : snap.history) ?? [];
 
   const series = useMemo(() => {
@@ -325,7 +327,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
         y: ceY,
         yaxis: "y",
         connectgaps: false,
-        line: { color: CE_RED, width: 2.4, shape: "hv" },
+        line: { color: CE_RED, width: 2.4, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>CE OI %{y:,.0f}<extra></extra>",
       } as Data);
     }
@@ -338,7 +340,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
         y: peY,
         yaxis: "y",
         connectgaps: false,
-        line: { color: PE_GREEN, width: 2.4, shape: "hv" },
+        line: { color: PE_GREEN, width: 2.4, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>PE OI %{y:,.0f}<extra></extra>",
       } as Data);
     }
@@ -377,7 +379,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
         y: pcrY,
         yaxis: "y3",
         connectgaps: false,
-        line: { color: PCR_AMBER, width: 2.4, shape: "hv" },
+        line: { color: PCR_AMBER, width: 2.4, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>PCR %{y:.3f}<extra></extra>",
       } as Data);
     }
@@ -401,7 +403,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
         : null;
 
     const { paperBg, plotBg, grid, axis, fontFamily, hoverBg, hoverBorder, hoverText } =
-      SESSION_CHART;
+      sessionChartTheme(isDark);
 
     const layout: Partial<Layout> = {
       autosize: true,
@@ -503,7 +505,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
     };
 
     void Plotly.react(el, data, layout, config);
-  }, [series, baseLabel, snap.session_poc?.poc]);
+  }, [series, baseLabel, snap.session_poc?.poc, isDark]);
 
   const cePct = formatPctFromBase(series.currCe, series.ceBase);
   const pePct = formatPctFromBase(series.currPe, series.peBase);
@@ -542,11 +544,11 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
     <div className={cn(SESSION_SHELL, className)}>
       <div className="space-y-2 px-3 py-2">
         <div className="flex flex-wrap items-baseline gap-2">
-          <span className="text-base font-semibold tracking-wide text-slate-800">{underlying}</span>
+          <span className="text-base font-semibold tracking-wide text-foreground">{underlying}</span>
           {expiryLabel ? (
-            <span className="text-xs text-slate-500">{expiryLabel}</span>
+            <span className="text-xs text-muted-foreground">{expiryLabel}</span>
           ) : null}
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-muted-foreground">
             CE/PE OI vs {baseLabel}
           </span>
         </div>
@@ -563,7 +565,7 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
                 }}
                 aria-hidden
               />
-              <span className="text-slate-500">{c.label}</span>
+              <span className="text-muted-foreground">{c.label}</span>
               <span className="font-semibold tabular-nums" style={{ color: c.color }}>
                 {c.value}
                 {"suffix" in c && c.suffix ? (
@@ -577,20 +579,20 @@ export function OiMoversSessionPlotly({ snap, className }: OiMoversSessionPlotly
 
       <div className={SESSION_PLOT_INSET}>
         {!series.hasGrid ? (
-          <p className="px-4 py-16 text-center text-sm text-slate-500">
+          <p className="px-4 py-16 text-center text-sm text-muted-foreground">
             Session OI path builds as the desk refreshes; spot loads from minute candles.
           </p>
         ) : (
           <div ref={plotRef} style={{ width: "100%", minHeight: 380 }} />
         )}
         {series.hasGrid && !series.hasOi ? (
-          <p className="absolute bottom-2 left-3 text-[10px] text-slate-400">
+          <p className="absolute bottom-2 left-3 text-[10px] text-muted-foreground/70">
             Waiting for in-session OI samples…
           </p>
         ) : null}
       </div>
 
-      <p className="px-3 pb-3 text-[10px] text-slate-500">
+      <p className="px-3 pb-3 text-[10px] text-muted-foreground">
         Chart-only overlay. Change boards still rank Curr − Open/PD. Baseline prefers session open
         (O) locked at first post-09:20 poll, else previous-day close (PD). CE/PE/PCR lines start
         from that open capture (API sampler keeps ticks even if this page is closed). PCR axis is

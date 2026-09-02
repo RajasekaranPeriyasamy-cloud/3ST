@@ -19,6 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from settings import data_dir
+from utils.atomic_json import atomic_write_json
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -115,6 +116,20 @@ def to_rows(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     # surfaced here; PCR and the OI tiles read them.
                     "oi": leg.get("oi"),
                     "volume": leg.get("volume"),
+                    # Top of book, archived from 2026-08-30. This function is an
+                    # explicit allow-list, so a field added to the collector is
+                    # invisible to every consumer until it is named here too —
+                    # which is exactly how the quote rule came to report 100%
+                    # unclassified on a session whose archive held a bid on
+                    # 22,198 of 22,200 legs.
+                    "bid": leg.get("bid"),
+                    "ask": leg.get("ask"),
+                    "bid_qty": leg.get("bid_qty"),
+                    "ask_qty": leg.get("ask_qty"),
+                    # NB `ltp` above is the bid/ask MID (see collector); this is
+                    # the price that actually traded, and the only one a trade
+                    # classifier may use.
+                    "last_price": leg.get("last_price"),
                     "spot": snap.get("spot"),
                 }
             )
@@ -193,9 +208,5 @@ def load_state() -> dict[str, Any]:
 def save_state(patch: dict[str, Any]) -> dict[str, Any]:
     with _LOCK:
         state = {**load_state(), **patch}
-        path = root_dir() / STATE_FILE
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, indent=2, default=str)
-        tmp.replace(path)
+        atomic_write_json(root_dir() / STATE_FILE, state, indent=2, default=str)
     return state

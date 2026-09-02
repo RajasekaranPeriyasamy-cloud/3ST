@@ -1,13 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Plotly from "plotly.js-dist-min";
-import type { Config, Data, Layout, PlotHoverEvent, PlotMouseEvent, PlotRelayoutEvent } from "plotly.js";
+import type {
+  Annotations,
+  Config,
+  Data,
+  Layout,
+  PlotHoverEvent,
+  PlotMouseEvent,
+  PlotRelayoutEvent,
+  Shape,
+} from "plotly.js";
 
 import type { GammaHistoryPoint, GammaReversal, GammaSnapshot, GammaStrikeRow } from "@/lib/types";
 import {
   SESSION_CHART,
   SESSION_PLOT_INSET,
   SESSION_SHELL,
+  sessionChartTheme,
 } from "@/components/charts/sessionChartTheme";
+import { useTheme } from "@/hooks/useTheme";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -58,6 +69,9 @@ const SPOT_BLUE = "#2563eb";
 /** ATM IV — darker pink for contrast on white (distinct from Spot / GEX). */
 const ATM_IV_PINK = "#db2777";
 /** Session futures POC — violet on white legend + light plot. */
+/** GEX zero (sign boundary). Slate-400 — the theme zeroline #cbd5e1 is
+ *  near-invisible against the #eef1f4 grid on a white plot. */
+const GEX_ZERO = "#94a3b8";
 const FUT_POC = "#7c3aed";
 const CALL_OI = "#ef4444";
 const PUT_OI = "#22c55e";
@@ -67,6 +81,203 @@ const VOL_POS_FILL = "rgba(34, 197, 94, 0.28)";
 const OI_STRIP_DOMAIN: [number, number] = [0.78, 1];
 const SESSION_DOMAIN_WITH_OI: [number, number] = [0, 0.76];
 const SESSION_DOMAIN_FULL: [number, number] = [0, 1];
+
+/**
+ * Price-level overlay palette (Spot axis). Deliberately outside the GEX series
+ * hues above — green/red/amber/blue/pink/violet are all taken by traces.
+ * Prev day / prev week stay greyscale: they are background structure, not a
+ * gamma reading, and should recede behind the walls.
+ */
+const LEVEL_CALL_WALL = "#ea580c";
+const LEVEL_PUT_WALL = "#0d9488";
+const LEVEL_FLIP = "#4f46e5";
+const LEVEL_PIN = "#475569";
+const LEVEL_SIGMA = "#78716c";
+const LEVEL_PREV_DAY = "#94a3b8";
+const LEVEL_PREV_WEEK = "#64748b";
+
+type LevelKey = "walls" | "flip" | "pin" | "sigma" | "prevDay" | "prevWeek";
+
+const LEVEL_TOGGLES: { key: LevelKey; label: string; title: string }[] = [
+  {
+    key: "walls",
+    label: "Walls",
+    title: "Call / Put gamma walls (peak dealer gamma strikes) on the Spot axis",
+  },
+  {
+    key: "flip",
+    label: "Flip",
+    title: "Gamma flip / zero-gamma level — dealer hedging changes sign across it",
+  },
+  {
+    key: "pin",
+    label: "Pin",
+    title: "Pin strike — heaviest gamma concentration strike",
+  },
+  {
+    key: "sigma",
+    label: "±1σ",
+    title: "Expected-move band (straddle when quoted, else ATM IV)",
+  },
+  {
+    key: "prevDay",
+    label: "Prev D",
+    title: "Previous day high / low / close",
+  },
+  {
+    key: "prevWeek",
+    label: "Prev W",
+    title: "Previous week high / low / close",
+  },
+];
+
+type SessionLevel = {
+  key: LevelKey;
+  label: string;
+  value: number;
+  color: string;
+  dash: "solid" | "dot" | "dash" | "dashdot";
+  width: number;
+  /** Echo the current value in the legend chip row (gamma levels only). */
+  chip: boolean;
+};
+
+/**
+ * Snapshot → enabled price levels. Everything here is already computed
+ * server-side; this only picks and labels. Non-finite / absent values drop
+ * out silently so a missing wall never draws a line at 0.
+ */
+function resolveSessionLevels(
+  snap: GammaSnapshot,
+  opts: Record<LevelKey, boolean>,
+): SessionLevel[] {
+  const out: SessionLevel[] = [];
+  const push = (
+    key: LevelKey,
+    label: string,
+    raw: number | null | undefined,
+    color: string,
+    dash: SessionLevel["dash"],
+    width: number,
+    chip: boolean,
+  ) => {
+    if (!opts[key]) return;
+    if (raw == null || !Number.isFinite(raw)) return;
+    out.push({ key, label, value: Number(raw), color, dash, width, chip });
+  };
+
+  push("walls", "Call wall", snap.call_wall, LEVEL_CALL_WALL, "dash", 1.6, true);
+  push("walls", "Put wall", snap.put_wall, LEVEL_PUT_WALL, "dash", 1.6, true);
+  push("flip", "Flip", snap.flip_level, LEVEL_FLIP, "dashdot", 1.6, true);
+  push("pin", "Pin", snap.concentration?.pin_strike, LEVEL_PIN, "dot", 1.5, true);
+  push("sigma", "+1σ", snap.expected_move?.sigma1_up, LEVEL_SIGMA, "dot", 1, true);
+  push("sigma", "−1σ", snap.expected_move?.sigma1_dn, LEVEL_SIGMA, "dot", 1, true);
+
+  const ref = snap.reference_levels;
+  push("prevDay", "PDH", ref?.prev_day_high, LEVEL_PREV_DAY, "dot", 1, false);
+  push("prevDay", "PDL", ref?.prev_day_low, LEVEL_PREV_DAY, "dot", 1, false);
+  push("prevDay", "PDC", ref?.prev_day_close, LEVEL_PREV_DAY, "dot", 1, false);
+  push("prevWeek", "PWH", ref?.prev_week_high, LEVEL_PREV_WEEK, "dot", 1, false);
+  push("prevWeek", "PWL", ref?.prev_week_low, LEVEL_PREV_WEEK, "dot", 1, false);
+  push("prevWeek", "PWC", ref?.prev_week_close, LEVEL_PREV_WEEK, "dot", 1, false);
+
+  return out;
+}
+
+type LevelExtras = { shapes: Partial<Shape>[]; annotations: Partial<Annotations>[] };
+
+/** Paper-y of the session pane's bottom edge (volume pane takes [0, 0.28]). */
+const LEVEL_PANE_TOP = 0.985;
+const levelPaneBottom = (hasVolume: boolean) => (hasVolume ? 0.375 : 0.015);
+
+/**
+ * Horizontal level lines on the Spot axis, clipped to the visible band.
+ *
+ * In-range: full-width line + a left-edge label chip (Sensibull-style).
+ * Out of range: a stacked edge marker (▲ above / ▼ below) so an off-screen
+ * wall still reads its value — the Spot scale is deliberately narrow
+ * (see `computeSpotYRange`) and must not be stretched to swallow a far wall.
+ */
+function buildLevelLayoutExtras(
+  levels: SessionLevel[],
+  yRange: [number, number] | undefined,
+  hasVolume: boolean,
+): LevelExtras {
+  const shapes: Partial<Shape>[] = [];
+  const annotations: Partial<Annotations>[] = [];
+  if (!levels.length) return { shapes, annotations };
+
+  const lo = yRange ? Math.min(yRange[0], yRange[1]) : Number.NEGATIVE_INFINITY;
+  const hi = yRange ? Math.max(yRange[0], yRange[1]) : Number.POSITIVE_INFINITY;
+  const span = hi - lo;
+  // Roughly one label height on the Spot axis — used to stagger labels that
+  // would otherwise print on top of each other at near-identical levels.
+  const labelGap = Number.isFinite(span) ? span * 0.045 : 0;
+
+  const inRange = levels
+    .filter((l) => l.value >= lo && l.value <= hi)
+    .sort((a, b) => a.value - b.value);
+  // Closest-to-visible first, so the nearest off-screen level sits at the edge.
+  const above = levels.filter((l) => l.value > hi).sort((a, b) => a.value - b.value);
+  const below = levels.filter((l) => l.value < lo).sort((a, b) => b.value - a.value);
+
+  let lastLabelY: number | null = null;
+  let stagger = 0;
+  for (const l of inRange) {
+    shapes.push({
+      type: "line",
+      xref: "paper",
+      yref: "y2",
+      x0: 0,
+      x1: 1,
+      y0: l.value,
+      y1: l.value,
+      line: { color: l.color, width: l.width, dash: l.dash },
+      layer: "below",
+    });
+    const collides = lastLabelY != null && labelGap > 0 && l.value - lastLabelY < labelGap;
+    stagger = collides ? (stagger + 1) % 3 : 0;
+    lastLabelY = l.value;
+    annotations.push({
+      text: `${l.label} ${formatSpot(l.value)}`,
+      xref: "paper",
+      yref: "y2",
+      x: 0.004 + stagger * 0.11,
+      y: l.value,
+      showarrow: false,
+      xanchor: "left",
+      yanchor: "middle",
+      font: { size: 9, color: "#ffffff", family: SESSION_CHART.fontFamily },
+      bgcolor: l.color,
+      borderpad: 2,
+      opacity: 0.92,
+    });
+  }
+
+  const pushEdge = (list: SessionLevel[], paperY: number, arrow: string, dir: -1 | 1) => {
+    list.forEach((l, i) => {
+      annotations.push({
+        text: `${arrow} ${l.label} ${formatSpot(l.value)}`,
+        xref: "paper",
+        yref: "paper",
+        x: 0.004,
+        y: paperY,
+        yshift: dir * i * 13,
+        showarrow: false,
+        xanchor: "left",
+        yanchor: dir < 0 ? "top" : "bottom",
+        font: { size: 9, color: "#ffffff", family: SESSION_CHART.fontFamily },
+        bgcolor: l.color,
+        borderpad: 2,
+        opacity: 0.78,
+      });
+    });
+  };
+  pushEdge(above, LEVEL_PANE_TOP, "▲", -1);
+  pushEdge(below, levelPaneBottom(hasVolume), "▼", 1);
+
+  return { shapes, annotations };
+}
 
 function toMs(t: string | null | undefined, tsMs?: number | null): number | null {
   if (tsMs != null && Number.isFinite(tsMs)) return Number(tsMs);
@@ -517,9 +728,19 @@ export function GexSessionPlotly({
   className,
 }: GexSessionPlotlyProps) {
   const plotRef = useRef<HTMLDivElement>(null);
+  const { isDark } = useTheme();
   const [showCePeOi, setShowCePeOi] = useState(true);
   const [showDoi, setShowDoi] = useState(true);
   const [showAtmIv, setShowAtmIv] = useState(true);
+  /** Price-level overlays default off — the pane already carries 8 series + markers. */
+  const [levelOpts, setLevelOpts] = useState<Record<LevelKey, boolean>>({
+    walls: false,
+    flip: false,
+    pin: false,
+    sigma: false,
+    prevDay: false,
+    prevWeek: false,
+  });
   const [infoRow, setInfoRow] = useState<SessionInfoRow | null>(null);
   const [infoPinned, setInfoPinned] = useState(false);
   const infoPinnedRef = useRef(false);
@@ -537,6 +758,10 @@ export function GexSessionPlotly({
   const strikeRowsRef = useRef<GammaStrikeRow[]>([]);
   const prevUnderlyingRef = useRef<string | null>(null);
   const prevOverlaysRef = useRef<boolean | null>(null);
+  /** Level overlays are re-clipped on pan, so the pieces they compose from are refs. */
+  const levelsRef = useRef<SessionLevel[]>([]);
+  const baseShapesRef = useRef<Partial<Shape>[]>([]);
+  const baseAnnotationsRef = useRef<Partial<Annotations>[]>([]);
 
   const chartRaw = (snap.chart_series?.length ? snap.chart_series : snap.history) ?? [];
 
@@ -642,6 +867,8 @@ export function GexSessionPlotly({
     };
   }, [chartRaw, snap.history]);
 
+  const levelDefs = useMemo(() => resolveSessionLevels(snap, levelOpts), [snap, levelOpts]);
+
   const underlying = String(snap.underlying ?? "").trim() || "—";
   const expiryLabel = snap.expiry ? String(snap.expiry).trim() : "";
   const reversals = snap.reversals ?? [];
@@ -718,7 +945,7 @@ export function GexSessionPlotly({
         y: posY,
         xaxis: "x",
         yaxis: "y",
-        line: { color: POS_GREEN, width: 2.2, shape: "hv" },
+        line: { color: POS_GREEN, width: 2.2, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>+VE GEX %{y:.2f} Cr<extra></extra>",
       } as Data);
       coreTraces.push({
@@ -729,7 +956,7 @@ export function GexSessionPlotly({
         y: negY,
         xaxis: "x",
         yaxis: "y",
-        line: { color: NEG_RED, width: 2.2, shape: "hv" },
+        line: { color: NEG_RED, width: 2.2, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>−VE GEX %{y:.2f} Cr<extra></extra>",
       } as Data);
     }
@@ -743,26 +970,44 @@ export function GexSessionPlotly({
         y: netY,
         xaxis: "x",
         yaxis: "y",
-        line: { color: NET_AMBER, width: 2.4, shape: "hv" },
+        line: { color: NET_AMBER, width: 2.4, shape: "spline", smoothing: 0.5 },
         hovertemplate: "%{x|%H:%M:%S}<br>Net Gamma %{y:.2f} Cr<extra></extra>",
       } as Data);
     }
 
-    if (sampleX.length > 0) {
+    // Sign-flip markers only. A dot per sample put ~400 markers on the pane and
+    // buried the amber Net Gamma line under them; the only reading that changes
+    // is where net gamma crosses zero, so mark the first sample of each regime.
+    const flipX: Date[] = [];
+    const flipY: number[] = [];
+    const flipColors: string[] = [];
+    const flipLabels: string[] = [];
+    for (let i = 1; i < sampleNetY.length; i++) {
+      const curr = sampleNetY[i]!;
+      const prev = sampleNetY[i - 1]!;
+      if ((curr >= 0) === (prev >= 0)) continue;
+      flipX.push(sampleX[i]!);
+      flipY.push(curr);
+      flipColors.push(curr >= 0 ? POS_GREEN : NEG_RED);
+      flipLabels.push(curr >= 0 ? "+VE" : "−VE");
+    }
+
+    if (flipX.length > 0) {
       coreTraces.push({
         type: "scatter",
         mode: "markers",
-        name: "GEX sample",
-        x: sampleX,
-        y: sampleNetY,
+        name: "Sign flip",
+        x: flipX,
+        y: flipY,
+        text: flipLabels,
         xaxis: "x",
         yaxis: "y",
         marker: {
-          size: 5,
-          color: sampleNetY.map((v) => (v >= 0 ? POS_GREEN : NEG_RED)),
-          line: { color: "#fff", width: 0.5 },
+          size: 9,
+          color: flipColors,
+          line: { color: "#fff", width: 1 },
         },
-        hovertemplate: "%{x|%H:%M:%S}<br>Sample %{y:.2f} Cr<extra></extra>",
+        hovertemplate: "%{x|%H:%M:%S}<br>Net Gamma turns %{text}<br>%{y:.2f} Cr<extra></extra>",
       } as Data);
     }
 
@@ -1021,7 +1266,73 @@ export function GexSessionPlotly({
     const atmIvAxisPos = overlaysOn && oiMax > 0 ? 0.74 : 0.98;
 
     const { paperBg, plotBg, grid, axis, zeroline, fontFamily, annotation, hoverBg, hoverBorder, hoverText } =
-      SESSION_CHART;
+      sessionChartTheme(isDark);
+
+    const pocLevel = snap.session_poc?.poc;
+    const hasPoc = pocLevel != null && Number.isFinite(pocLevel);
+    const baseShapes: Partial<Shape>[] = [
+      // GEX zero — the sign boundary, so it has to read at a glance. Plotly's
+      // built-in zeroline takes a colour and a width but no dash, so this is a
+      // shape instead and yaxis.zeroline stays off (otherwise a faint solid line
+      // sits under the dotted one). Lives in baseShapes so the incremental
+      // relayout path keeps it too.
+      {
+        type: "line",
+        xref: "paper",
+        yref: "y",
+        x0: 0,
+        x1: 1,
+        y0: 0,
+        y1: 0,
+        line: { color: GEX_ZERO, width: 2, dash: "dot" },
+        layer: "below",
+      },
+      ...(hasPoc
+        ? ([
+            {
+              type: "line",
+              xref: "paper",
+              yref: "y2",
+              x0: 0,
+              x1: 1,
+              y0: pocLevel,
+              y1: pocLevel,
+              line: { color: FUT_POC, width: 1.5, dash: "dot" },
+            },
+          ] as Partial<Shape>[])
+        : []),
+    ];
+    const baseAnnotations: Partial<Annotations>[] = [
+      {
+        text: `${underlying} · +VE / −VE / Net Gamma`,
+        xref: "paper",
+        yref: "paper",
+        x: 0.01,
+        y: 1.06,
+        showarrow: false,
+        font: { size: 11, color: annotation, family: fontFamily },
+      },
+      ...(hasPoc
+        ? [
+            {
+              text: "Fut POC",
+              xref: "paper" as const,
+              yref: "y2" as const,
+              x: 1,
+              y: pocLevel,
+              showarrow: false,
+              xanchor: "right" as const,
+              yanchor: "bottom" as const,
+              font: { size: 10, color: FUT_POC, family: fontFamily },
+            },
+          ]
+        : []),
+    ];
+
+    levelsRef.current = levelDefs;
+    baseShapesRef.current = baseShapes;
+    baseAnnotationsRef.current = baseAnnotations;
+    const levelExtras = buildLevelLayoutExtras(levelDefs, applyY2Range, hasVolume);
 
     const layout: Partial<Layout> = {
       autosize: true,
@@ -1058,9 +1369,9 @@ export function GexSessionPlotly({
       yaxis: {
         title: { text: "GEX (Cr)", font: { size: 11, color: axis } },
         gridcolor: grid,
-        zeroline: true,
-        zerolinecolor: zeroline,
-        zerolinewidth: 1,
+        // Drawn as a dotted shape in baseShapes instead — Plotly zerolines
+        // cannot be dashed, and a solid one underneath would show through.
+        zeroline: false,
         linecolor: grid,
         tickfont: { color: axis, size: 10 },
         separatethousands: true,
@@ -1146,47 +1457,8 @@ export function GexSessionPlotly({
             },
           }
         : {}),
-      shapes:
-        snap.session_poc?.poc != null && Number.isFinite(snap.session_poc.poc)
-          ? [
-              {
-                type: "line" as const,
-                xref: "paper" as const,
-                yref: "y2" as const,
-                x0: 0,
-                x1: 1,
-                y0: snap.session_poc.poc,
-                y1: snap.session_poc.poc,
-                line: { color: FUT_POC, width: 1.5, dash: "dot" as const },
-              },
-            ]
-          : undefined,
-      annotations: [
-        {
-          text: `${underlying} · +VE / −VE / Net Gamma`,
-          xref: "paper",
-          yref: "paper",
-          x: 0.01,
-          y: 1.06,
-          showarrow: false,
-          font: { size: 11, color: annotation, family: fontFamily },
-        },
-        ...(snap.session_poc?.poc != null && Number.isFinite(snap.session_poc.poc)
-          ? [
-              {
-                text: "Fut POC",
-                xref: "paper" as const,
-                yref: "y2" as const,
-                x: 1,
-                y: snap.session_poc.poc,
-                showarrow: false,
-                xanchor: "right" as const,
-                yanchor: "bottom" as const,
-                font: { size: 10, color: FUT_POC, family: fontFamily },
-              },
-            ]
-          : []),
-      ],
+      shapes: [...baseShapes, ...levelExtras.shapes],
+      annotations: [...baseAnnotations, ...levelExtras.annotations],
     };
 
     const config: Partial<Config> = {
@@ -1270,8 +1542,8 @@ export function GexSessionPlotly({
                 showgrid: false,
                 zeroline: false,
                 showticklabels: false,
-                title: { text: "OI", font: { size: 10, color: SESSION_CHART.axis } },
-                tickfont: { color: SESSION_CHART.axis, size: 9 },
+                title: { text: "OI", font: { size: 10, color: axis } },
+                tickfont: { color: axis, size: 9 },
                 fixedrange: true,
                 visible: true,
               }
@@ -1288,6 +1560,14 @@ export function GexSessionPlotly({
           domain,
         };
       }
+
+      // Panning changes which levels are on-screen, so re-clip rather than
+      // carrying the spread-in shapes/annotations from the previous range.
+      const effRange = preserveY2 ? yRange : (spotRangeRef.current ?? yRange);
+      const nextLevels = buildLevelLayoutExtras(levelsRef.current, effRange, hasVolume);
+      nextLayout.shapes = [...baseShapesRef.current, ...nextLevels.shapes];
+      nextLayout.annotations = [...baseAnnotationsRef.current, ...nextLevels.annotations];
+
       layoutBaseRef.current = nextLayout;
       const data = [...coreTracesRef.current, ...nextOi, ...volumeTracesRef.current];
       void Plotly.react(el, data, nextLayout, plotConfigRef.current);
@@ -1350,10 +1630,13 @@ export function GexSessionPlotly({
     showCePeOi,
     showDoi,
     showAtmIv,
+    levelDefs,
     snap.strikes,
     snap.spot,
+    snap.session_poc,
     gexHistoryPartial,
     reversalGexGate,
+    isDark,
   ]);
 
   const hasGexSeries = series.gexX.length >= 1;
@@ -1423,6 +1706,14 @@ export function GexSessionPlotly({
           },
         ]
       : []),
+    ...levelDefs
+      .filter((l) => l.chip)
+      .map((l) => ({
+        label: l.label,
+        value: formatSpot(l.value),
+        color: l.color,
+        solid: false as const,
+      })),
     ...(snap.sign_mode || snap.strike_window != null
       ? [
           {
@@ -1450,13 +1741,13 @@ export function GexSessionPlotly({
       <div className="space-y-2 px-3 py-2 pr-28">
         <div className="flex flex-wrap items-center gap-3 text-xs">
           <div className="flex min-w-0 items-baseline gap-1.5">
-            <span className="truncate font-semibold tracking-wide text-slate-800">{underlying}</span>
+            <span className="truncate font-semibold tracking-wide text-foreground">{underlying}</span>
             {expiryLabel ? (
-              <span className="truncate text-[10px] text-slate-500">{expiryLabel}</span>
+              <span className="truncate text-[10px] text-muted-foreground">{expiryLabel}</span>
             ) : null}
           </div>
           <div className="flex items-center gap-1.5">
-            <Label htmlFor="gex-session-reversal-tf" className="text-slate-500">
+            <Label htmlFor="gex-session-reversal-tf" className="text-muted-foreground">
               Reversal TF
             </Label>
             <Select
@@ -1473,7 +1764,7 @@ export function GexSessionPlotly({
               </SelectContent>
             </Select>
           </div>
-          <label className="flex items-center gap-1.5 text-slate-500">
+          <label className="flex items-center gap-1.5 text-muted-foreground">
             <Checkbox
               checked={reversalGexGate}
               onCheckedChange={(v) => onReversalGexGateChange(v === true)}
@@ -1482,7 +1773,7 @@ export function GexSessionPlotly({
           </label>
           {reversalGexGate ? (
             <div className="flex items-center gap-1.5">
-              <Label htmlFor="gex-session-gex-mode" className="text-slate-500">
+              <Label htmlFor="gex-session-gex-mode" className="text-muted-foreground">
                 GEX mode
               </Label>
               <Select
@@ -1499,7 +1790,7 @@ export function GexSessionPlotly({
               </Select>
             </div>
           ) : null}
-          <label className="flex items-center gap-1.5 text-slate-500">
+          <label className="flex items-center gap-1.5 text-muted-foreground">
             <Checkbox
               checked={reversalOiGate}
               onCheckedChange={(v) => onReversalOiGateChange(v === true)}
@@ -1507,27 +1798,44 @@ export function GexSessionPlotly({
             Require OI
           </label>
           <label
-            className="flex items-center gap-1.5 text-slate-500"
+            className="flex items-center gap-1.5 text-muted-foreground"
             title="CE/PE OI bars for ATM-nearest strikes in the Spot band; pan Spot/Strike to reveal more"
           >
             <Checkbox checked={showCePeOi} onCheckedChange={(v) => setShowCePeOi(v === true)} />
             CE/PE OI
           </label>
           <label
-            className="flex items-center gap-1.5 text-slate-500"
+            className="flex items-center gap-1.5 text-muted-foreground"
             title="Striped ΔOI ↑ / hollow ΔOI ↓ on the strike-pinned OI strip"
           >
             <Checkbox checked={showDoi} onCheckedChange={(v) => setShowDoi(v === true)} />
             ΔOI
           </label>
           <label
-            className="flex items-center gap-1.5 text-slate-500"
+            className="flex items-center gap-1.5 text-muted-foreground"
             title="ATM IV % on a dedicated right overlay axis (forward-filled after first sample)"
           >
             <Checkbox checked={showAtmIv} onCheckedChange={(v) => setShowAtmIv(v === true)} />
             ATM IV
           </label>
-          <span className="text-[10px] text-slate-500">{REVERSAL_LOCK_HINT[reversalTf]}</span>
+          <span className="text-[10px] text-muted-foreground">{REVERSAL_LOCK_HINT[reversalTf]}</span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className="font-medium text-foreground/80">Levels</span>
+          {LEVEL_TOGGLES.map((t) => (
+            <label key={t.key} className="flex items-center gap-1.5 text-muted-foreground" title={t.title}>
+              <Checkbox
+                checked={levelOpts[t.key]}
+                onCheckedChange={(v) => setLevelOpts((prev) => ({ ...prev, [t.key]: v === true }))}
+              />
+              {t.label}
+            </label>
+          ))}
+          <span className="text-[10px] text-muted-foreground">
+            horizontal on the Spot axis · levels outside the visible band pin to the plot edge (▲
+            above / ▼ below)
+          </span>
         </div>
 
         {gexWaiting ? (
@@ -1578,7 +1886,7 @@ export function GexSessionPlotly({
                 {" · "}
                 {r.label}
                 {muted ? (
-                  <span className="ml-1 rounded bg-slate-500/15 px-1 text-[10px] text-slate-600">
+                  <span className="ml-1 rounded bg-muted px-1 text-[10px] text-muted-foreground">
                     {r.provisional === true ? "provisional" : "pre-GEX"}
                   </span>
                 ) : null}
@@ -1592,7 +1900,7 @@ export function GexSessionPlotly({
             })}
           </div>
         ) : gexWaiting ? null : (
-          <p className="text-[11px] text-slate-500">
+          <p className="text-[11px] text-muted-foreground">
             {gexHistoryPartial && gexHistoryStartedLabel && reversalGexGate
               ? `No ${reversalTf} pivots yet — none before ${gexHistoryStartedLabel}, and none passed the GEX gate in the recorded window.`
               : gexRelaxed && !reversalOiGate
@@ -1620,7 +1928,7 @@ export function GexSessionPlotly({
               }}
               aria-hidden
             />
-            <span className="text-slate-500">{c.label}</span>
+            <span className="text-muted-foreground">{c.label}</span>
             <span className="font-semibold tabular-nums" style={{ color: c.color }}>
               {c.value}
             </span>
@@ -1630,7 +1938,7 @@ export function GexSessionPlotly({
 
       <div className={SESSION_PLOT_INSET}>
         {!hasAnySeries ? (
-          <p className="px-4 py-16 text-center text-sm text-slate-500">
+          <p className="px-4 py-16 text-center text-sm text-muted-foreground">
             Day spot path loads from minute candles; GEX lines appear after the first recorded in-session sample.
           </p>
         ) : (
@@ -1643,18 +1951,18 @@ export function GexSessionPlotly({
           <div
             className={cn(
               "pointer-events-auto absolute right-2 top-2 z-10 max-w-[240px] rounded-md border px-2.5 py-2 text-[11px] leading-relaxed shadow-md",
-              "border-slate-200 bg-white/95 text-slate-800 backdrop-blur-sm",
+              "border-border bg-card/95 text-foreground backdrop-blur-sm",
             )}
             role="status"
           >
             <div className="mb-1 flex items-center justify-between gap-2">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 {infoPinned ? "Pinned" : "Strike"}
               </span>
               {infoPinned ? (
                 <button
                   type="button"
-                  className="text-[10px] text-slate-500 underline-offset-2 hover:underline"
+                  className="text-[10px] text-muted-foreground underline-offset-2 hover:underline"
                   onClick={() => {
                     setInfoPinned(false);
                     setInfoRow(null);
@@ -1672,24 +1980,29 @@ export function GexSessionPlotly({
               ))}
             </ul>
             {!infoPinned ? (
-              <p className="mt-1.5 text-[10px] text-slate-500">
+              <p className="mt-1.5 text-[10px] text-muted-foreground">
                 Click to pin · dbl-click chart to clear
               </p>
             ) : null}
           </div>
         ) : null}
         {!hasGexSeries && hasAnySeries ? (
-          <p className="absolute bottom-2 left-3 text-[10px] text-slate-400">
+          <p className="absolute bottom-2 left-3 text-[10px] text-muted-foreground/70">
             Waiting for in-session GEX samples…
           </p>
         ) : null}
       </div>
 
-      <p className="px-3 pb-3 text-[10px] text-slate-500">
+      <p className="px-3 pb-3 text-[10px] text-muted-foreground">
         Green = +VE GEX · Red = −VE GEX · Amber = Net Gamma (forward-filled after the
         first recorded sample; earlier session / gaps stay empty). Blue = spot (right
         axis). Pink = ATM IV % (own axis; forward-filled after first sample only).
         Violet = Fut POC (session futures volume point of control; dotted on Spot axis).
+        Dot on the Net Gamma line = sign flip (green = turned +VE, red = turned
+        −VE); no dot means the regime held.
+        {levelDefs.length
+          ? " Levels draw at their current snapshot value (flat for the whole session, not an intraday trail) — orange = call wall, teal = put wall, indigo = gamma flip, slate = pin, stone = ±1σ, grey = prev day / week."
+          : ""}
         Bottom = minute volume (front-month futures when cash-index volume is empty)
         {series.volX.length > 1 ? "" : " — waiting for futures candles"}.
         {showCePeOi || showDoi

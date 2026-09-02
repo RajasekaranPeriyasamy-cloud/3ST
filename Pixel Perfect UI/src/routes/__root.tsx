@@ -12,10 +12,12 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { ApiHealthBanner } from "@/components/ApiHealthBanner";
 import { KiteConnectionIndicator } from "@/components/KiteConnectionIndicator";
 import { ExecutionTaskbar } from "@/components/execution/ExecutionTaskbar";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useApiHealth } from "@/hooks/useApiHealth";
 import { SelectionProvider } from "@/context/SelectionContext";
 import { WatchlistProvider } from "@/context/WatchlistContext";
 import { Toaster } from "@/components/ui/sonner";
+import { useTheme } from "@/hooks/useTheme";
 
 function NotFoundComponent() {
   return (
@@ -86,12 +88,13 @@ function RootComponent() {
   const isLogin = pathname === "/login";
   const isWidgetDesk = pathname.startsWith("/widget-desk");
   const apiHealth = useApiHealth();
+  const { theme } = useTheme();
 
   if (isLogin) {
     return (
       <QueryClientProvider client={queryClient}>
         <div className="min-h-screen bg-background text-foreground">
-          <div className="flex items-center justify-end border-b border-border px-4 py-2">
+          <div className="flex items-center justify-end gap-2 border-b border-border px-4 py-2">
             <KiteConnectionIndicator
               reachable={apiHealth.reachable}
               checking={apiHealth.checking}
@@ -101,6 +104,7 @@ function RootComponent() {
               userName={apiHealth.userName}
               loginTime={apiHealth.loginTime}
             />
+            <ThemeToggle />
           </div>
           <ApiHealthBanner
             reachable={apiHealth.reachable}
@@ -108,7 +112,7 @@ function RootComponent() {
             onRetry={apiHealth.retry}
           />
           <Outlet />
-          <Toaster richColors position="top-right" theme="light" />
+          <Toaster richColors position="top-right" theme={theme} />
         </div>
       </QueryClientProvider>
     );
@@ -132,7 +136,7 @@ function RootComponent() {
                 <div className="text-sm font-semibold tracking-tight text-primary">
                   3ST Algo Desk
                 </div>
-                <div className="ml-auto">
+                <div className="ml-auto flex items-center gap-2">
                   <KiteConnectionIndicator
                     reachable={apiHealth.reachable}
                     checking={apiHealth.checking}
@@ -142,6 +146,7 @@ function RootComponent() {
                     userName={apiHealth.userName}
                     loginTime={apiHealth.loginTime}
                   />
+                  <ThemeToggle />
                 </div>
               </header>
               <main
@@ -156,7 +161,7 @@ function RootComponent() {
               <ExecutionTaskbar />
             </div>
           </div>
-          <Toaster richColors position="top-right" theme="light" />
+          <Toaster richColors position="top-right" theme={theme} />
         </SidebarProvider>
         </WatchlistProvider>
       </SelectionProvider>

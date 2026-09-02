@@ -74,20 +74,20 @@ function KpiCard({
   tone?: "up" | "down" | "muted" | "default";
 }) {
   return (
-    <div className="rounded-sm border border-slate-200 bg-white px-4 py-3 shadow-sm">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="rounded-sm border border-border bg-card px-4 py-3 shadow-sm">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
       <div
         className={cn(
           "mt-1 font-mono text-2xl font-semibold tracking-tight",
           tone === "up" && "text-emerald-600",
           tone === "down" && "text-rose-600",
-          tone === "muted" && "text-slate-400",
-          (!tone || tone === "default") && "text-slate-900",
+          tone === "muted" && "text-muted-foreground/70",
+          (!tone || tone === "default") && "text-foreground",
         )}
       >
         {value}
       </div>
-      {sub ? <div className="mt-1 text-xs text-slate-500">{sub}</div> : null}
+      {sub ? <div className="mt-1 text-xs text-muted-foreground">{sub}</div> : null}
     </div>
   );
 }
@@ -284,16 +284,16 @@ function CasIndicativePage() {
           : null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 bg-[#f7f8fa] p-3 text-slate-800 md:p-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 bg-background p-3 text-foreground md:p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <Gavel className="h-5 w-5 text-sky-700" />
           <h1 className="text-lg font-semibold tracking-tight">CAS / Pre-close</h1>
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-muted-foreground">
             NIFTY · close forecast before 15:15 · read-only
           </span>
           {inWindow ? (
-            <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">In CAS</Badge>
+            <Badge className="bg-bull text-bull-foreground hover:bg-bull">In CAS</Badge>
           ) : (
             <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">
               Outside CAS
@@ -334,8 +334,8 @@ function CasIndicativePage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-sm border border-slate-200 bg-white px-3 py-2 shadow-sm">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+      <div className="flex flex-wrap items-center gap-2 rounded-sm border border-border bg-card px-3 py-2 shadow-sm">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Index
         </span>
         {INDEXES.map((item) => (
@@ -349,8 +349,8 @@ function CasIndicativePage() {
               item.id === index && item.enabled
                 ? "border-sky-600 bg-sky-50 text-sky-800"
                 : item.enabled
-                  ? "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  : "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-400",
+                  ? "border-border bg-card text-foreground/90 hover:bg-accent"
+                  : "cursor-not-allowed border-border/60 bg-muted/50 text-muted-foreground/70",
             )}
             title={item.enabled ? item.label : "Coming soon"}
           >
@@ -360,7 +360,7 @@ function CasIndicativePage() {
             ) : null}
           </button>
         ))}
-        <span className="ml-auto text-xs text-slate-500">
+        <span className="ml-auto text-xs text-muted-foreground">
           Poll {inWindow ? "8s" : "15s"} while open · source {data?.source ?? "—"} · asof{" "}
           {formatAsOf(data?.asof)}
         </span>
@@ -373,12 +373,12 @@ function CasIndicativePage() {
       ) : null}
 
       {!enabledIndex ? (
-        <div className="rounded-sm border border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500 shadow-sm">
+        <div className="rounded-sm border border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground shadow-sm">
           {index} CAS desk — coming soon. NIFTY is live for v1.
         </div>
       ) : (
         <Tabs defaultValue="indicative" className="w-full">
-          <TabsList className="h-9 bg-slate-100">
+          <TabsList className="h-9 bg-muted">
             <TabsTrigger value="indicative">Indicative</TabsTrigger>
             <TabsTrigger value="equilibrium">Equilibrium</TabsTrigger>
             <TabsTrigger value="methodology">Methodology</TabsTrigger>
@@ -403,7 +403,7 @@ function CasIndicativePage() {
               </div>
             ) : null}
             {inWindow && liveOfficial == null ? (
-              <div className="rounded-sm border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              <div className="rounded-sm border border-border bg-muted/50 px-3 py-2 text-sm text-foreground/90">
                 Official Kite index indicative unavailable
                 {rejectLabel ? (
                   <>
@@ -505,7 +505,7 @@ function CasIndicativePage() {
 
             <CasHistoryChart series={history?.series ?? []} loading={loading} fromHHMM="15:00" />
 
-            <div className="rounded-sm border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+            <div className="rounded-sm border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
               Display-only pre-close forecast — not official CAS. GEX / OI Movers / spot math
               continue to use continuous LTP. Compact chips on those desks link here during the
               CAS window.
@@ -529,7 +529,7 @@ function CasIndicativePage() {
               />
             </div>
             {refLimit == null && upper == null && lower == null && imbalance == null ? (
-              <div className="rounded-sm border border-slate-200 bg-white px-4 py-6 text-sm text-slate-500 shadow-sm">
+              <div className="rounded-sm border border-border bg-card px-4 py-6 text-sm text-muted-foreground shadow-sm">
                 Equilibrium fields are null until Kite quote exposes them for this index (often only
                 during the auction). They do not affect GEX/OI calculations.
               </div>
@@ -537,9 +537,9 @@ function CasIndicativePage() {
           </TabsContent>
 
           <TabsContent value="methodology" className="mt-3">
-            <div className="space-y-4 rounded-sm border border-slate-200 bg-white px-4 py-4 text-sm leading-relaxed text-slate-700 shadow-sm">
+            <div className="space-y-4 rounded-sm border border-border bg-card px-4 py-4 text-sm leading-relaxed text-foreground/90 shadow-sm">
               <section className="space-y-1">
-                <h2 className="text-base font-semibold text-slate-900">How Nifty close is formed</h2>
+                <h2 className="text-base font-semibold text-foreground">How Nifty close is formed</h2>
                 <p>
                   Under CAS (from ~2026-08-03), the exchange discovers <strong className="font-semibold">stock</strong>{" "}
                   closing prices in a 15:20–15:30 auction (reference = 15:00–15:15 VWAP, ±3% band).
@@ -550,7 +550,7 @@ function CasIndicativePage() {
               </section>
 
               <section className="space-y-1">
-                <h2 className="text-base font-semibold text-slate-900">What this page shows</h2>
+                <h2 className="text-base font-semibold text-foreground">What this page shows</h2>
                 <ul className="list-disc space-y-1 pl-5">
                   <li>
                     <strong className="font-semibold">Pre-close forecast</strong> — desk proxy for
@@ -576,13 +576,13 @@ function CasIndicativePage() {
               </section>
 
               <section className="space-y-2">
-                <h2 className="text-base font-semibold text-slate-900">Proxy formula (proxy_v1)</h2>
+                <h2 className="text-base font-semibold text-foreground">Proxy formula (proxy_v1)</h2>
                 <p className="font-mono text-xs sm:text-sm">
                   estimate = 0.40·synth_F + 0.35·fut_ltp + 0.25·ref_vwap
                   <br />
                   (renormalize if a leg is missing; clamp to ref_vwap ± 3%)
                 </p>
-                <p className="text-xs text-slate-600">
+                <p className="text-xs text-muted-foreground">
                   VWAP ladder: complete 15:00–15:15 when available → running 15:00→now during that
                   window → else session VWAP 09:15→now.
                   {refWindowLabel ? (
@@ -625,7 +625,7 @@ function CasIndicativePage() {
                   />
                 </div>
                 {comps?.weights_used && Object.keys(comps.weights_used).length > 0 ? (
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-muted-foreground">
                     Weights used:{" "}
                     {Object.entries(comps.weights_used)
                       .map(([k, v]) => `${k}=${(Number(v) * 100).toFixed(1)}%`)
@@ -636,7 +636,7 @@ function CasIndicativePage() {
               </section>
 
               <section className="space-y-1">
-                <h2 className="text-base font-semibold text-slate-900">
+                <h2 className="text-base font-semibold text-foreground">
                   Constituent rebuild (later — not Objective 1)
                 </h2>
                 <p>

@@ -6,24 +6,35 @@ import { cn } from "@/lib/utils";
 
 type Props = {
   className?: string;
+  /** Hide the "Light"/"Dark" word and render icon-only. */
+  compact?: boolean;
 };
 
-export function ThemeToggle({ className }: Props) {
-  const { theme, toggleTheme } = useTheme();
-  const isDark = theme === "dark";
+/**
+ * App-wide light/dark switch. Mounted once in the root header (top right), so it
+ * is present on every desk — see src/routes/__root.tsx.
+ */
+export function ThemeToggle({ className, compact = false }: Props) {
+  const { isDark, toggleTheme } = useTheme();
+  const label = isDark ? "Switch to light theme" : "Switch to dark theme";
 
   return (
     <Button
       type="button"
       variant="outline"
       size="sm"
-      className={cn("h-8 gap-1.5 px-2.5 text-xs", className)}
+      className={cn(
+        "report-no-print h-8 shrink-0 gap-1.5 px-2.5 text-xs",
+        compact && "w-8 px-0",
+        className,
+      )}
       onClick={toggleTheme}
-      title={isDark ? "Switch to light theme" : "Switch to dark theme"}
-      aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
+      title={label}
+      aria-label={label}
+      aria-pressed={isDark}
     >
       {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-      <span className="hidden sm:inline">{isDark ? "Light" : "Dark"}</span>
+      {compact ? null : <span className="hidden sm:inline">{isDark ? "Light" : "Dark"}</span>}
     </Button>
   );
 }

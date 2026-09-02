@@ -3,6 +3,7 @@ import HighchartsMod from "highcharts/highstock";
 import { HighchartsReact, type HighchartsReactRefObject } from "highcharts-react-official";
 
 import type { CasHistoryPoint } from "@/lib/types";
+import { useTheme } from "@/hooks/useTheme";
 
 // Vite/CJS interop: some builds expose `{ default: Highcharts }` instead of the namespace.
 const Highcharts = ((HighchartsMod as unknown as { default?: typeof HighchartsMod }).default ??
@@ -72,6 +73,7 @@ function levelBounds(rows: CasHistoryPoint[]): { min?: number; max?: number } {
 
 export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) {
   const chartRef = useRef<HighchartsReactRefObject | null>(null);
+  const { isDark } = useTheme();
 
   const rows = useMemo(() => {
     const cutoff = parseHHMM(fromHHMM ?? null);
@@ -86,10 +88,16 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
 
   const options = useMemo(() => {
     const bounds = levelBounds(rows);
+    // Blue-black surface + soft off-white ink, so the chart doesn't stay a white
+    // slab in dark mode. Series colours are unchanged -- they read on both.
+    const surface = isDark ? "#1b2029" : "#ffffff";
+    const gridLine = isDark ? "rgba(148, 163, 184, 0.16)" : "#eef1f4";
+    const ink = isDark ? "#e6ebf2" : "#222";
+    const axisInk = isDark ? "rgba(212, 220, 232, 0.78)" : "#666";
     const label = rows.length ? (rows[rows.length - 1].session ?? "") : "";
     return {
       chart: {
-        backgroundColor: "#ffffff",
+        backgroundColor: surface,
         height: 420,
         style: { fontFamily: "Segoe UI, Helvetica, Arial, sans-serif" },
       },
@@ -100,7 +108,7 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
           label ? ` · ${label}` : ""
         }`,
         align: "left",
-        style: { fontSize: "13px", fontWeight: "600", color: "#222" },
+        style: { fontSize: "13px", fontWeight: "600", color: ink },
       },
       credits: { enabled: false },
       rangeSelector: { enabled: false },
@@ -111,7 +119,8 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
         align: "center",
         verticalAlign: "top",
         y: 22,
-        itemStyle: { fontSize: "11px", fontWeight: "500" },
+        itemStyle: { fontSize: "11px", fontWeight: "500", color: axisInk },
+        itemHoverStyle: { color: ink },
       },
       tooltip: {
         shared: true,
@@ -122,8 +131,8 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
         type: "datetime",
         ordinal: false,
         gridLineWidth: 1,
-        gridLineColor: "#eef1f4",
-        labels: { style: { fontSize: "10px", color: "#666" } },
+        gridLineColor: gridLine,
+        labels: { style: { fontSize: "10px", color: axisInk } },
         dateTimeLabelFormats: {
           second: "%H:%M:%S",
           minute: "%H:%M",
@@ -133,10 +142,10 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
       },
       yAxis: [
         {
-          title: { text: "NIFTY", style: { fontSize: "11px" } },
+          title: { text: "NIFTY", style: { fontSize: "11px", color: axisInk } },
           opposite: false,
-          gridLineColor: "#eef1f4",
-          labels: { style: { fontSize: "10px" }, format: "{value:,.2f}" },
+          gridLineColor: gridLine,
+          labels: { style: { fontSize: "10px", color: axisInk }, format: "{value:,.2f}" },
           min: bounds.min,
           max: bounds.max,
           softMin: bounds.min,
@@ -184,7 +193,7 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
       ],
       exporting: { enabled: true },
     } as Highcharts.Options;
-  }, [rows, fromHHMM]);
+  }, [rows, fromHHMM, isDark]);
 
   useEffect(() => {
     const chart = chartRef.current?.chart;
@@ -195,7 +204,7 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
 
   if (!series.length) {
     return (
-      <div className="rounded-sm border border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500 shadow-sm">
+      <div className="rounded-sm border border-border bg-card px-4 py-10 text-center text-sm text-muted-foreground shadow-sm">
         No CAS history recorded yet for this session. The series builds up as the desk polls — leave
         this page open (or keep the API running) through 15:00–15:35 IST.
       </div>
@@ -203,7 +212,7 @@ export function CasHistoryChart({ series, loading, fromHHMM = "15:00" }: Props) 
   }
 
   return (
-    <div className="relative w-full rounded-sm border border-slate-200 bg-white">
+    <div className="relative w-full rounded-sm border border-border bg-card">
       <HighchartsReact
         highcharts={Highcharts}
         constructorType="stockChart"

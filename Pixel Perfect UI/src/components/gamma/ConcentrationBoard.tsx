@@ -7,6 +7,7 @@ import type {
   GammaConcentrationSummary,
   GammaConcentrationSummaryItem,
   GammaMassBasis,
+  GammaPinWindow,
   GammaSnapshot,
   GammaStrikeRow,
   GammaTopContributor,
@@ -21,21 +22,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ExpiryMagnetPanel } from "@/components/gamma/concentration/ExpiryMagnetPanel";
 import { GammaLadder } from "@/components/gamma/concentration/GammaLadder";
 import { HhiBuilders, type TopNOption } from "@/components/gamma/concentration/HhiBuilders";
 import { HhiHero } from "@/components/gamma/concentration/HhiHero";
 import { HhiSessionsChart } from "@/components/gamma/concentration/HhiSessionsChart";
 import { OiChangePanel } from "@/components/gamma/concentration/OiChangePanel";
+import { PinStrengthPanel } from "@/components/gamma/concentration/PinStrengthPanel";
+import { RegimePanel } from "@/components/gamma/concentration/RegimePanel";
 import { SideHhiCards } from "@/components/gamma/concentration/SideHhiCards";
-import {
-  CLIFF_LINE,
-  PIN_LINE,
-  SPOT_LINE,
-  bandLabel,
-  bandTone,
-  fmt,
-  ordinal,
-} from "@/components/gamma/concentration/shared";
+import { VolumeConfluencePanel } from "@/components/gamma/concentration/VolumeConfluencePanel";
+import { bandLabel, bandTone, fmt, ordinal } from "@/components/gamma/concentration/shared";
 
 const DEFAULT_STRIP: OiUnderlying[] = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const STRIP_POLL_MS = 90_000;
@@ -182,14 +179,6 @@ function cliffFromSnapshot(snap: GammaSnapshot): number | null {
   );
 }
 
-function quadrantTone(quadrant: string | null | undefined): string {
-  if (!quadrant) return "border-border bg-muted text-muted-foreground";
-  if (quadrant.startsWith("unequal")) {
-    return "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200";
-  }
-  return "border-sky-500/40 bg-sky-500/10 text-sky-800 dark:text-sky-200";
-}
-
 function emptyStripItem(u: OiUnderlying): GammaConcentrationSummaryItem {
   return {
     underlying: u,
@@ -302,99 +291,6 @@ function IndexConcentrationStrip({
   );
 }
 
-function StructurePanel({
-  snap,
-  cliffStrike,
-}: {
-  snap: GammaSnapshot;
-  cliffStrike: number | null;
-}) {
-  const conc = snap.concentration;
-  return (
-    <Card>
-      <CardHeader className="py-3">
-        <CardTitle className="text-sm">Structure &amp; shape</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.12em]" style={{ color: SPOT_LINE }}>
-              Spot
-            </p>
-            <p className="font-mono text-lg font-semibold tabular-nums">{fmt(snap.spot, 0)}</p>
-            <p className="text-[10px] text-muted-foreground">ATM {fmt(snap.atm_strike)}</p>
-          </div>
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.12em]" style={{ color: PIN_LINE }}>
-              Pin
-            </p>
-            <p className="font-mono text-lg font-semibold tabular-nums">
-              {fmt(conc?.pin_strike)}
-            </p>
-            <p className="text-[10px] text-muted-foreground">
-              {conc?.pin_share != null
-                ? `${(conc.pin_share * 100).toFixed(0)}% share${
-                    conc.pin_stable === true
-                      ? " · stable"
-                      : conc.pin_stable === false
-                        ? " · moving"
-                        : ""
-                  }`
-                : "—"}
-            </p>
-          </div>
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.12em]" style={{ color: CLIFF_LINE }}>
-              Cliff
-            </p>
-            <p className="font-mono text-lg font-semibold tabular-nums">{fmt(cliffStrike)}</p>
-            <p className="text-[10px] text-muted-foreground">flip, else breakout wall</p>
-          </div>
-        </div>
-
-        <div className="flex items-end justify-between gap-2 border-t border-border/60 pt-3">
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Gini</p>
-            <p className="font-mono text-2xl font-semibold tabular-nums">
-              {conc?.gini != null ? conc.gini.toFixed(2) : "—"}
-            </p>
-            <p className="text-[10px] text-muted-foreground">
-              inequality of strike γ, not concentration
-            </p>
-          </div>
-          <div className="flex flex-col items-end gap-1">
-            {conc?.shape_quadrant ? (
-              <Badge variant="outline" className={quadrantTone(conc.shape_quadrant)}>
-                {conc.shape_quadrant}
-              </Badge>
-            ) : null}
-            <Badge variant="outline" className={bandTone(conc?.band)}>
-              {bandLabel(conc?.band, conc?.band_label)}
-            </Badge>
-          </div>
-        </div>
-
-        <div className="space-y-1.5 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-          <p className="font-medium text-foreground">
-            {snap.market_read?.regime_line ?? `${snap.gamma_regime} gamma`}
-          </p>
-          <p>{snap.market_read?.shape_line ?? "—"}</p>
-          <p>{snap.market_read?.vol_line ?? "—"}</p>
-          <p className="text-[10px]">
-            Top1 {conc?.top1_share != null ? `${(conc.top1_share * 100).toFixed(0)}%` : "—"}
-            {" · "}
-            Top5 {conc?.top5_share != null ? `${(conc.top5_share * 100).toFixed(0)}%` : "—"}
-            {" · "}
-            Eff strikes {conc?.effective_strikes ?? "—"}
-            {conc?.hhi_net != null && conc?.mass_basis !== "net"
-              ? ` · net-basis HHI ${conc.hhi_net.toFixed(3)}`
-              : ""}
-          </p>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 function IntradayHhiPanel({ snap }: { snap: GammaSnapshot }) {
   const conc = snap.concentration;
@@ -548,6 +444,41 @@ function IntradayHhiPanel({ snap }: { snap: GammaSnapshot }) {
   );
 }
 
+/**
+ * A titled band of related cards.
+ *
+ * The tab previously ran nine cards through two ragged 12-column grids, which
+ * gave a 30-session history chart the same visual weight as the pin gates. These
+ * headings group by the question being asked, so the eye can skip a whole band
+ * rather than reading every card to find out whether it matters.
+ */
+function Section({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-baseline gap-3">
+        <h3 className="gd-section-title shrink-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/70">
+          {title}
+        </h3>
+        {hint ? (
+          <span className="shrink-0 text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+            {hint}
+          </span>
+        ) : null}
+        <span className="h-px flex-1 bg-border" aria-hidden />
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function MassBasisSelect({
   value,
   onChange,
@@ -580,6 +511,8 @@ export function ConcentrationBoard({
   summaryRefreshToken,
   massBasis,
   onMassBasisChange,
+  pinWindow,
+  onPinWindowChange,
 }: {
   snap: GammaSnapshot;
   selectedUnderlying?: OiUnderlying;
@@ -589,6 +522,9 @@ export function ConcentrationBoard({
   /** Per-strike mass the HHI is built from. Changing it refetches the snapshot. */
   massBasis?: GammaMassBasis;
   onMassBasisChange?: (b: GammaMassBasis) => void;
+  /** Trailing window for pin strength. Changing it refetches the snapshot. */
+  pinWindow?: GammaPinWindow;
+  onPinWindowChange?: (w: GammaPinWindow) => void;
 }) {
   const conc = snap.concentration;
   const [topN, setTopN] = useState<TopNOption>(5);
@@ -612,6 +548,16 @@ export function ConcentrationBoard({
 
   const cliffStrike = useMemo(() => cliffFromSnapshot(snap), [snap]);
 
+  /** Spacing between adjacent strikes; the payload has no explicit step field. */
+  const strikeStep = useMemo(() => {
+    const ks = [...(snap.strikes ?? [])].map((r) => r.strike).sort((a, b) => a - b);
+    for (let i = 1; i < ks.length; i += 1) {
+      const d = ks[i] - ks[i - 1];
+      if (d > 0) return d;
+    }
+    return 50;
+  }, [snap.strikes]);
+
   const bandForSide = (v: number | null): GammaConcentrationBand | null => {
     if (v == null) return null;
     const hi = conc?.band_cut_compressed ?? 0.18;
@@ -622,7 +568,7 @@ export function ConcentrationBoard({
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-7">
       <div className="flex flex-wrap items-center gap-2">
         <IndexConcentrationStrip
           selected={activeUnderlying}
@@ -639,36 +585,62 @@ export function ConcentrationBoard({
 
       <HhiHero snap={snap} conc={conc} />
 
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-6">
-          <GammaLadder snap={snap} conc={conc} cliffStrike={cliffStrike} />
+      {/* Where — the map, with its supporting readouts beside it rather than
+          stacked under an unrelated history chart. */}
+      <Section title="Where the gamma sits" hint="strike map · builders · sides · 30 sessions">
+        <div className="grid gap-4 lg:grid-cols-12">
+          <div className="lg:col-span-7">
+            <GammaLadder snap={snap} conc={conc} cliffStrike={cliffStrike} />
+          </div>
+          <div className="flex flex-col gap-4 lg:col-span-5">
+            <HhiBuilders
+              contributors={allContributors}
+              conc={conc}
+              topN={topN}
+              onTopNChange={setTopN}
+            />
+            <SideHhiCards
+              callHhi={callHhi}
+              putHhi={putHhi}
+              callBand={conc?.call_band ?? bandForSide(callHhi)}
+              putBand={conc?.put_band ?? bandForSide(putHhi)}
+            />
+            <HhiSessionsChart conc={conc} />
+          </div>
         </div>
-        <div className="flex flex-col gap-4 lg:col-span-6">
-          <HhiSessionsChart conc={conc} />
-          <HhiBuilders
-            contributors={allContributors}
-            conc={conc}
-            topN={topN}
-            onTopNChange={setTopN}
-          />
-          <SideHhiCards
-            callHhi={callHhi}
-            putHhi={putHhi}
-            callBand={conc?.call_band ?? bandForSide(callHhi)}
-            putBand={conc?.put_band ?? bandForSide(putHhi)}
-          />
-        </div>
-      </div>
+      </Section>
 
-      <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-7">
-          <OiChangePanel snap={snap} />
+      {/* Holding — the two panels that answer the same question from opposite
+          directions: dealer mechanics, and where business actually happened. */}
+      <Section title="Is it holding?" hint="expiry magnet · regime · pin gates · confluence">
+        <div className="mb-4">
+          <ExpiryMagnetPanel em={snap.expiry_magnet} />
         </div>
-        <div className="flex flex-col gap-4 lg:col-span-5">
-          <StructurePanel snap={snap} cliffStrike={cliffStrike} />
-          <IntradayHhiPanel snap={snap} />
+        <div className="grid gap-4 lg:grid-cols-3">
+          <RegimePanel regime={snap.regime} />
+          <PinStrengthPanel
+            pinLock={snap.pin_lock}
+            window={pinWindow}
+            onWindowChange={onPinWindowChange}
+          />
+          <VolumeConfluencePanel
+            vp={snap.volume_profile}
+            conc={conc}
+            pinLock={snap.pin_lock}
+            strikeStep={strikeStep}
+          />
         </div>
-      </div>
+      </Section>
+
+      {/* The 30-session chart moved up beside the side HHIs — same measure, read
+          together. What stays here is the within-session view. */}
+      <Section title="How today compares" hint="intraday ticks">
+        <IntradayHhiPanel snap={snap} />
+      </Section>
+
+      <Section title="Positioning flow" hint="ΔOI top movers">
+        <OiChangePanel snap={snap} />
+      </Section>
     </div>
   );
 }

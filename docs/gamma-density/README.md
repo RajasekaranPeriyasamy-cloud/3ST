@@ -2,7 +2,84 @@
 
 **UI:** `/gamma-density` · Dealer gamma / GEX-style density analytics.
 
+**How to read the desk:** [MANUAL.md](MANUAL.md) — every panel, chart series and
+blind spot. New to dealer gamma? [PRIMER.md](PRIMER.md) first.
+
+This file is the **mechanism** (formulas, thresholds, storage); the manual is the
+**interpretation**.
+
 Related: [Vanna Exposure](../vanna-exposure/) (separate page). See `docs/CONVERSATION_SUMMARY.md` (Gamma Density broker data notes).
+
+## Pin strength
+
+A pin is a magnet with measurable strength and nameable failure conditions, not a
+lock. Two building blocks (`pin_source`, `daily_pin`) plus the measure itself
+(`options/pin_lock.py`, documented below).
+
+**`pin_source` — which rule produced the pin.** `compute_gamma_concentration`
+picks the pin three different ways and they are not equally meaningful:
+
+| `pin_source` | Rule | Meaning |
+| --- | --- | --- |
+| `dominant` | `top1_share ≥ pin_share_threshold` (0.18) | A real gamma pin |
+| `wall_mid` | midpoint of call/put walls, rounded to the step | An inference |
+| `atm` | the ATM strike | A placeholder, not a pin |
+| `fallback` | dominant strike, no ATM available | Degenerate case |
+
+All three emit a bare number, so before `pin_source` existed they were
+indistinguishable downstream. This matters because the `atm` placeholder sits
+next to spot by construction, so `pin_stable` reports it as rock-steady exactly
+when no pin exists — a false positive in the one case you care about. **Gate any
+pin-strength read on `pin_source == "dominant"`.**
+
+**`daily_pin` — the calibration trail.** `append_history_point` prunes the
+intraday `series` to today on every write, so nothing survives to answer *"when
+the pin looked strong at midday, did it hold to close?"*. Without that, any
+pin-strength threshold is a prior rather than a finding.
+
+`record_pin_sample()` writes bounded per-session checkpoints (default one per 30
+min, 60 sessions retained) into `daily_hhi`'s sibling bucket, holding raw inputs
+only — pin, source, share, spot, GEX, regime, HHI, flip, 1σ — plus a `close_spot`
+refreshed on every call (last in-session write ≈ close, same convention as
+`upsert_daily_hhi`). **No verdict is stored.** `pin_hold_outcomes(series,
+hold_steps=…)` derives `held` at read time, so changing the tolerance re-reads
+history instead of invalidating it. Sessions with no recorded close are skipped
+rather than scored as failures.
+
+**The measure — `options/pin_lock.py`.** Pure functions, no I/O. Emitted on the
+snapshot as `pin_lock`; window via `?pin_window=15m|30m|60m|session` (default
+`30m`), selectable from the Concentration tab.
+
+Two hard gates — `pin_source == "dominant"` and dealers long gamma for
+`PIN_LONG_GAMMA_SHARE` (0.8) of window ticks — then five components: pin
+stability against the **modal** pin, spot containment, crossings of spot over the
+pin, flip room in σ, and ΔOI on the pin strike. Plus a `breaker` naming the level
+whose breach ends the regime, and `reasons` in plain language.
+
+Three rules the implementation holds to:
+
+- **No blended score.** Weights cannot be justified until `daily_pin` has enough
+  sessions to fit them; a confident-looking composite over guessed weights is
+  worse than five honest readings.
+- **`null` means unmeasured, never failed.** An empty session must not read as a
+  broken pin — gates return `None`, not `False`, when there is nothing to judge.
+- **Containment and crossings are measured over `chart_series` minutes**, not GEX
+  ticks. The tick trail is deliberately gappy (`build_chart_series` keeps holes
+  honest), so scoring it would understate time spent away from the pin.
+
+The window anchors on the newest sample present rather than wall clock, so a
+stale snapshot yields an empty window instead of scoring old data as current.
+
+On the Profile tab the `PIN CANDIDATE` tile leads with `pin_source`: an `atm`
+pin now reads *"ATM placeholder — not a gamma pin"* instead of claiming to be
+stable.
+
+Known limits of `_pin_stability` (the older `pin_stable` / `pin_stability_pct`):
+it compares the last **12 ticks** against the *current* pin. That is tick-counted,
+not time-boxed, so a polling gap silently stretches the window; and anchoring on
+the current pin makes a pin that just moved look unstable while the new one
+establishes. A windowed measure should anchor on the modal pin over a time
+window instead.
 
 ## Concentration tab — HHI measurement basis
 
@@ -41,3 +118,50 @@ of dealer gamma, computed over the ATM-trimmed window only.
   alike, so they can never fall below `100/n`. The UI states the sample size.
 - **Day-end HHI is the last in-session write**, not a close print — close the desk at
   11:00 and that day's bar is an 11:00 value. `updated_at` records which.
+
+## Structural regime — `options/regime.py`
+
+Pure functions, emitted as `regime`. Three readings:
+
+- **Confluence** — gamma pin vs volume POC. `aligned` = within `CONFLUENCE_STEPS`
+  (1.0) strike steps; `pin_in_value` asks the weaker question of whether the pin
+  falls inside the value area. The two can disagree and both are reported.
+- **Levels in σ** — every key level as points and σ from spot, signed. σ is the
+  session's own expected move, so distances mean the same thing across days.
+- **Classification** — first-match rules over a feature vector:
+  `pinned` → `coiled_box` → `transition` → `short_gamma_trend` → `long_gamma_drift`.
+  Thresholds: `FLIP_NEAR_SIGMA` 0.75, `CONTAINMENT_HOLDS_PCT` 80, `OVL_BALANCED` 75.
+
+The feature vector is on the payload deliberately, so a rule set encoded
+downstream reads the same numbers the built-in classifier does.
+
+**It describes; it does not advise.** No state may return a directional or
+positional suggestion, and `test_every_state_carries_evidence_and_no_recommendation`
+regex-scans every state's output for advisory phrasing.
+
+## Expiry magnet — `options/expiry_magnet.py`
+
+Emitted as `expiry_magnet`. Pressure is gamma weighted by the chance of settling
+there:
+
+```
+P(K) ∝ Γ(K) · exp( −(K − S)² / 2σ² )     normalised so max(P) = 1.0
+```
+
+σ is the ATM straddle's expected move to expiry, so the weight is a normal
+density with the market's own width. Γ is **gross**; `net_gamma` keeps the sign
+separately. Pressure and raw gamma genuinely invert — both columns ship.
+
+**Time boost** = `√(t_ref / t_now)`, since σ scales as √t and peak pressure as
+1/σ. Reference 6 trading days, floored at 0.2 DTE and capped at 6×, so expiry day
+does not divide by zero.
+
+**Pin state** — `no_pin` / `shifting` / `stable` / `locked`, from leader share
+(≥0.18), margin over runner-up (≥0.20) and session stability (≥70%).
+
+**Conviction** is the one blended score on the desk. Unlike `pin_lock`, which
+refuses one, this module emits 0–100 — the desk it models is built around it. The
+discipline is different rather than absent: every input, weight and normalisation
+is on the payload and `calibrated: False` rides along until `daily_pin` can fit
+the weights against outcomes. A missing component is dropped and the rest
+re-weighted, never scored zero.

@@ -8,8 +8,12 @@ import {
   PIN_LINE,
   POS_GAMMA,
   SPOT_LINE,
+  compactOi,
   fmt,
 } from "./shared";
+
+/** Session-volume tint. Deliberately a third hue: not a γ sign, not a level. */
+const VOLUME_TINT = "#6366f1";
 
 const W = 640;
 const PAD_TOP = 34;
@@ -28,6 +32,9 @@ type LadderRow = {
   shareSq: number;
   cum: number;
   y: number;
+  /** Session volume in this strike's band, 0-1 of the busiest band. */
+  volShare: number;
+  volTotal: number | null;
 };
 
 export function GammaLadder({
@@ -49,6 +56,12 @@ export function GammaLadder({
     return map;
   }, [conc?.top_contributors]);
 
+  const volByStrike = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const b of snap.strike_volume?.bands ?? []) map.set(b.strike, b.total);
+    return map;
+  }, [snap.strike_volume]);
+
   const { rows, rowH, height, maxAbs } = useMemo(() => {
     const strikes = [...(snap.strikes ?? [])].sort((a, b) => b.strike - a.strike);
     const n = strikes.length;
@@ -59,11 +72,15 @@ export function GammaLadder({
     const totalGross = gross.reduce((a, b) => a + b, 0);
     const peak = Math.max(1, ...strikes.map((r) => Math.abs(Number(r.net_gex ?? 0) || 0)));
 
+    const maxVol = Math.max(0, ...strikes.map((r) => volByStrike.get(r.strike) ?? 0));
     let running = 0;
     const out: LadderRow[] = strikes.map((r, i) => {
       running += gross[i];
       const s = shareByStrike.get(r.strike);
+      const vol = volByStrike.get(r.strike) ?? null;
       return {
+        volTotal: vol,
+        volShare: vol != null && maxVol > 0 ? vol / maxVol : 0,
         strike: r.strike,
         netGex: Number(r.net_gex ?? 0) || 0,
         grossGex: gross[i],
@@ -79,7 +96,7 @@ export function GammaLadder({
       height: PAD_TOP + n * h + PAD_BOTTOM,
       maxAbs: peak,
     };
-  }, [snap.strikes, shareByStrike]);
+  }, [snap.strikes, shareByStrike, volByStrike]);
 
   /** Interpolate a y for any price level so spot/pin/cliff sit between strikes. */
   const yForLevel = useMemo(() => {
@@ -187,6 +204,18 @@ export function GammaLadder({
               const isHover = hover?.strike === r.strike;
               return (
                 <g key={r.strike}>
+                  {/* Session volume in this strike band, as a background tint.
+                      Adds a dimension without competing with the γ bars. */}
+                  {r.volShare > 0 ? (
+                    <rect
+                      x={LABEL_X + 8}
+                      y={r.y - rowH / 2}
+                      width={W - LABEL_X - 8}
+                      height={rowH}
+                      fill={VOLUME_TINT}
+                      opacity={0.06 + r.volShare * 0.34}
+                    />
+                  ) : null}
                   {i % labelEvery === 0 ? (
                     <text
                       x={LABEL_X}
@@ -312,6 +341,11 @@ export function GammaLadder({
                 {hover.strike >= snap.spot ? "above" : "below"} spot ·{" "}
                 {(hover.cum * 100).toFixed(1)}% cumulative
               </p>
+              {hover.volTotal != null ? (
+                <p className="text-[10px] uppercase tracking-[0.08em]" style={{ color: VOLUME_TINT }}>
+                  session volume {compactOi(hover.volTotal).replace("+", "")}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -334,7 +368,24 @@ export function GammaLadder({
           <span className="inline-flex items-center gap-1">
             <span className="inline-block h-0.5 w-3" style={{ background: CLIFF_LINE }} /> cliff
           </span>
+          {snap.strike_volume?.available ? (
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="inline-block h-2 w-4 rounded-sm"
+                style={{ background: VOLUME_TINT, opacity: 0.3 }}
+              />
+              session volume
+            </span>
+          ) : null}
         </div>
+        {/* Never normalise away what the window excludes — a ±20-strike ladder
+            can easily miss a fifth of the session. */}
+        {snap.strike_volume?.off_frame_pct != null && snap.strike_volume.off_frame_pct >= 1 ? (
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            {snap.strike_volume.off_frame_pct.toFixed(0)}% of session volume traded outside this
+            strike window.
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );

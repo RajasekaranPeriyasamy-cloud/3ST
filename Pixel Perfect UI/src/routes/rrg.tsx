@@ -44,14 +44,17 @@ export const Route = createFileRoute("/rrg")({
   component: RrgPage,
 });
 
-const QUADRANT_LABEL: Record<string, string> = {
+/** Keyed by `RrgQuadrant`, not `string`: `analysis/rrg.quadrant_for` is total over
+ *  these four and `_regime_summary` always emits all four, so `Object.keys` here
+ *  is genuinely `RrgQuadrant[]` and the counts map can be indexed with it. */
+const QUADRANT_LABEL: Record<RrgQuadrant, string> = {
   leading: "Leading",
   weakening: "Weakening",
   lagging: "Lagging",
   improving: "Improving",
 };
 
-const QUADRANT_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+const QUADRANT_VARIANT: Record<RrgQuadrant, "default" | "secondary" | "destructive" | "outline"> = {
   leading: "default",
   improving: "secondary",
   weakening: "outline",
@@ -348,7 +351,7 @@ function RrgPage() {
 
       {regime && (
         <div className="flex flex-wrap gap-2">
-          {(Object.keys(QUADRANT_LABEL) as Array<keyof typeof QUADRANT_LABEL>).map((q) => (
+          {(Object.keys(QUADRANT_LABEL) as RrgQuadrant[]).map((q) => (
             <Badge key={q} variant={QUADRANT_VARIANT[q] ?? "outline"}>
               {QUADRANT_LABEL[q]}: {regime[q] ?? 0}
             </Badge>

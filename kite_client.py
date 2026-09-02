@@ -117,12 +117,18 @@ def fetch_historical_by_token(
 
 
 def _kite_direct_client():
-    from kite_auth import _kite, load_session
+    """Shared direct-egress read client; token re-applied per call.
+
+    Reads are unrestricted by the Kite IP whitelist, so this deliberately does
+    not go through kite_egress_plan() -- order placement must keep using
+    get_kite_client() / KiteBroker.
+    """
+    from kite_auth import load_session, read_only_kite_client
 
     sess = load_session()
     if not sess:
         raise RuntimeError("Not logged in. Complete Kite login and POST /auth/session.")
-    kite = _kite(use_proxy=False)
+    kite = read_only_kite_client()
     kite.set_access_token(sess["access_token"])
     return kite
 

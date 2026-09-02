@@ -1,23 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play, RefreshCw, Settings2 } from "lucide-react";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import { api } from "@/lib/api";
+// Desk-scoped chrome; everything in it is nested under `.gamma-desk`.
+import "@/styles/gamma-desk.css";
 import { pickNearestExpiry, useOptionExpiries } from "@/hooks/useOptionExpiries";
 import type {
   GammaConfig,
   GammaMomentum,
   GammaMassBasis,
+  GammaPinWindow,
   GammaSnapshot,
   OiUnderlying,
 } from "@/lib/types";
@@ -55,6 +48,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MeasurementBoard } from "@/components/gamma/MeasurementBoard";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export const Route = createFileRoute("/gamma-density")({
@@ -231,60 +225,22 @@ function StatCard({
         : "text-foreground";
   return (
     <Card>
-      <CardContent className="py-3">
-        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
-        <div className={`font-mono text-lg font-semibold ${color}`}>{value}</div>
-        {hint ? <div className="text-[10px] text-muted-foreground">{hint}</div> : null}
+      <CardContent className="py-3.5">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {label}
+        </div>
+        {/* tabular-nums stops digits jittering as the value refreshes; break-words
+            keeps a long GEX figure inside the card instead of overflowing it. */}
+        <div
+          className={`font-mono text-2xl font-bold tabular-nums break-words leading-tight ${color}`}
+        >
+          {value}
+        </div>
+        {hint ? (
+          <div className="mt-0.5 text-[11px] font-medium text-muted-foreground">{hint}</div>
+        ) : null}
       </CardContent>
     </Card>
-  );
-}
-
-function GexProfileChart({ snap, height = 280 }: { snap: GammaSnapshot; height?: number }) {
-  const data = snap.gex_profile ?? [];
-  if (!data.length) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">No GEX(S) profile</p>;
-  }
-  return (
-    <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={data} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-        <XAxis dataKey="spot" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 11 }} />
-        <YAxis
-          tick={{ fontSize: 11 }}
-          tickFormatter={(v) => (v / 1e7).toFixed(1)}
-          label={{ value: "GEX(S) ₹Cr", angle: -90, position: "insideLeft", fontSize: 11 }}
-        />
-        <Tooltip
-          formatter={(v: number) => [`${(v / 1e7).toFixed(2)} Cr`, "GEX"]}
-          labelFormatter={(l) => `Spot ${l}`}
-        />
-        <ReferenceLine y={0} stroke="currentColor" className="text-muted-foreground" />
-        <ReferenceLine
-          x={snap.spot}
-          stroke={SPOT_LINE}
-          strokeWidth={2}
-          label={{ value: "Spot", fontSize: 10, fill: SPOT_LINE, position: "top" }}
-        />
-        {snap.flip_level != null ? (
-          <ReferenceLine
-            x={snap.flip_level}
-            stroke={FLIP_LINE}
-            strokeDasharray="4 4"
-            label={{ value: "Flip SS", fontSize: 10, fill: FLIP_LINE, position: "top" }}
-          />
-        ) : null}
-        {snap.flip_sticky_delta != null ? (
-          <ReferenceLine
-            x={snap.flip_sticky_delta}
-            stroke="#ec4899"
-            strokeDasharray="2 3"
-            label={{ value: "Flip SD", fontSize: 10, fill: "#ec4899", position: "insideTopRight" }}
-          />
-        ) : null}
-        <Line type="monotone" dataKey="gex" stroke="#0ea5e9" strokeWidth={2} dot={false} name="GEX(S)" />
-      </LineChart>
-    </ResponsiveContainer>
   );
 }
 
@@ -463,6 +419,8 @@ function GammaDensityPage() {
   // HHI mass basis for the Concentration tab: gross = |CE γ| + |PE γ| (default),
   // net = |CE γ + PE γ| (legacy — cancels balanced strikes out of the index).
   const [massBasis, setMassBasis] = useState<GammaMassBasis>("gross");
+  // Trailing window for the pin-strength gates/components.
+  const [pinWindow, setPinWindow] = useState<GammaPinWindow>("30m");
   const [snapshot, setSnapshot] = useState<GammaSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [authError, setAuthError] = useState(false);
@@ -549,6 +507,7 @@ function GammaDensityPage() {
       q.set("reversal_gex_mode", reversalGexMode);
       q.set("reversal_oi_gate", reversalOiGate ? "true" : "false");
       q.set("mass_basis", massBasis);
+      q.set("pin_window", pinWindow);
       const data = await api.get<GammaSnapshot>(`/gamma-density/snapshot?${q}`);
       // Drop late responses so a slow Crude poll cannot overwrite Nifty (or vice versa).
       if (reqId !== snapshotReqId.current) return;
@@ -572,6 +531,7 @@ function GammaDensityPage() {
     reversalGexMode,
     reversalOiGate,
     massBasis,
+    pinWindow,
   ]);
 
   useEffect(() => {
@@ -630,12 +590,12 @@ function GammaDensityPage() {
     : null;
 
   return (
-    <div className="report-page mx-auto flex max-w-[1400px] flex-col gap-6 pb-10">
+    <div className="gamma-desk report-page mx-auto flex max-w-[1400px] flex-col gap-6 pb-10">
       <header className="report-controls flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">3ST Algo Desk — Gamma Density</h1>
           <p className="text-sm text-muted-foreground">
-            Dealer-hedging map: Net GEX plus HHI shape, conviction, pin, flip, hedge flow, Vanna strip.
+            Dealer-hedging map: Net GEX plus HHI shape, conviction, pin, flip, Vanna strip.
           </p>
           {metaLine ? <p className="mt-1 text-xs text-muted-foreground">{metaLine}</p> : null}
         </div>
@@ -785,6 +745,7 @@ function GammaDensityPage() {
           <TabsList className="report-controls">
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="concentration">Concentration</TabsTrigger>
+            <TabsTrigger value="measurement">Measurement</TabsTrigger>
           </TabsList>
 
           <TabsContent value="profile" className="mt-4 flex flex-col gap-6">
@@ -806,7 +767,7 @@ function GammaDensityPage() {
             </Card>
           ) : null}
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="gd-stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard
               label="Gamma Regime"
               value={snapshot.gamma_regime === "positive" ? "Positive γ" : "Negative γ"}
@@ -849,90 +810,10 @@ function GammaDensityPage() {
             />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard
-              label="HHI Concentration"
-              value={
-                snapshot.concentration?.hhi != null
-                  ? snapshot.concentration.hhi.toFixed(2)
-                  : "—"
-              }
-              hint={
-                snapshot.concentration?.band
-                  ? `${
-                      snapshot.concentration.band === "mixed"
-                        ? "balanced"
-                        : snapshot.concentration.band === "diffuse"
-                          ? "dispersed"
-                          : "concentrated"
-                    } · top1 ${
-                      snapshot.concentration.top1_share != null
-                        ? `${(snapshot.concentration.top1_share * 100).toFixed(0)}%`
-                        : "—"
-                    }`
-                  : "same GEX, different shape"
-              }
-              tone={
-                snapshot.concentration?.band === "concentrated"
-                  ? "pos"
-                  : snapshot.concentration?.band === "diffuse"
-                    ? "neg"
-                    : "muted"
-              }
-            />
-            <StatCard
-              label="Conviction"
-              value={
-                snapshot.conviction?.score != null ? String(snapshot.conviction.score) : "—"
-              }
-              hint={
-                snapshot.conviction
-                  ? `${snapshot.conviction.direction}${
-                      snapshot.conviction.delta != null
-                        ? ` · Δ ${snapshot.conviction.delta > 0 ? "+" : ""}${snapshot.conviction.delta}`
-                        : ""
-                    }`
-                  : undefined
-              }
-              tone={
-                snapshot.conviction?.direction === "rising"
-                  ? "pos"
-                  : snapshot.conviction?.direction === "falling"
-                    ? "neg"
-                    : "muted"
-              }
-            />
-            <StatCard
-              label="Pin Candidate"
-              value={fmt(snapshot.concentration?.pin_strike)}
-              hint={
-                snapshot.concentration?.pin_stable === true
-                  ? `stable · share ${
-                      snapshot.concentration.pin_share != null
-                        ? `${(snapshot.concentration.pin_share * 100).toFixed(0)}%`
-                        : "—"
-                    }`
-                  : snapshot.concentration?.pin_stable === false
-                    ? `moving · ${snapshot.concentration.pin_stability_pct ?? "—"}% stable`
-                    : snapshot.concentration?.pin_share != null
-                      ? `share ${(snapshot.concentration.pin_share * 100).toFixed(0)}%`
-                      : "structural pin — not a guarantee"
-              }
-              tone="muted"
-            />
-            <StatCard
-              label="Dominant Strike"
-              value={fmt(snapshot.concentration?.dominant_strike)}
-              hint={
-                snapshot.concentration?.dominant_share != null
-                  ? `${(snapshot.concentration.dominant_share * 100).toFixed(0)}% of |GEX| · eff ${
-                      snapshot.concentration.effective_strikes ?? "—"
-                    }`
-                  : undefined
-              }
-              tone="muted"
-            />
-          </div>
+          {/* HHI / Conviction / Pin / Dominant used to sit here. They are all read
+              better on the Concentration tab (HHI hero, Pin strength, Expiry magnet),
+              and the legacy `conviction` score collided by name with the expiry
+              magnet's — two different numbers under one label on one page. */}
 
           <Card>
             <CardHeader className="py-3">
@@ -940,60 +821,68 @@ function GammaDensityPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2.5 text-sm">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                     Previous day
                   </p>
                   <div className="grid grid-cols-3 gap-2 font-mono tabular-nums">
                     <div>
-                      <p className="text-[10px] text-muted-foreground">High</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_day_high, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">High</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_day_high, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Low</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_day_low, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Low</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_day_low, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Close</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_day_close, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Close</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_day_close, 2)}</p>
                     </div>
                   </div>
                 </div>
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2.5 text-sm">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                     Previous week
                   </p>
                   <div className="grid grid-cols-3 gap-2 font-mono tabular-nums">
                     <div>
-                      <p className="text-[10px] text-muted-foreground">High</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_week_high, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">High</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_week_high, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Low</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_week_low, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Low</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_week_low, 2)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Close</p>
-                      <p>{fmt(snapshot.reference_levels?.prev_week_close, 2)}</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Close</p>
+                      <p className="text-base font-bold">{fmt(snapshot.reference_levels?.prev_week_close, 2)}</p>
                     </div>
                   </div>
                 </div>
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                  <p className="mb-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2.5 text-sm">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
                     Key levels
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    <Badge variant="outline">Flip {fmt(snapshot.flip_level)}</Badge>
-                    <Badge variant="outline" className="border-emerald-500/50">
+                    <Badge variant="outline" className="text-sm font-semibold tabular-nums">
+                      Flip {fmt(snapshot.flip_level)}
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className="border-emerald-500/50 text-sm font-semibold tabular-nums"
+                    >
                       Call wall {fmt(snapshot.call_wall)}
                     </Badge>
-                    <Badge variant="outline" className="border-red-500/50">
+                    <Badge
+                      variant="outline"
+                      className="border-red-500/50 text-sm font-semibold tabular-nums"
+                    >
                       Put wall {fmt(snapshot.put_wall)}
                     </Badge>
-                    <Badge variant="outline">
+                    <Badge variant="outline" className="text-sm font-semibold tabular-nums">
                       Dom {fmt(snapshot.concentration?.dominant_strike)}
                     </Badge>
-                    <Badge variant="outline">
+                    <Badge variant="outline" className="text-sm font-semibold tabular-nums">
                       Pin {fmt(snapshot.concentration?.pin_strike)}
                     </Badge>
                   </div>
@@ -1012,7 +901,9 @@ function GammaDensityPage() {
                 <p className="text-muted-foreground">{snapshot.market_read.vol_line}</p>
                 <p className="text-muted-foreground">{snapshot.market_read.shape_line}</p>
                 <p className="text-muted-foreground">{snapshot.market_read.change_line}</p>
-                <p className="text-muted-foreground">{snapshot.market_read.levels_line}</p>
+                {/* `levels_line` stays on the payload but is not drawn here — it
+                    restates Dominant / Pin / Walls from the Key Levels badges and
+                    the closes from Reference levels, both directly above. */}
               </CardContent>
             </Card>
           ) : null}
@@ -1227,60 +1118,9 @@ function GammaDensityPage() {
                 />
               </CardContent>
             </Card>
-            <Card>
-              <CardHeader className="py-3">
-                <CardTitle className="text-sm">
-                  GEX(S) profile · sticky-strike / sticky-delta flips
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <GexProfileChart snap={snapshot} height={300} />
-              </CardContent>
-            </Card>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
-              <CardHeader className="py-3">
-                <CardTitle className="text-sm">Hedge flow (est. dealer futures)</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="text-xs">
-                      <TableHead>Move</TableHead>
-                      <TableHead>Direction</TableHead>
-                      <TableHead className="text-right">Fut lots</TableHead>
-                      <TableHead className="text-right">Notional Cr</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(snapshot.hedge_flow ?? []).map((h) => (
-                      <TableRow key={h.move_pts} className="text-xs font-mono">
-                        <TableCell>
-                          {h.move_pts > 0 ? "+" : ""}
-                          {h.move_pts} pts
-                        </TableCell>
-                        <TableCell
-                          className={
-                            h.direction === "dealers_buy"
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : h.direction === "dealers_sell"
-                                ? "text-red-600 dark:text-red-400"
-                                : ""
-                          }
-                        >
-                          {h.direction.replace("dealers_", "")}
-                        </TableCell>
-                        <TableCell className="text-right">{h.futures_lots.toFixed(1)}</TableCell>
-                        <TableCell className="text-right">{h.notional_cr.toFixed(2)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-
             <Card>
               <CardHeader className="py-3">
                 <CardTitle className="text-sm">
@@ -1326,40 +1166,6 @@ function GammaDensityPage() {
                 </Table>
               </CardContent>
             </Card>
-          </div>
-
-          <div className="grid gap-6 lg:grid-cols-2">
-            <Card>
-              <CardHeader className="py-3">
-                <CardTitle className="text-sm">Top convexity zones</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="text-xs">
-                      <TableHead>Strike</TableHead>
-                      <TableHead className="text-right">Γ×OI</TableHead>
-                      <TableHead className="text-right">Magnet</TableHead>
-                      <TableHead className="text-right">Net GEX</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {snapshot.convexity_zones.map((z) => (
-                      <TableRow key={z.strike} className="text-xs font-mono">
-                        <TableCell>{z.strike}</TableCell>
-                        <TableCell className="text-right">{(z.total_density / 1e6).toFixed(2)}M</TableCell>
-                        <TableCell className="text-right">{z.magnet != null ? z.magnet.toFixed(1) : "—"}</TableCell>
-                        <TableCell
-                          className={`text-right ${z.net_gex >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
-                        >
-                          {gexCrore(z.net_gex)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
 
             <Card>
               <CardHeader className="py-3">
@@ -1398,10 +1204,43 @@ function GammaDensityPage() {
             </Card>
           </div>
 
+          <div className="flex flex-col gap-6">
+            <Card>
+              <CardHeader className="py-3">
+                <CardTitle className="text-sm">Top convexity zones</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="text-xs">
+                      <TableHead>Strike</TableHead>
+                      <TableHead className="text-right">Γ×OI</TableHead>
+                      <TableHead className="text-right">Magnet</TableHead>
+                      <TableHead className="text-right">Net GEX</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {snapshot.convexity_zones.map((z) => (
+                      <TableRow key={z.strike} className="text-xs font-mono">
+                        <TableCell>{z.strike}</TableCell>
+                        <TableCell className="text-right">{(z.total_density / 1e6).toFixed(2)}M</TableCell>
+                        <TableCell className="text-right">{z.magnet != null ? z.magnet.toFixed(1) : "—"}</TableCell>
+                        <TableCell
+                          className={`text-right ${z.net_gex >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+                        >
+                          {gexCrore(z.net_gex)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </div>
+
           <p className="text-[10px] text-muted-foreground">
-            Mid IV when spread ≤12%; else LTP. Gamma uses BSM with dividend yield q. Flip from GEX(S) scan
-            (sticky-strike + sticky-delta). Magnet walls = density / |K−S|. EM prefers ATM straddle.
-            Hedge flow = Γ_units × ΔS / lot. Multi-expiry weights ∝ 1/√TTE. Spot path = day minute
+            Mid IV when spread ≤12%; else LTP. Gamma uses BSM with dividend yield q. Magnet walls =
+            density / |K−S|. EM prefers ATM straddle. Multi-expiry weights ∝ 1/√TTE. Spot path = day minute
             candles; GEX ticks only while desk polls in-session (no post-close append). Reversals =
             spot swing extremes with ≥~0.15% reclaim, optional GEX regime confirm.
           </p>
@@ -1415,7 +1254,15 @@ function GammaDensityPage() {
               summaryRefreshToken={summaryRefreshToken}
               massBasis={massBasis}
               onMassBasisChange={setMassBasis}
+              pinWindow={pinWindow}
+              onPinWindowChange={setPinWindow}
             />
+          </TabsContent>
+
+          {/* Additive third tab. Neither of the two above reads `hhi_stats`;
+              removing this block leaves them untouched. */}
+          <TabsContent value="measurement" className="mt-4">
+            <MeasurementBoard snapshot={snapshot} />
           </TabsContent>
         </Tabs>
       ) : (

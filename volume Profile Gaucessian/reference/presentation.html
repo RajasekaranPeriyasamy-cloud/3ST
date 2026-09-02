@@ -1,0 +1,1162 @@
+<title>The Reconstructed Footprint</title>
+<style>
+/* ============================================================ tokens */
+:root{
+  --paper:#EDF0F4; --surface:#FFFFFF; --surface-2:#F5F7FA; --sunken:#E4E9EF;
+  --ink:#14171D; --ink-2:#3A4250; --muted:#69748A; --faint:#8B95A6;
+  --rule:#D3DAE3; --grid:#C6CFDA;
+  --buy:#1A56C4; --buy-soft:#DCE7FA;
+  --sell:#BE1E35; --sell-soft:#FADEE2;
+  --poc:#94600A; --poc-soft:#F7E9CC;
+  --va:#6739C0; --va-soft:#E9E1FA;
+  --shadow:0 1px 2px rgba(20,23,29,.05), 0 8px 24px -12px rgba(20,23,29,.18);
+  --serif:Charter,"Bitstream Charter","Sitka Text","Iowan Old Style",Georgia,"Times New Roman",serif;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1015; --surface:#151920; --surface-2:#1B2028; --sunken:#0A0D11;
+    --ink:#E5E9EF; --ink-2:#B7BFCC; --muted:#8794A6; --faint:#6B7787;
+    --rule:#282F39; --grid:#2C3540;
+    --buy:#6BA9FF; --buy-soft:#132540;
+    --sell:#FF7189; --sell-soft:#3A1620;
+    --poc:#E2AC42; --poc-soft:#33270F;
+    --va:#AC90FF; --va-soft:#231A3D;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1015; --surface:#151920; --surface-2:#1B2028; --sunken:#0A0D11;
+  --ink:#E5E9EF; --ink-2:#B7BFCC; --muted:#8794A6; --faint:#6B7787;
+  --rule:#282F39; --grid:#2C3540;
+  --buy:#6BA9FF; --buy-soft:#132540;
+  --sell:#FF7189; --sell-soft:#3A1620;
+  --poc:#E2AC42; --poc-soft:#33270F;
+  --va:#AC90FF; --va-soft:#231A3D;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+}
+
+/* ============================================================ base */
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--serif); font-size:17.5px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1120px; margin:0 auto; padding:0 28px 120px}
+.col{max-width:68ch; margin-left:auto; margin-right:auto}
+p{margin:0 0 1.05em}
+a{color:var(--buy)}
+strong{font-weight:700}
+em{font-style:italic}
+h1,h2,h3,h4{text-wrap:balance; margin:0; font-weight:700; letter-spacing:-.015em}
+h2{font-size:2.05rem; line-height:1.14; margin-bottom:.5rem}
+h3{font-size:1.28rem; line-height:1.25; margin:2.4rem 0 .6rem}
+h4{font-size:1rem; margin:1.9rem 0 .4rem}
+code{font-family:var(--mono); font-size:.86em; background:var(--surface-2);
+  border:1px solid var(--rule); border-radius:3px; padding:.08em .34em}
+:focus-visible{outline:2px solid var(--buy); outline-offset:2px; border-radius:2px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+
+.eyebrow{
+  font-family:var(--mono); font-size:.7rem; font-weight:600;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--muted);
+}
+.lede{font-size:1.24rem; line-height:1.5; color:var(--ink-2)}
+
+/* ============================================================ hero */
+.hero{padding:76px 0 20px; border-bottom:1px solid var(--rule); margin-bottom:14px}
+.hero h1{font-size:clamp(2.6rem,6.2vw,4.15rem); line-height:1.02; letter-spacing:-.032em; margin:.5rem 0 .7rem}
+.hero .thesis{font-size:1.34rem; line-height:1.46; color:var(--ink-2); max-width:38ch}
+.hero .thesis b{color:var(--ink)}
+.meta{
+  display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:26px;
+  font-family:var(--mono); font-size:.74rem; color:var(--muted); letter-spacing:.04em;
+}
+.meta span{white-space:nowrap}
+
+/* ============================================================ pipeline rail */
+.rail{
+  display:flex; gap:0; flex-wrap:wrap; margin:32px 0 8px;
+  border:1px solid var(--rule); border-radius:6px; overflow:hidden; background:var(--surface);
+}
+.rail a{
+  flex:1 1 128px; padding:11px 13px; text-decoration:none; color:var(--ink-2);
+  border-right:1px solid var(--rule); background:var(--surface);
+  font-family:var(--mono); font-size:.72rem; line-height:1.35; letter-spacing:.02em;
+}
+.rail a:last-child{border-right:0}
+.rail a:hover{background:var(--surface-2); color:var(--ink)}
+.rail b{display:block; color:var(--faint); font-size:.66rem; letter-spacing:.14em; margin-bottom:2px}
+
+/* ============================================================ sections */
+section{padding-top:58px}
+.shead{max-width:68ch; margin:0 auto 1.3rem}
+.shead .num{
+  font-family:var(--mono); font-size:.72rem; letter-spacing:.16em;
+  color:var(--muted); display:block; margin-bottom:.45rem;
+}
+.shead .num i{font-style:normal; color:var(--buy)}
+
+/* ============================================================ figures */
+.fig{
+  max-width:1120px; margin:30px auto; background:var(--surface);
+  border:1px solid var(--rule); border-radius:8px; box-shadow:var(--shadow); overflow:hidden;
+}
+.fig-head{
+  display:flex; justify-content:space-between; align-items:baseline; gap:16px; flex-wrap:wrap;
+  padding:13px 18px; border-bottom:1px solid var(--rule); background:var(--surface-2);
+}
+.fig-head .t{font-family:var(--mono); font-size:.74rem; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-2); font-weight:600}
+.fig-head .n{font-size:.9rem; color:var(--muted); font-style:italic}
+.fig-body{padding:20px 18px}
+.fig-note{
+  padding:12px 18px 15px; border-top:1px solid var(--rule);
+  font-size:.93rem; color:var(--muted); background:var(--surface-2);
+}
+.scroll{overflow-x:auto}
+svg{display:block; max-width:100%; height:auto}
+
+/* ============================================================ controls */
+.ctl{display:flex; flex-wrap:wrap; gap:22px; align-items:flex-end; margin-bottom:18px}
+.ctl label{display:flex; flex-direction:column; gap:5px; min-width:184px; flex:1 1 184px}
+.ctl .lab{font-family:var(--mono); font-size:.7rem; letter-spacing:.11em; text-transform:uppercase; color:var(--muted)}
+.ctl .val{font-family:var(--mono); font-size:.86rem; color:var(--ink); font-variant-numeric:tabular-nums}
+input[type=range]{width:100%; accent-color:var(--buy); margin:0}
+button{
+  font-family:var(--mono); font-size:.76rem; letter-spacing:.08em; text-transform:uppercase;
+  padding:8px 15px; border:1px solid var(--rule); border-radius:5px;
+  background:var(--surface-2); color:var(--ink); cursor:pointer;
+}
+button:hover{background:var(--sunken)}
+
+/* ============================================================ readouts */
+.readout{
+  display:flex; flex-wrap:wrap; gap:0; border:1px solid var(--rule);
+  border-radius:6px; overflow:hidden; margin-top:16px; background:var(--surface-2);
+}
+.readout div{flex:1 1 120px; padding:9px 13px; border-right:1px solid var(--rule)}
+.readout div:last-child{border-right:0}
+.readout dt{font-family:var(--mono); font-size:.66rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-bottom:3px}
+.readout dd{margin:0; font-family:var(--mono); font-size:1rem; font-variant-numeric:tabular-nums; color:var(--ink)}
+.readout dd.b{color:var(--buy)} .readout dd.s{color:var(--sell)}
+
+/* ============================================================ tables */
+table{border-collapse:collapse; width:100%; font-size:.95rem}
+th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--rule); vertical-align:top}
+th{font-family:var(--mono); font-size:.68rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:600}
+td.num,th.num{text-align:right; font-family:var(--mono); font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+
+pre{
+  font-family:var(--mono); font-size:.79rem; line-height:1.5; margin:0;
+  background:var(--sunken); color:var(--ink-2); padding:16px 18px;
+  border:1px solid var(--rule); border-radius:6px; overflow-x:auto;
+}
+.fig pre{border:0; border-radius:0; background:var(--sunken)}
+pre b{color:var(--ink); font-weight:600}
+pre .bu{color:var(--buy)} pre .se{color:var(--sell)}
+pre .pc{color:var(--poc)} pre .va{color:var(--va)}
+
+.formula{
+  font-family:var(--mono); font-size:.92rem; line-height:1.9;
+  background:var(--surface-2); border-left:2px solid var(--buy);
+  padding:14px 18px; margin:18px 0; overflow-x:auto; color:var(--ink);
+}
+.formula .c{color:var(--muted)}
+
+/* ============================================================ callouts */
+.note{
+  max-width:68ch; margin:26px auto; padding:16px 20px;
+  border:1px solid var(--rule); border-left:3px solid var(--poc);
+  border-radius:0 6px 6px 0; background:var(--surface); font-size:1rem;
+}
+.note.warn{border-left-color:var(--sell)}
+.note .k{
+  font-family:var(--mono); font-size:.68rem; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--muted); display:block; margin-bottom:5px;
+}
+.note p:last-child{margin-bottom:0}
+
+.chip{
+  display:inline-block; font-family:var(--mono); font-size:.7rem; letter-spacing:.08em;
+  padding:2px 7px; border-radius:3px; border:1px solid currentColor; vertical-align:1px;
+}
+.chip.b{color:var(--buy); background:var(--buy-soft)}
+.chip.s{color:var(--sell); background:var(--sell-soft)}
+.chip.p{color:var(--poc); background:var(--poc-soft)}
+.chip.v{color:var(--va); background:var(--va-soft)}
+
+ul,ol{margin:0 0 1.05em; padding-left:1.35em}
+li{margin-bottom:.42em}
+
+.grid2{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:20px}
+.pad{padding:20px 18px}
+
+footer{
+  max-width:68ch; margin:70px auto 0; padding-top:26px; border-top:1px solid var(--rule);
+  font-size:.92rem; color:var(--muted);
+}
+
+/* ============================================================ print */
+@page{margin:16mm 14mm}
+@media print{
+  /* Force the light token set: a printed page has one ground, and it is paper.
+     Every token below already exists on bare :root, so this is a re-point, not
+     a colour that only lives inside a media block. */
+  :root{
+    --paper:#FFFFFF; --surface:#FFFFFF; --surface-2:#F5F7FA; --sunken:#F0F3F7;
+    --ink:#14171D; --ink-2:#3A4250; --muted:#5A6478; --faint:#828C9D;
+    --rule:#C8D0DA; --grid:#C6CFDA;
+    --buy:#14459E; --buy-soft:#DCE7FA;
+    --sell:#A3182C; --sell-soft:#FADEE2;
+    --poc:#7A4E06; --poc-soft:#F7E9CC;
+    --va:#542CA3; --va-soft:#E9E1FA;
+    --shadow:none;
+  }
+  html,body{background:#FFFFFF; color:var(--ink); font-size:10.5pt}
+  *{ -webkit-print-color-adjust:exact; print-color-adjust:exact }
+  .wrap{max-width:none; padding:0}
+  .col,.shead,.note,footer{max-width:none}
+
+  /* Screen-only furniture: the section rail is a jump list, and the widget
+     controls are inert on paper. The readouts they drive stay. */
+  .rail, .ctl input, .ctl button{display:none}
+  .ctl{margin-bottom:8px; gap:14px}
+  .ctl .lab{margin-bottom:0}
+
+  .hero{padding:0 0 16px}
+  .hero h1{font-size:30pt}
+  .hero .thesis{font-size:12.5pt; max-width:none}
+  section{padding-top:22px}
+  h2{font-size:17pt}
+  h3{font-size:12.5pt; margin-top:16px}
+
+  /* Keep a figure and its caption on one sheet wherever it fits. */
+  .fig, .note, .formula, table, pre, svg{break-inside:avoid; page-break-inside:avoid}
+  .fig{box-shadow:none; border-color:var(--rule)}
+  h2,h3,h4{break-after:avoid; page-break-after:avoid}
+  section{break-before:auto}
+  #engine,#split,#imbalance,#profile,#poc,#readings,#output,#port,#tutor{
+    break-before:page; page-break-before:always;
+  }
+
+  /* Wide code blocks cannot scroll on paper, so let them wrap instead of
+     silently losing their right-hand columns. */
+  pre{white-space:pre-wrap; word-break:break-word; font-size:6.4pt; line-height:1.35}
+  .scroll{overflow:visible}
+  a{text-decoration:none}
+}
+</style>
+
+<div class="wrap">
+
+<!-- ============================================== HERO -->
+<header class="hero col">
+  <span class="eyebrow">Market microstructure · reconstruction from OHLCV</span>
+  <h1>The Reconstructed Footprint</h1>
+  <p class="thesis">Volume tells you <b>how much</b> traded. A footprint tells you <b>where</b>. This is how you rebuild the second one from the first — with geometry, a truncated normal, and an arithmetic self-check that admits when it is lying.</p>
+  <div class="meta">
+    <span>Source · Pine v6, ata_sabanci</span>
+    <span>Port · Python 3.12, stdlib only</span>
+    <span>Residual · 0.02 PPM</span>
+  </div>
+</header>
+
+<nav class="rail col" aria-label="The computation pipeline">
+  <a href="#engine"><b>01</b>Engine</a>
+  <a href="#split"><b>02</b>Row split</a>
+  <a href="#imbalance"><b>03</b>Imbalance</a>
+  <a href="#profile"><b>04</b>Profile</a>
+  <a href="#poc"><b>05</b>POC &amp; Value Area</a>
+  <a href="#readings"><b>06</b>OVL · Tilt · RES</a>
+</nav>
+
+<!-- ============================================== PROBLEM -->
+<section id="problem">
+  <div class="shead">
+    <span class="num">The question</span>
+    <h2>A candle cannot answer the only question that matters</h2>
+  </div>
+  <div class="col">
+    <p>A five-minute bar closes at 104.25, having traded between 104.10 and 104.35 on 1,894 lots. Now answer this: <em>did the buyers do their work at 104.12 and get paid, or did they chase 104.34 and get filled by someone unloading?</em></p>
+    <p>Those are opposite situations. They produce the same candle.</p>
+    <p>A real footprint chart answers it by counting every print at every price and tagging each one by whether it lifted the ask or hit the bid. That needs a per-tick feed with aggressor flags — exchange-grade data most retail plans do not carry, and none of the free ones do.</p>
+    <p>This indicator's contribution is that it <strong>reconstructs</strong> the footprint from ordinary OHLCV, using a geometric model of how price traversed its own range. Then — and this is the part worth stealing regardless of whether you ever use the tool — it <strong>audits its own arithmetic in parts per million</strong> and tells you when the picture has stopped being faithful.</p>
+    <p>Six stages. Each one is a small, checkable idea. Here is what they add up to on a chart — every number below is real output from the port, not a mockup:</p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 1 · The assembled view</span><span class="n">23-bar period · 6-column window · geometric engine</span></div>
+    <div class="fig-body">
+      <div class="scroll"><svg id="chartSvg" viewBox="0 0 1240 900" role="img" aria-label="Candlestick chart with the volume profile drawn to the right of the last bar, point of control and value area lines, and the footprint table shown below with a legend"></svg></div>
+    </div>
+    <div class="fig-note">Four things are on screen at once. <strong>The candles</strong> are the 23-bar period the profile covers. <strong>The two bells</strong> open rightward from a shared baseline one bar past the last candle — blue fed only by buy volume, red only by sell, on one horizontal scale so their relative size means something. <strong>The lines</strong> are the POC and the value-area edges, drawn back across the bars they were computed from, with the dashed grey pair capping the period's highest high and lowest low. <strong>The table</strong> is the footprint at one-tick resolution. The two amber labels are the tool talking about itself — the balance verdict at the ceiling, the arithmetic self-check at the floor.<br><br>Note the two resolutions: the profile spans the full 103.65–105.45 period range, while the table zooms into a 19-tick band around the current price. Same order flow, two magnifications. On a live chart the table is a corner <em>overlay</em> sitting on top of the candles; it is drawn below here so nothing covers anything.</div>
+  </div>
+
+  <div class="note">
+    <span class="k">The altimeter</span>
+    <p>One detail that confuses people on first contact: the table's price ladder does not stay still. It is anchored to the row of the <em>current price</em> and slides as price moves — like an aircraft altimeter, where the needle holds position and the scale rotates behind it. Price stays centred; the prices around it change. That is why the table always shows you the levels that matter right now instead of the levels that mattered when you opened the chart, and why a candle that never traded in the visible band silently loses its column.</p>
+  </div>
+</section>
+
+<!-- ============================================== 01 ENGINE -->
+<section id="engine">
+  <div class="shead">
+    <span class="num"><i>01</i> &nbsp;Engine</span>
+    <h2>Where buy and sell volume come from</h2>
+  </div>
+  <div class="col">
+    <p>Everything downstream reads exactly two numbers per bar: buy volume and sell volume. The engine decides how those two are produced, and <em>nothing else in the pipeline changes</em>. That separation is the reason the same code serves a free chart and a Premium per-tick feed.</p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 2 · The three engines</span><span class="n">fidelity rises left to right; availability falls</span></div>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Engine</th><th>How it splits the bar</th><th>What it cannot see</th><th>Needs</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Geometric</strong></td>
+          <td><code>buy = V·(C−L)/(H−L)</code><br><code>sell = V·(H−C)/(H−L)</code></td>
+          <td>Any path that ran up and got sold back into. It reads the close, not the journey.</td>
+          <td>Nothing. Any OHLCV, any plan.</td>
+        </tr>
+        <tr>
+          <td><strong>Intrabar</strong></td>
+          <td>Sums directional volume from lower-timeframe candles inside the bar.</td>
+          <td>What happened <em>inside</em> each LTF candle. Resolution is bounded by your LTF choice.</td>
+          <td>Intrabar history — limited by plan and by how far back you look.</td>
+        </tr>
+        <tr>
+          <td><strong>Footprint</strong></td>
+          <td>Real per-price rows with aggressor-tagged buy and sell volume.</td>
+          <td>Nothing material. This is the measurement the other two estimate.</td>
+          <td>A per-tick feed. Premium/Ultimate on TradingView.</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="fig-note">The Geometric split reads the candle as a story: a bar that closed on its high was lifted all session, so most of its volume was buyer-initiated. It is an <em>estimator</em>. The other two engines exist because sometimes an estimate is not good enough.</div>
+  </div>
+
+  <div class="note">
+    <span class="k">The purity rule</span>
+    <p>A bar the engine cannot fill returns <code>None</code> — never <code>0.0</code>. Missing data is missing. A bar with no reading is <em>excluded</em> from the window, not counted as a bar where nothing traded. Get this wrong and every gap in your history quietly votes for "balanced, no volume here," which is the most dangerous wrong answer this tool can give.</p>
+  </div>
+</section>
+
+<!-- ============================================== 02 SPLIT -->
+<section id="split">
+  <div class="shead">
+    <span class="num"><i>02</i> &nbsp;Row split</span>
+    <h2>Two bells, and the half-journey each one describes</h2>
+  </div>
+  <div class="col">
+    <p>We now know a bar traded 700 buy and 300 sell. We still don't know <em>at which prices</em>. The model answers with two truncated normal distributions, and the centres are the whole idea:</p>
+  </div>
+
+  <div class="formula col">
+<span class="c">// buyers worked the leg from the low up to the close</span>
+mu_b  = L + (C − L) / 2
+<span class="c">// sellers worked the leg from the close up to the high</span>
+mu_s  = C + (H − C) / 2
+<span class="c">// one shared width, set by the Concentration input</span>
+sigma = (H − L) / concentration
+  </div>
+
+  <div class="col">
+    <p>Read it as a story of the bar. Price left the low, buyers pushed it to the close — so their volume centres <em>midway through that leg</em>. From the close price reached up to the high and came back — sellers did that work, so their volume centres midway through <em>that</em> leg. Two half-journeys, two centres.</p>
+    <p>Move the close and watch what happens. This is the single most useful thing to internalise about the tool:</p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 3 · Interactive · the bell splitter</span><span class="n">H 101.00 · L 99.00 · V 1,000 · rows shown at 0.10</span></div>
+    <div class="fig-body">
+      <div class="ctl">
+        <label>
+          <span class="lab">Close inside the range</span>
+          <input id="cSlider" type="range" min="2" max="98" value="70" step="1" aria-label="Close position inside the bar range">
+          <span class="val" id="cVal">C 100.40 &nbsp;·&nbsp; 70% of range</span>
+        </label>
+        <label>
+          <span class="lab">Volume concentration</span>
+          <input id="kSlider" type="range" min="10" max="100" value="30" step="5" aria-label="Volume concentration">
+          <span class="val" id="kVal">3.0 &nbsp;·&nbsp; sigma 0.667</span>
+        </label>
+      </div>
+      <div class="scroll"><svg id="bellSvg" viewBox="0 0 900 420" role="img" aria-label="Bar with buy and sell bell curves and the resulting price ladder"></svg></div>
+      <dl class="readout">
+        <div><dt>Buy share</dt><dd id="rShare">0.700</dd></div>
+        <div><dt>Buy volume</dt><dd class="b" id="rBuy">700.0</dd></div>
+        <div><dt>Sell volume</dt><dd class="s" id="rSell">300.0</dd></div>
+        <div><dt>mu buy</dt><dd id="rMuB">99.700</dd></div>
+        <div><dt>mu sell</dt><dd id="rMuS">100.700</dd></div>
+        <div><dt>Rows + off-frame</dt><dd id="rMass">1000.000</dd></div>
+      </dl>
+    </div>
+    <div class="fig-note">Drag the close to the high: the two bells collapse together near the top and the sell side thins to nothing. Drag it to the low: the reverse. Raise Concentration and both bells tighten toward their own centres — it is a <em>width</em> control, not a shape control. The last readout is the conservation check: rows plus off-frame mass always re-add to 1,000.</div>
+  </div>
+
+  <h3 class="col">The lattice, and why rows are never merged</h3>
+  <div class="col">
+    <p>Row <code>k</code> is the absolute tick index <code>round(price / tick)</code>, and it owns the price band half a tick either side of its own level. A row's value is the <em>exact</em> truncated-normal mass of that band, clipped to the bar range:</p>
+  </div>
+
+  <div class="formula col">
+row_k = w · [ Φ((top_k − mu)/σ) − Φ((bot_k − mu)/σ) ] / Z
+Z     = Φ((H − mu)/σ) − Φ((L − mu)/σ)      <span class="c">// truncation mass</span>
+  </div>
+
+  <div class="col">
+    <p>Three consequences worth naming:</p>
+    <ul>
+      <li><strong>Truncation is not cosmetic.</strong> A bar cannot trade at a price it never printed, so the bell is cut off at H and L and re-normalised by its own surviving mass <code>Z</code>. Skip the <code>Z</code> and your two sides no longer add to the bar's volume.</li>
+      <li><strong>Nothing is rescaled to fit the screen.</strong> Volume that falls outside the visible frame is carried in a separate off-frame sum rather than dropped or squeezed into the edge rows. Per side, <em>frame rows + off-frame = bar volume</em>. That invariant is what stage 06 audits.</li>
+      <li><strong>Flat bars are point atoms, not bells.</strong> A zero-range bar has σ = 0 and no distribution. It enters the model as a point mass at its own price and is carried through every later calculation separately. This is the case that breaks naive implementations — on a limit-locked commodity, an illiquid option strike, or a halted stock, you get a divide-by-zero or a silently vanished bar.</li>
+    </ul>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 4 · One bar, worked</span><span class="n">H 101 · L 99 · C 100.40 · V 1,000 · concentration 3</span></div>
+    <div class="scroll"><pre>  share = (100.40 − 99.00) / (101.00 − 99.00) = <b>0.700</b>
+  buy   = 1000 × 0.700 = <b>700.0</b>          sell = 1000 × 0.300 = <b>300.0</b>
+  mu_b  = 99.00 + 1.40/2 = <b>99.700</b>       mu_s = 100.40 + 0.60/2 = <b>100.700</b>
+  sigma = 2.00 / 3 = <b>0.6667</b>
+
+     price        sell        buy
+    101.00    <span class="se">−  6.12</span>    <span class="bu">+  1.96</span>
+    100.80    <span class="se">− 13.28</span>    <span class="bu">+  6.49</span>
+    100.60    <span class="se">− 13.28</span>    <span class="bu">+ 10.18</span>
+    100.40    <span class="se">− 12.14</span>    <span class="bu">+ 14.58</span>   <span class="pc">← close</span>
+    100.20    <span class="se">− 10.14</span>    <span class="bu">+ 19.10</span>
+    100.00    <span class="se">−  7.74</span>    <span class="bu">+ 22.87</span>
+     99.80    <span class="se">−  5.40</span>    <span class="bu">+ 25.02</span>
+     99.60    <span class="se">−  3.44</span>    <span class="bu">+ 25.02</span>   <span class="pc">← mu_b 99.70 sits between these two</span>
+     99.40    <span class="se">−  2.01</span>    <span class="bu">+ 22.87</span>
+     99.20    <span class="se">−  1.07</span>    <span class="bu">+ 19.10</span>
+     99.00    <span class="se">−  0.27</span>    <span class="bu">+  7.44</span>
+
+  frame + off-frame:  buy 700.000000   sell 300.000000   <b>conserved</b></pre></div>
+    <div class="fig-note">Only every fourth row is printed. The buy mass peaks around 99.60–99.80 — the middle of the low-to-close leg — while sell mass peaks around 100.60–100.80, the middle of the close-to-high leg. The centroid of buy volume always sits below the centroid of sell volume within a single bar; that is a testable claim, and the port tests it.</div>
+  </div>
+</section>
+
+<!-- ============================================== 03 IMBALANCE -->
+<section id="imbalance">
+  <div class="shead">
+    <span class="num"><i>03</i> &nbsp;Imbalance</span>
+    <h2>Why the comparison is diagonal</h2>
+  </div>
+  <div class="col">
+    <p>Now that each bar is a column of price rows, we can ask which levels were one-sided. The obvious test — compare buy and sell <em>at the same price</em> — is wrong, and understanding why is the fastest way to understand order flow generally.</p>
+    <p>A limit order book quotes a bid and an ask one tick apart. An aggressive buyer does not trade "at the price" — they <strong>lift the ask</strong>. An aggressive seller <strong>hits the bid</strong>, one tick below. So buy volume at level <em>k</em> and sell volume at level <em>k</em> are prints that <em>never met each other</em>. The trades that actually competed are buy at <em>k</em> against sell at <em>k−1</em>.</p>
+  </div>
+
+  <div class="formula col">
+buy_imbalance[k]   ⟺   buy[k]  &gt; sell[k−1] × ratio
+sell_imbalance[k]  ⟺   sell[k] &gt; buy[k+1]  × ratio
+<span class="c">// ratio 3.0 (300%) is the classical figure</span>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 5 · The diagonal pairing</span><span class="n">threshold 300% · cells read −sell +buy</span></div>
+    <div class="fig-body"><div class="scroll"><svg viewBox="0 0 760 320" role="img" aria-label="Diagram showing buy volume at one level compared diagonally against sell volume one level below">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--poc)"/>
+        </marker>
+        <marker id="arx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--faint)"/>
+        </marker>
+      </defs>
+      <g font-family="ui-monospace, monospace" font-size="15">
+        <!-- ladder -->
+        <g>
+          <rect x="70" y="50" width="330" height="58" fill="var(--surface-2)" stroke="var(--rule)"/>
+          <rect x="70" y="108" width="330" height="58" fill="var(--surface-2)" stroke="var(--rule)"/>
+          <rect x="70" y="166" width="330" height="58" fill="var(--surface-2)" stroke="var(--rule)"/>
+          <line x1="235" y1="50" x2="235" y2="224" stroke="var(--rule)"/>
+          <text x="30" y="85" fill="var(--muted)" font-size="13">100.10</text>
+          <text x="30" y="143" fill="var(--muted)" font-size="13">100.05</text>
+          <text x="30" y="201" fill="var(--muted)" font-size="13">100.00</text>
+          <text x="152" y="38" fill="var(--muted)" font-size="12" text-anchor="middle">SELL</text>
+          <text x="318" y="38" fill="var(--muted)" font-size="12" text-anchor="middle">BUY</text>
+
+          <text x="152" y="85" fill="var(--sell)" text-anchor="middle">−  22</text>
+          <text x="318" y="85" fill="var(--buy)" text-anchor="middle">+  31</text>
+
+          <text x="152" y="143" fill="var(--sell)" text-anchor="middle">−  18</text>
+          <text x="318" y="143" fill="var(--buy)" text-anchor="middle" font-weight="700">+ 412</text>
+
+          <text x="152" y="201" fill="var(--sell)" text-anchor="middle" font-weight="700">−  24</text>
+          <text x="318" y="201" fill="var(--buy)" text-anchor="middle">+  19</text>
+        </g>
+
+        <!-- diagonal arrow: buy[k] vs sell[k-1] -->
+        <path d="M300,133 C250,133 210,178 175,190" fill="none" stroke="var(--poc)" stroke-width="2" marker-end="url(#ar)"/>
+        <text x="420" y="128" fill="var(--poc)" font-size="13">412 &gt; 24 × 3.00  →  BUY IMBALANCE</text>
+        <text x="420" y="150" fill="var(--muted)" font-size="12.5">the aggressive buy lifted the ask;</text>
+        <text x="420" y="168" fill="var(--muted)" font-size="12.5">the bid it competed with sat one tick under</text>
+
+        <!-- wrong comparison -->
+        <path d="M300,148 C280,168 250,158 200,148" fill="none" stroke="var(--faint)" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arx)"/>
+        <text x="420" y="228" fill="var(--faint)" font-size="13">412 vs 18 — same level, never met</text>
+        <text x="420" y="248" fill="var(--faint)" font-size="12.5">this is the comparison that looks obvious</text>
+        <text x="420" y="266" fill="var(--faint)" font-size="12.5">and tells you nothing about who won</text>
+
+        <text x="70" y="296" fill="var(--muted)" font-size="12.5">Untraded rows stay silent — a missing value is never read as zero opposing volume.</text>
+      </g>
+    </svg></div></div>
+    <div class="fig-note">If you treated an untraded row as zero opposing volume, every edge of every bar would be "infinitely imbalanced" and the signal would be pure noise. The <code>None</code>-is-not-zero rule from stage 01 is what keeps this readable.</div>
+  </div>
+
+  <div class="note">
+    <span class="k">What to do with it</span>
+    <p>A stack of buy imbalances on the way up is aggression being <em>absorbed</em> or aggression <em>working</em> — you cannot tell which from the imbalance alone, only from what price does next. The tool marks only the <strong>first</strong> imbalanced level above and below the POC, because in a trending profile half the ladder is imbalanced and a chart with thirty dotted lines says nothing. The first level away from the POC on each side is where the auction stopped being two-sided. That is the edge worth watching.</p>
+  </div>
+</section>
+
+<!-- ============================================== 04 PROFILE -->
+<section id="profile">
+  <div class="shead">
+    <span class="num"><i>04</i> &nbsp;Profile</span>
+    <h2>A period of bars, collapsed into two curves</h2>
+  </div>
+  <div class="col">
+    <p>The table reads bar by bar. The profile reads the <em>period</em>: every bar's two bells are summed into one mixture per side, and the result is drawn sideways off the right edge of the chart. Where the two curves overlap, both sides were doing business at the same prices.</p>
+    <p>Each bar contributes one component per side, with an intensity coefficient that carries its volume:</p>
+  </div>
+
+  <div class="formula col">
+coef = w / (σ · Z)
+density(p) = Σ over components whose range contains p:  coef · φ((p − mu)/σ)
+<span class="c">// unit: volume per unit price — a density, not a probability</span>
+  </div>
+
+  <div class="col">
+    <p>Divide that by the side's total volume and it becomes the mixture's probability density, which is what stage 06 needs. Keep it undivided and it is directly comparable with a table row — which is why the chart POC label can report the same <em>kind</em> of number as the dashboard POC.</p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 6 · The mixture, from three bars</span><span class="n">each bar's bell is truncated to its own range</span></div>
+    <div class="fig-body"><div class="scroll"><svg id="mixSvg" viewBox="0 0 880 300" role="img" aria-label="Three individual bar bells summing into one mixture curve"></svg></div></div>
+    <div class="fig-note">The mixture is not smooth. It kinks at every bar boundary, because that is where a component switches on or off. Those kinks are exactly where the integrator has to cut its pieces — see stage 06.</div>
+  </div>
+</section>
+
+<!-- ============================================== 05 POC / VA -->
+<section id="poc">
+  <div class="shead">
+    <span class="num"><i>05</i> &nbsp;POC &amp; Value Area</span>
+    <h2>The two levels every profile trader already knows</h2>
+  </div>
+  <div class="col">
+    <p>These are classical Market Profile statistics, and the indicator's contribution is not inventing them but computing them <em>twice from one implementation</em> — once over the table's window of bars, once over the profile's period. If the two halves of a tool disagreed about what a POC is, they would be telling different stories.</p>
+
+    <h3>Point of Control</h3>
+    <p><code>argmax(buy + sell)</code>. The price where the market did the most business. In a rotating market it is a magnet — price keeps returning to where the inventory sits. In a trending one it is a reference: a break away from the POC that <em>holds</em> is one of the cleaner signs the auction has genuinely moved rather than merely stretched.</p>
+
+    <h3>Value Area</h3>
+    <p>Start at the POC. Look at the neighbour above and the neighbour below, take whichever holds more volume, add it to the band. Repeat until the band holds 70% of the period's volume.</p>
+    <p>Seventy is not arbitrary: it is roughly one standard deviation of a normal distribution, and that is where the convention comes from. Inside the band the market <em>accepted</em> price and kept building business. Past the edges, trade thinned out fast.</p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 7 · Interactive · value area expansion</span><span class="n">press Step to add the heavier neighbour</span></div>
+    <div class="fig-body">
+      <div class="ctl">
+        <button id="vaStep" type="button">Step</button>
+        <button id="vaAuto" type="button">Run to 70%</button>
+        <button id="vaReset" type="button">Reset</button>
+        <span class="val" id="vaState" style="flex:1 1 240px">inside band: 20.0 of 66.0 &nbsp;·&nbsp; target 46.2 &nbsp;·&nbsp; 30.3%</span>
+      </div>
+      <div class="scroll"><svg id="vaSvg" viewBox="0 0 800 400" role="img" aria-label="Value area expanding outward from the point of control"></svg></div>
+    </div>
+    <div class="fig-note">Note the expansion is stepwise — one row at a time — not the two-rows-at-a-time variant some platforms use. Neither is more correct; what matters is that the tool commits to one rule and applies it in both domains. The loop is boundary-guarded: an exhausted side is never stepped again, so it terminates even when the target can never be reached.</div>
+  </div>
+
+  <div class="note">
+    <span class="k">Trading the band</span>
+    <p>Two behaviours are worth watching. Price re-entering the value area from outside tends to <em>travel across it</em> to the far edge — the classical rotation trade. Price holding beyond an edge, refusing to come back, usually means the auction has moved on to do business elsewhere, and the old value area becomes context rather than support. The failure mode is treating the edges as fixed lines: they are the boundary of a <em>volume</em> statistic that updates every bar.</p>
+  </div>
+</section>
+
+<!-- ============================================== 06 READINGS -->
+<section id="readings">
+  <div class="shead">
+    <span class="num"><i>06</i> &nbsp;OVL · Tilt · RES</span>
+    <h2>Three numbers, and only two of them are about the market</h2>
+  </div>
+
+  <h3 class="col">OVL — the overlapping coefficient</h3>
+  <div class="col">
+    <p>Normalise both sides to probability densities and integrate their pointwise minimum. The result runs 0 to 1 and answers a question no single-sided profile can: <em>did buyers and sellers work the same prices, or did each hold its own territory?</em></p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 8 · Two profiles, same volume, opposite meaning</span><span class="n">shaded region is the OVL integral</span></div>
+    <div class="fig-body"><div class="grid2">
+      <div><div class="scroll"><svg id="ovlA" viewBox="0 0 400 250" role="img" aria-label="Balanced profile, buy and sell densities heavily overlapping"></svg></div></div>
+      <div><div class="scroll"><svg id="ovlB" viewBox="0 0 400 250" role="img" aria-label="Off-balance profile, buy and sell densities separated"></svg></div></div>
+    </div></div>
+    <div class="fig-note">Left: OVL near 1. Both sides worked the same levels — rotation, and the profile edges tend to hold. Right: OVL well below the 0.75 boundary. Each side kept its own price territory, which is what a directional market physically looks like: one side pushing, the other answering somewhere else entirely.</div>
+  </div>
+
+  <div class="col">
+    <h3>Tilt — and the dead zone</h3>
+    <p><code>tilt = 100 · (B − S) / (B + S)</code>. Delta expressed as a share of volume, so it is comparable across symbols and sessions in a way raw delta is not.</p>
+    <p>The design decision worth copying: when OVL says off-balance, the label only <em>names</em> a side if tilt clears a dead zone — 5 percentage points by default. Below that it says <span class="chip p">OFF BALANCE</span> and refuses to pick. A two-point edge dressed up as a direction is a coin flip with a confident label on it, and that is worse than no label.</p>
+
+    <h3>RES — the self-check nobody else ships</h3>
+    <p>The area under each curve, plus the flat-bar atoms, has to add back to the volume that side actually traded. RES is how far apart the two came, in parts per million:</p>
+  </div>
+
+  <div class="formula col">
+resid = | (∫ density dp  +  atoms) / total_volume  −  1 | × 1,000,000
+<span class="c">// under tolerance → EXACT     over → DRIFT</span>
+  </div>
+
+  <div class="col">
+    <p>This is <strong>a health reading of the tool, not a signal about the market</strong>. EXACT means the drawing you are looking at is a faithful picture of the volume behind it. DRIFT means the shape has left its tolerance and should not be traded until it settles.</p>
+    <p>It is also the reason the integration is done carefully rather than on a uniform grid. Composite Simpson, on pieces cut at every bar boundary — where the mixture kinks — and, for the overlap term, cut again at every crossing of the two densities, located by bisection to machine tolerance. Each piece's active component set is fixed by its midpoint, so every integrand Simpson ever sees is smooth. Step size is bounded by the narrowest active sigma.</p>
+    <p>The payoff is measurable: the reference run comes out at <strong>0.02 PPM</strong> against a 1 PPM tolerance. A naive uniform grid over the same mixture lands in the percent range — a curve that looks perfectly plausible while having quietly lost three percent of its volume. You would never notice. That is precisely the point of shipping the check.</p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 9 · Two normal CDFs, on purpose</span><span class="n">the original uses both, in different places</span></div>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Function</th><th>Algorithm</th><th class="num">Absolute error</th><th>Used for</th></tr></thead>
+      <tbody>
+        <tr><td><code>norm_cdf_fast</code></td><td>Abramowitz &amp; Stegun 26.2.17</td><td class="num">&lt; 7.5e−8</td><td>Per-bar table rows — thousands of calls per redraw, and eight digits is far beyond what a volume cell shows.</td></tr>
+        <tr><td><code>norm_cdf_precise</code></td><td>Cody rational Chebyshev <code>erfc</code></td><td class="num">&lt; 2e−16</td><td>The profile — because it self-reports in PPM, and a 7.5e−8 CDF would trigger DRIFT on its own.</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="fig-note">This is a genuinely good piece of engineering judgement, and the port preserves it exactly: the cheap CDF where precision is invisible, the expensive one where the tool audits itself. Python gets the second one free from <code>math.erfc</code>; Pine had to hand-roll Cody's coefficients.</div>
+  </div>
+</section>
+
+<!-- ============================================== READING OUTPUT -->
+<section id="output">
+  <div class="shead">
+    <span class="num">In practice</span>
+    <h2>Reading the thing</h2>
+  </div>
+  <div class="col"><p>Real output from the port, six columns of a synthetic session. Cells read <span class="chip s">−sell</span> <span class="chip b">+buy</span>. Column headers are bars back from the anchor — and they <em>jump</em>, because candles that never traded inside the frame take no column at all. Every column you see is a candle that genuinely left volume at these prices.</p></div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 10 · Footprint table</span><span class="n">window 6 bars · 19 one-tick rows · geometric engine</span></div>
+    <div class="scroll"><pre>            PRICE                 0                -1                -2                -3                -4                -5               SUM
+-----------------------------------------------------------------------------------------------------------------------------------------------
+  <span class="se">v</span>        104.50                 .                 .                 .                 .                 .      <span class="se">-67.8</span>  <span class="bu">+10.9</span>       <span class="se">-67.8</span> <span class="bu">+10.9</span>
+  <span class="se">v</span>        104.45                 .                 .                 .                 .                 .    <span class="se">v-151.6</span>  <span class="bu">+35.7</span>      <span class="se">-151.6</span> <span class="bu">+35.7</span>
+  <span class="se">v</span>        104.40                 .                 .                 .                 .      <span class="se">-104.6</span>   <span class="bu">+3.2</span>    <span class="se">v-160.1</span>  <span class="bu">+61.9</span>      <span class="se">-264.8</span> <span class="bu">+65.1</span>
+  <span class="se">v</span>        104.35     <span class="se">-113.9</span>  <span class="bu">+25.7</span>                 .      <span class="se">-44.5</span>  <span class="bu">+26.1</span>                 .    <span class="se">v-268.1</span>  <span class="bu">+12.6</span>     <span class="se">-578.1</span> <span class="bu">+160.6</span>
+ <span class="va">V</span><span class="se">v</span>        104.30   <span class="se">v-249.0</span> <span class="bu">+112.7</span>      <span class="se">-86.0</span>  <span class="bu">+49.1</span>     <span class="se">v-91.7</span>  <span class="bu">+68.7</span>                 .    <span class="se">v-330.3</span>  <span class="bu">+27.2</span>     <span class="se">-885.4</span> <span class="bu">+391.4</span>
+ <span class="va">V</span> <span class="pc">&gt;</span>       104.25    <span class="se">-209.1</span> <span class="bu">+226.7</span>   <span class="se">v-160.8</span> <span class="bu">+215.6</span>      <span class="se">-91.7</span>  <span class="bu">+94.6</span>                 .    <span class="se">v-354.1</span>  <span class="bu">+50.8</span>     <span class="se">-913.2</span> <span class="bu">+754.4</span>
+ <span class="va">V</span>         104.20    <span class="se">-123.8</span> <span class="bu">^+321.4</span>     <span class="se">-94.0</span> <span class="bu">^+368.9</span>     <span class="se">-87.6</span> <span class="bu">+124.4</span>     <span class="se">-101.7</span>   <span class="bu">+3.1</span>    <span class="se">v-330.3</span>  <span class="bu">+82.6</span>     <span class="se">-803.7</span>  <span class="bu">+1.1K</span>
+<span class="pc">P</span><span class="va">V</span>         104.15     <span class="se">-51.7</span> <span class="bu">^+321.4</span>     <span class="se">-32.1</span> <span class="bu">^+368.9</span>     <span class="se">-79.9</span> <span class="bu">+156.4</span>   <span class="se">v-260.6</span>  <span class="bu">+12.3</span>   <span class="se">v-268.1</span> <span class="bu">+116.9</span>     <span class="se">-732.9</span>  <span class="bu">+1.2K</span>
+ <span class="va">V</span>         104.10     <span class="se">-10.2</span> <span class="bu">+128.4</span>      <span class="se">-4.6</span> <span class="bu">+130.0</span>     <span class="se">-69.7</span> <span class="bu">^+187.8</span>   <span class="se">v-321.0</span>  <span class="bu">+26.4</span>    <span class="se">-189.4</span> <span class="bu">+144.0</span>     <span class="se">-617.0</span> <span class="bu">+783.3</span>
+ <span class="va">V</span>         104.05                 .                 .     <span class="se">-58.0</span> <span class="bu">^+215.4</span>   <span class="se">v-344.1</span>  <span class="bu">+49.3</span>    <span class="se">-116.5</span> <span class="bu">^+154.3</span>     <span class="se">-525.0</span> <span class="bu">+490.6</span>
+ <span class="va">V</span>         104.00                 .                 .     <span class="se">-46.2</span> <span class="bu">^+236.1</span>   <span class="se">v-321.0</span>  <span class="bu">+80.2</span>     <span class="se">-36.6</span>  <span class="bu">+74.5</span>     <span class="se">-403.7</span> <span class="bu">+390.8</span>
+           103.95                 .                 .     <span class="se">-35.1</span> <span class="bu">^+247.1</span>  <span class="se">v-260.6</span> <span class="bu">+113.6</span>                 .     <span class="se">-295.7</span> <span class="bu">+360.7</span>
+  <span class="bu">^</span>        103.85                 .                 .     <span class="se">-17.7</span> <span class="bu">^+236.1</span>   <span class="se">-113.2</span> <span class="bu">^+150.0</span>                 .     <span class="se">-130.8</span> <span class="bu">+386.1</span>
+-----------------------------------------------------------------------------------------------------------------------------------------------
+            TOTAL              1.9K              1.5K              3.1K              2.6K              2.7K              2.0K             13.4K
+            DELTA            <span class="bu">+378.8</span>            <span class="bu">+755.0</span>             <span class="bu">+1.8K</span>             <span class="se">-1.3K</span>             <span class="se">-1.3K</span>            <span class="bu">+223.1</span>            <span class="bu">+126.6</span></pre></div>
+    <div class="fig-note">Margin marks: <span class="chip p">P</span> window POC · <span class="chip v">V</span> inside the value area · <span class="chip b">^</span> buy imbalance · <span class="chip s">v</span> sell imbalance · <span class="chip p">&gt;</span> the axis row, where price is right now. A <code>.</code> means that bar never traded at that price.</div>
+  </div>
+
+  <div class="col">
+    <p>What this particular window says: the POC sits at 104.15 with a value area of 104.00–104.30 — price is at 104.25, inside value and near its upper edge. Window delta is <strong>+126.6</strong> on 13.4K of volume, which is nothing: under one percent. Columns 0, −1 and −2 were strongly bought; −3 and −4 were strongly sold. That is not a trend, it is a fight.</p>
+    <p>And the profile agrees — OVL 82.66%, above the 0.75 balance boundary, tilt −1.35pp, verdict <span class="chip p">BALANCED</span>. Two independent statistics over two different windows telling the same story is worth more than either alone.</p>
+  </div>
+</section>
+
+<!-- ============================================== PORT -->
+<section id="port">
+  <div class="shead">
+    <span class="num">The code</span>
+    <h2>What the Python port is</h2>
+  </div>
+  <div class="col">
+    <p>1,876 lines of Pine v6 → a pure-standard-library Python package. Every formula above is ported faithfully, including the two-CDF decision and the <code>None</code>-is-not-zero rule. 37 tests pin the invariants rather than the numbers, so a regression shows up as a broken promise.</p>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 11 · Module map</span><span class="n">the layout follows the original's own sections</span></div>
+    <div class="scroll"><pre>volume_footprint/
+  <b>mathkit.py</b>    the two normal CDFs, and why there are two
+  <b>bars.py</b>       Bar / BarSeries, the price lattice
+  <b>engines.py</b>    Geometric / Intrabar / Footprint volume splits
+  <b>rows.py</b>       one bar → one-tick rows, plus diagonal imbalance
+  <b>profile.py</b>    the truncated-normal mixture, OVL, RES self-check
+  <b>metrics.py</b>    POC, value area, balance tilt
+  <b>indicator.py</b>  window search, and the assembled result
+  <b>render.py</b>     terminal table, dashboard, ASCII + matplotlib profile
+<b>demo.py</b>         runnable, synthetic or CSV
+<b>tests/</b>          37 tests · 0.2s · no network</pre></div>
+  </div>
+
+  <div class="fig">
+    <div class="fig-head"><span class="t">Figure 12 · Usage</span><span class="n">the one thing the port does that Pine cannot</span></div>
+    <div class="scroll"><pre>from volume_footprint import BarSeries, Settings, VolumeEngine
+from volume_footprint import apply_engine, compute, format_table
+
+series = BarSeries.from_ohlcv(rows, mintick=0.05, symbol="NIFTY")
+series = apply_engine(series, VolumeEngine.GEOMETRIC)
+
+res = compute(series, Settings(window_bars=6, view_ticks=9, profile_period=23))
+
+res.window_poc_price       <span class="pc"># POC over the table's window</span>
+res.chart_poc_price        <span class="pc"># POC over the profile's period</span>
+res.chart_vah_price, res.chart_val_price
+res.profile.overlap        <span class="pc"># OVL, 0-100</span>
+res.profile.tilt           <span class="pc"># percentage points, + = buy side</span>
+res.profile.residual_ppm   <span class="pc"># RES self-check</span>
+res.balance_verdict()      <span class="pc"># "BALANCED" / "OFF BALANCE TO BUY" / ...</span>
+
+<span class="bu">compute(series, end_offset=250)</span>   <span class="pc"># ← evaluate 250 bars ago</span></pre></div>
+    <div class="fig-note">Pine can only run this block on <code>barstate.islast</code>, so its readings cannot be backtested. <code>end_offset</code> walks history, which turns OVL, tilt and the POC levels into series you can actually study. That is the main practical reason to port it at all.</div>
+  </div>
+
+  <div class="col">
+    <h3>What the port deliberately leaves out</h3>
+    <ul>
+      <li><strong>No Footprint data source.</strong> The row reader is implemented and tested, but you must supply real per-tick rows. Inventing an offline substitute would defeat the purpose.</li>
+      <li><strong>No chart objects.</strong> Label merge priorities, colour ladders and table anchoring are TradingView presentation concerns. The numbers are all here.</li>
+      <li><strong>No alerts.</strong> The control levels are exposed as plain values — wire them into whatever you already run.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================================== TUTOR -->
+<section id="tutor">
+  <div class="shead">
+    <span class="num">Tutor's notes</span>
+    <h2>How to actually use this, and where it will fool you</h2>
+  </div>
+
+  <div class="col">
+    <h3>The reading order that works</h3>
+    <ol>
+      <li><strong>RES first.</strong> If it says DRIFT, stop. Everything below is unreliable and you are about to trade a rendering artifact.</li>
+      <li><strong>OVL second.</strong> It tells you which <em>kind</em> of market you are in, and therefore which of the remaining numbers mean anything. Balanced → the profile edges are tradable and mean-reversion has an edge. Off balance → the edges are targets, not walls, and fading them is fighting the auction.</li>
+      <li><strong>POC and value area third.</strong> Location relative to price is the setup. Price inside value near an edge is a different trade from price outside value trying to get back in.</li>
+      <li><strong>Delta and imbalance last.</strong> These are confirmation, not triggers. Delta is the noisiest number on the screen and the most likely to be an artifact of the engine.</li>
+    </ol>
+
+    <h3>Parameters that actually change the answer</h3>
+    <p><strong>Concentration</strong> is the one to be careful with. It sets σ = range / concentration, so it controls how tightly volume gathers at each bell's centre. High values produce sharp, confident-looking peaks that are <em>entirely a modelling choice</em> — you are not discovering concentration in the market, you are asserting it. The default of 3 puts roughly ±1.5σ across the bar range, which is a reasonable statement of "we don't know much." If you raise it, you should be able to say why.</p>
+    <p><strong>Profile period</strong> and <strong>window bars</strong> are your two timeframes: the period is the structure you are trading against, the window is what is happening right now. Keeping them related — a session period, a recent-bars window — is what makes the dashboard and the chart usable together.</p>
+    <p><strong>Ticks above/below</strong> only affects what you can <em>see</em>. Volume outside the frame is carried, not lost, so the window POC still counts only what is in frame. A frame too tight will put the POC on a boundary row, which is a tell that you should widen it.</p>
+  </div>
+
+  <div class="note warn">
+    <span class="k">The honest caveat</span>
+    <p>The Geometric engine is a <strong>model, not a measurement</strong>. Its buy/sell split is a geometric assumption about how price traversed its range, and two completely different order-flow paths produce the same candle and therefore the same reconstruction. Treat POC, value area and OVL from this engine as <em>structure</em> — where the volume sat — not as verified aggressor flow.</p>
+    <p>Where a decision hinges on who was actually the aggressor, use the Intrabar engine at a meaningfully lower timeframe, or a genuine per-tick feed. And note what that costs: intrabar history is short, so the deeper you look back the more bars return no data at all — correctly, by the purity rule, rather than being quietly filled in.</p>
+    <p>RES saying EXACT confirms the integration is faithful <em>to the model</em>. It says nothing whatsoever about whether the model matches what traded.</p>
+  </div>
+
+  <div class="col">
+    <h3>The three ideas worth stealing even if you never run this</h3>
+    <ul>
+      <li><strong>Ship the residual.</strong> Any indicator that redistributes a conserved quantity — volume, open interest, gamma — can check that the redistribution conserves it, and report the drift. Almost none do. The check costs nothing and catches the class of bug that produces beautiful, confident, wrong pictures.</li>
+      <li><strong>Missing is not zero.</strong> One boolean's worth of discipline, and it is the difference between "no data here" and "nothing traded here" — which point in opposite directions.</li>
+      <li><strong>Refuse to call it when you cannot.</strong> The tilt dead zone is a tool declining to produce a signal it does not have. That is rarer and more valuable than any indicator that always has an opinion.</li>
+    </ul>
+  </div>
+</section>
+
+<footer class="col">
+  <p><strong>Source:</strong> <a href="https://www.tradingview.com/script/Tm1cGCPD-Volume-Footprint-Measuring-by-Math-Geometry/">Volume Footprint: Measuring Classical Indicators by Math &amp; Geometry</a> — Pine v6 by <code>ata_sabanci</code>, MPL-2.0. The Python port carries the same licence. All numbers on this page are real output from the port, not illustrations.</p>
+</footer>
+
+</div>
+
+<script>
+"use strict";
+/* ---------- shared math (mirrors volume_footprint/mathkit.py) ---------- */
+function normCdf(z){
+  const x=Math.abs(z), t=1/(1+0.2316419*x);
+  const poly=t*(0.319381530+t*(-0.356563782+t*(1.781477937+t*(-1.821255978+t*1.330274429))));
+  const phi=0.3989422804014327*Math.exp(-0.5*x*x);
+  const cdf=z>=0?1-phi*poly:phi*poly;
+  return Math.max(0,Math.min(1,cdf));
+}
+function normPdf(z){return 0.3989422804014327*Math.exp(-0.5*z*z);}
+const NS="http://www.w3.org/2000/svg";
+function el(p,t,a){const n=document.createElementNS(NS,t);for(const k in a)n.setAttribute(k,a[k]);p.appendChild(n);return n;}
+function txt(p,x,y,s,a){const n=el(p,"text",Object.assign({x:x,y:y},a||{}));n.textContent=s;return n;}
+
+/* ================= Figure 1 · assembled chart view =================
+   Payload is real output from volume_footprint.compute() on the demo series:
+   23-bar profile period, 6-column window, geometric engine. */
+const CHART = {"period":23,"bars":[[104.55,104.75,104.05,104.25],[104.25,104.45,104.2,104.4],[104.4,104.8,104.2,104.65],[104.65,105.05,104.45,104.85],[104.85,104.9,104.7,104.75],[104.75,104.95,104.65,104.9],[104.9,105.0,104.75,104.95],[104.95,105.45,104.7,105.1],[105.1,105.15,104.95,105.05],[105.05,105.1,104.55,104.65],[104.65,104.8,104.6,104.7],[104.7,104.8,104.45,104.7],[104.7,104.8,104.4,104.5],[104.5,104.55,104.3,104.3],[104.3,104.35,104.25,104.3],[104.3,104.45,104.1,104.25],[104.25,104.4,104.2,104.3],[104.3,104.5,104.05,104.3],[104.3,104.4,104.0,104.1],[104.1,104.2,103.8,103.9],[103.9,104.35,103.65,104.2],[104.2,104.3,104.1,104.25],[104.25,104.35,104.1,104.25]],"lo":103.65,"hi":105.45,"px":[103.65,103.665,103.68,103.695,103.71,103.725,103.74,103.755,103.77,103.785,103.8,103.815,103.83,103.845,103.86,103.875,103.89,103.905,103.92,103.935,103.95,103.965,103.98,103.995,104.01,104.025,104.04,104.055,104.07,104.085,104.1,104.115,104.13,104.145,104.16,104.175,104.19,104.205,104.22,104.235,104.25,104.265,104.28,104.295,104.31,104.325,104.34,104.355,104.37,104.385,104.4,104.415,104.43,104.445,104.46,104.475,104.49,104.505,104.52,104.535,104.55,104.565,104.58,104.595,104.61,104.625,104.64,104.655,104.67,104.685,104.7,104.715,104.73,104.745,104.76,104.775,104.79,104.805,104.82,104.835,104.85,104.865,104.88,104.895,104.91,104.925,104.94,104.955,104.97,104.985,105.0,105.015,105.03,105.045,105.06,105.075,105.09,105.105,105.12,105.135,105.15,105.165,105.18,105.195,105.21,105.225,105.24,105.255,105.27,105.285,105.3,105.315,105.33,105.345,105.36,105.375,105.39,105.405,105.42,105.435,105.45],"cb":[2486.7,2676.9,2869.8,3063.8,3257.5,3449.2,3637.0,3819.3,3994.2,4159.9,7127.0,7371.6,7567.7,7711.2,7799.5,7831.9,7809.1,7733.2,7608.0,7438.1,7229.3,6987.7,6719.6,6431.5,9097.3,8869.0,8599.8,12852.6,12768.1,12630.3,24178.6,25967.5,27530.1,28684.3,29267.4,29167.8,28349.2,39626.8,39581.6,38923.6,47247.2,48085.1,46399.8,42064.4,35166.2,29710.8,25095.1,19224.1,17224.6,15310.7,16598.8,14777.2,13615.5,12560.6,15409.5,15649.4,15823.9,15584.5,15663.3,15635.7,17694.6,17488.3,17160.1,16715.8,22052.2,22090.1,21766.7,25717.7,25458.1,24877.2,30787.3,30146.8,29138.8,27812.9,31190.9,30417.6,29494.6,26344.0,25591.5,24535.8,23199.1,21612.7,19821.9,17887.1,15768.7,13821.4,11929.8,14741.1,14497.1,14077.3,13416.2,11218.7,10434.7,9365.8,7594.3,6389.1,5238.6,4169.5,3335.8,2681.2,2189.2,1449.7,1357.9,1267.4,1178.6,1092.2,1008.4,927.7,850.4,776.8,706.9,641.1,579.2,521.5,467.8,418.2,372.5,330.5,292.3,257.5,226.1],"cs":[51.1,60.6,71.5,84.1,98.5,114.8,133.3,154.2,177.6,203.7,1426.2,1729.1,2074.2,2461.0,2887.7,3350.3,3842.9,4357.5,4884.1,5411.0,5925.4,6413.6,6861.7,7256.8,8996.4,9557.2,10075.7,11407.9,11964.5,12483.2,13803.2,14610.9,15509.9,16526.0,17677.3,18967.2,20376.8,19082.3,21426.3,23806.1,27130.2,30772.7,35214.0,40031.9,46159.1,49595.4,50182.8,34223.2,35431.6,36016.0,37233.8,29775.0,30025.9,29706.0,23088.2,22520.0,21728.6,18298.4,17546.7,16863.8,17815.5,14340.7,15232.3,16088.1,17668.7,18842.6,20087.4,21464.4,22829.2,24168.3,27639.5,29686.1,31684.9,33517.6,33067.8,34390.5,35197.7,22435.5,23686.3,24340.2,24397.0,23936.1,23092.4,22022.5,15512.6,15814.9,15947.2,14022.1,14369.5,14744.8,15165.2,12859.1,13609.0,14359.5,12759.0,13267.8,13453.3,9939.5,9677.2,9056.6,8173.3,2092.2,2144.3,2189.9,2228.3,2259.3,2282.4,2297.5,2304.4,2303.0,2293.4,2275.6,2249.8,2216.3,2175.4,2127.7,2073.5,2013.4,1948.1,1878.0,1804.0],"poc":104.295,"pocB":2047.5,"pocS":2025.2,"vah":104.805,"val":104.1,"ovl":82.66,"tilt":-1.35,"res":0.0212,"verdict":"BALANCED","axis":104.25,"winPoc":104.15,"rowPrices":[103.8,103.85,103.9,103.95,104.0,104.05,104.1,104.15,104.2,104.25,104.3,104.35,104.4,104.45,104.5,104.55,104.6,104.65,104.7],"cols":[{"off":0,"up":true,"cells":[null,null,null,null,null,null,[10.2,128.4,false,false],[51.7,321.4,true,false],[123.8,321.4,true,false],[209.1,226.7,false,false],[249.0,112.7,false,true],[113.9,25.7,false,false],null,null,null,null,null,null,null]},{"off":1,"up":true,"cells":[null,null,null,null,null,null,[4.6,130.0,false,false],[32.1,368.9,true,false],[94.0,368.9,true,false],[160.8,215.6,false,true],[86.0,49.1,false,false],null,null,null,null,null,null,null,null]},{"off":2,"up":true,"cells":[[11.7,215.4,false,false],[17.7,236.1,true,false],[25.5,247.1,true,false],[35.1,247.1,true,false],[46.2,236.1,true,false],[58.0,215.4,true,false],[69.7,187.8,true,false],[79.9,156.4,false,false],[87.6,124.4,false,false],[91.7,94.6,false,false],[91.7,68.7,false,true],[44.5,26.1,false,false],null,null,null,null,null,null,null]},{"off":3,"up":false,"cells":[[35.5,72.4,false,false],[113.2,150.0,true,false],[184.1,139.9,false,false],[260.6,113.6,false,true],[321.0,80.2,false,true],[344.1,49.3,false,true],[321.0,26.4,false,true],[260.6,12.3,false,true],[101.7,3.1,false,false],null,null,null,null,null,null,null,null,null,null]},{"off":4,"up":false,"cells":[null,null,null,null,[36.6,74.5,false,false],[116.5,154.3,true,false],[189.4,144.0,false,false],[268.1,116.9,false,true],[330.3,82.6,false,true],[354.1,50.8,false,true],[330.3,27.2,false,true],[268.1,12.6,false,true],[104.6,3.2,false,false],null,null,null,null,null,null]},{"off":5,"up":true,"cells":[null,null,null,null,null,[6.4,71.5,false,false],[22.1,166.7,true,false],[40.4,186.1,true,false],[66.4,186.1,true,false],[97.6,166.7,false,false],[128.5,133.8,false,false],[151.6,96.1,false,false],[160.1,61.9,false,true],[151.6,35.7,false,true],[67.8,10.9,false,false],null,null,null,null]}]};
+(function(){
+  const svg=document.getElementById("chartSvg"); if(!svg) return;
+  const D=CHART;
+  const g=el(svg,"g",{"font-family":"ui-monospace, monospace","font-size":"11"});
+
+  /* ============ BAND 1 · price action, profile, control levels ============ */
+  const PAD=0.05, sp=D.hi-D.lo, lo=D.lo-sp*PAD, hi=D.hi+sp*PAD;
+  const yTop=54, yBot=428, Y=p=>yBot-(p-lo)/(hi-lo)*(yBot-yTop);
+  const cx0=72, cx1=700, step=(cx1-cx0)/D.bars.length, bodyW=Math.min(15,step*0.58);
+  const base=728, bellW=214, lineR=976, chipX=986;
+
+  /* value-area wash under everything */
+  el(g,"rect",{x:cx0-4,y:Y(D.vah),width:lineR-cx0+4,height:Y(D.val)-Y(D.vah),
+    fill:"var(--va)","fill-opacity":.07});
+
+  for(let p=Math.ceil(lo*4)/4;p<=hi;p+=0.25){
+    el(g,"line",{x1:cx0-6,y1:Y(p),x2:lineR,y2:Y(p),stroke:"var(--grid)","stroke-width":.6,opacity:.5});
+    txt(g,cx0-12,Y(p)+4,p.toFixed(2),{fill:"var(--muted)","font-size":"10.5","text-anchor":"end"});
+  }
+
+  /* frame lines: the period's highest high and lowest low */
+  [D.hi,D.lo].forEach(p=>{
+    el(g,"line",{x1:cx0-4,y1:Y(p),x2:lineR,y2:Y(p),stroke:"var(--muted)",
+      "stroke-width":1,"stroke-dasharray":"7 5"});
+  });
+
+  /* candles */
+  D.bars.forEach((b,i)=>{
+    const o=b[0],h=b[1],l=b[2],c=b[3];
+    const x=cx0+i*step+step/2, up=c>=o, col=up?"var(--buy)":"var(--sell)";
+    el(g,"line",{x1:x,y1:Y(h),x2:x,y2:Y(l),stroke:col,"stroke-width":1.2});
+    const yo=Y(o),yc=Y(c);
+    el(g,"rect",{x:x-bodyW/2,y:Math.min(yo,yc),width:bodyW,
+      height:Math.max(1.6,Math.abs(yc-yo)),fill:col,"fill-opacity":up?.45:.75,
+      stroke:col,"stroke-width":.9});
+  });
+
+  /* the two bells, one shared horizontal scale */
+  let peak=0; D.cb.forEach((v,i)=>{peak=Math.max(peak,v,D.cs[i]);});
+  if(peak<=0)peak=1;
+  const bell=arr=>{
+    let d="M"+base+","+Y(D.lo).toFixed(1);
+    D.px.forEach((p,i)=>{d+=" L"+(base+arr[i]/peak*bellW).toFixed(1)+","+Y(p).toFixed(1);});
+    return d+" L"+base+","+Y(D.hi).toFixed(1)+" Z";
+  };
+  el(g,"path",{d:bell(D.cs),fill:"var(--sell)","fill-opacity":.18,stroke:"var(--sell)","stroke-width":1.4});
+  el(g,"path",{d:bell(D.cb),fill:"var(--buy)","fill-opacity":.18,stroke:"var(--buy)","stroke-width":1.4});
+  el(g,"line",{x1:base,y1:Y(D.hi),x2:base,y2:Y(D.lo),stroke:"var(--rule)","stroke-width":1});
+
+  /* control levels */
+  const pocCol=D.pocB>D.pocS?"var(--buy)":(D.pocS>D.pocB?"var(--sell)":"var(--poc)");
+  const pocBg=D.pocB>D.pocS?"var(--buy-soft)":(D.pocS>D.pocB?"var(--sell-soft)":"var(--poc-soft)");
+  el(g,"line",{x1:cx0-4,y1:Y(D.poc),x2:lineR,y2:Y(D.poc),stroke:pocCol,"stroke-width":2.2});
+  [[D.vah,"VAH"],[D.val,"VAL"]].forEach(function(t){
+    el(g,"line",{x1:cx0-4,y1:Y(t[0]),x2:lineR,y2:Y(t[0]),stroke:"var(--va)",
+      "stroke-width":1.2,"stroke-dasharray":"6 4"});
+    chip(chipX,Y(t[0]),t[1]+"  "+t[0].toFixed(2),"var(--va)","var(--va-soft)");
+  });
+  chip(chipX,Y(D.poc),"POC  "+D.poc.toFixed(2),pocCol,pocBg);
+  txt(g,chipX+4,Y(D.poc)+22,"▼-"+fmt(D.pocS)+"   ▲+"+fmt(D.pocB),
+    {fill:"var(--muted)","font-size":"10"});
+  txt(g,chipX+4,Y(D.poc)+35,"one-tick band at the POC",{fill:"var(--faint)","font-size":"9.5"});
+
+  /* the tool's two statements about itself */
+  chip(base,Y(D.hi)-20,"OVL  "+(D.ovl/100).toFixed(2)+"   ·   "+D.verdict,"var(--poc)","var(--poc-soft)");
+  chip(base,Y(D.lo)+26,"RES  "+D.res.toFixed(4)+" PPM   ·   EXACT","var(--poc)","var(--poc-soft)");
+
+  txt(g,cx0,34,"23 bars — the profile period",{fill:"var(--muted)","font-size":"10.5"});
+  txt(g,base,34,"both bells grow from one baseline, on one scale",{fill:"var(--muted)","font-size":"10.5"});
+  el(g,"line",{x1:cx0,y1:442,x2:lineR,y2:442,stroke:"var(--rule)","stroke-width":.8});
+
+  /* ============ BAND 2 · the footprint table ============ */
+  const tTop=512, tCol=76, tRowH=19.2, tx0=304, nR=D.rowPrices.length;
+  let cellMax=0;
+  D.cols.forEach(function(c){c.cells.forEach(function(v){if(v)cellMax=Math.max(cellMax,v[0]+v[1]);});});
+
+  txt(g,tx0-68,tTop-30,"THE FOOTPRINT TABLE",
+    {fill:"var(--ink-2)","font-size":"11","letter-spacing":".14em","font-weight":"700"});
+  txt(g,tx0-68,tTop-14,"the six most recent candles that traded inside the frame, at one-tick resolution",
+    {fill:"var(--muted)","font-size":"10"});
+  D.cols.forEach(function(c,ci){
+    txt(g,tx0+ci*tCol+tCol/2,tTop-1,c.off===0?"0":"-"+c.off,
+      {fill:c.up?"var(--buy)":"var(--sell)","font-size":"10","text-anchor":"middle"});
+  });
+  txt(g,tx0-8,tTop-1,"PRICE",{fill:"var(--muted)","font-size":"9","text-anchor":"end","letter-spacing":".1em"});
+
+  for(let k=nR-1;k>=0;k--){
+    const ry=tTop+(nR-1-k)*tRowH, price=D.rowPrices[k];
+    const isPoc=Math.abs(price-D.winPoc)<1e-9, isAxis=Math.abs(price-D.axis)<1e-9;
+    if(isAxis) el(g,"rect",{x:tx0-72,y:ry,width:72+D.cols.length*tCol,height:tRowH,
+      fill:"var(--poc)","fill-opacity":.12});
+    txt(g,tx0-8,ry+13,price.toFixed(2),
+      {fill:isPoc?"var(--poc)":"var(--muted)","font-size":"10","text-anchor":"end",
+       "font-weight":isPoc?"700":"400"});
+    if(isPoc) txt(g,tx0-58,ry+13,"P",{fill:"var(--poc)","font-size":"10","font-weight":"700"});
+    if(isAxis) txt(g,tx0-46,ry+13,"▸",{fill:"var(--poc)","font-size":"10"});
+    D.cols.forEach(function(c,ci){
+      const v=c.cells[k], x=tx0+ci*tCol;
+      if(!v){ txt(g,x+tCol/2,ry+13,"·",
+        {fill:"var(--faint)","font-size":"10","text-anchor":"middle"}); return; }
+      const inten=Math.min(4,Math.floor(5*(v[0]+v[1])/cellMax));
+      const buySide=v[1]>=v[0];
+      el(g,"rect",{x:x+1,y:ry+1,width:tCol-2,height:tRowH-2,
+        fill:buySide?"var(--buy)":"var(--sell)","fill-opacity":.06+inten*0.05});
+      txt(g,x+tCol-5,ry+13,"-"+fmt(v[0])+" +"+fmt(v[1]),
+        {fill:buySide?"var(--buy)":"var(--sell)","font-size":"9.6","text-anchor":"end"});
+      if(v[2]||v[3]) txt(g,x+3,ry+13,v[2]?"▴":"▾",
+        {fill:v[2]?"var(--buy)":"var(--sell)","font-size":"10"});
+    });
+  }
+  el(g,"rect",{x:tx0-72,y:tTop,width:72+D.cols.length*tCol,height:nR*tRowH,
+    fill:"none",stroke:"var(--rule)"});
+
+  /* legend, filling the space beside the table */
+  const lx=tx0+D.cols.length*tCol+46;
+  let ly=tTop+6;
+  txt(g,lx,ly,"HOW TO READ IT",{fill:"var(--ink-2)","font-size":"11","letter-spacing":".14em","font-weight":"700"});
+  ly+=26;
+  [["-sell +buy","every cell is one price of one candle","var(--ink-2)"],
+   ["▴ ▾","imbalance — buy vs the sell one tick below","var(--poc)"],
+   ["tint","stronger = busier, scaled to the busiest cell","var(--muted)"],
+   ["·","this candle never traded at this price","var(--faint)"],
+   ["P","window point of control","var(--poc)"],
+   ["▸ row","where price is right now — the ladder slides","var(--poc)"],
+   ["0  -1  -2","bars back; headers jump when a candle is skipped","var(--muted)"]
+  ].forEach(function(r){
+    txt(g,lx,ly,r[0],{fill:r[2],"font-size":"10.5","font-weight":"700"});
+    txt(g,lx+72,ly,r[1],{fill:"var(--muted)","font-size":"10.5"});
+    ly+=25;
+  });
+  ly+=12;
+  txt(g,lx,ly,"The table covers "+D.rowPrices[0].toFixed(2)+"–"+D.rowPrices[nR-1].toFixed(2)+" — a 19-tick",
+    {fill:"var(--faint)","font-size":"10"});
+  txt(g,lx,ly+15,"band around price. The profile above covers the",{fill:"var(--faint)","font-size":"10"});
+  txt(g,lx,ly+30,"whole "+D.lo.toFixed(2)+"–"+D.hi.toFixed(2)+" period range. Two",{fill:"var(--faint)","font-size":"10"});
+  txt(g,lx,ly+45,"resolutions of the same order flow.",{fill:"var(--faint)","font-size":"10"});
+
+  function fmt(v){ return v>=1000?(v/1000).toFixed(1)+"K":Math.round(v).toString(); }
+  function chip(x,y,s,fg,bg){
+    const w=s.length*6.0+14;
+    el(g,"rect",{x:x,y:y-10,width:w,height:19,rx:3,fill:bg,stroke:fg,"stroke-width":.9});
+    txt(g,x+7,y+4,s,{fill:fg,"font-size":"10.5"});
+  }
+})();
+
+
+/* ================= Figure 3 · bell splitter ================= */
+(function(){
+  const L=99, H=101, V=1000, TICK=0.10;
+  const svg=document.getElementById("bellSvg");
+  const cS=document.getElementById("cSlider"), kS=document.getElementById("kSlider");
+  if(!svg) return;
+
+  function draw(){
+    const frac=+cS.value/100, C=L+(H-L)*frac, K=+kS.value/10;
+    const share=(C-L)/(H-L), bv=V*share, sv=V*(1-share);
+    const muB=L+(C-L)/2, muS=C+(H-C)/2, sg=(H-L)/K;
+
+    const zB=normCdf((H-muB)/sg)-normCdf((L-muB)/sg);
+    const zS=normCdf((H-muS)/sg)-normCdf((L-muS)/sg);
+
+    /* rows on a 0.10 lattice */
+    const kLo=Math.round(L/TICK), kHi=Math.round(H/TICK), rows=[];
+    let mass=0;
+    for(let k=kLo;k<=kHi;k++){
+      const bot=Math.max((k-0.5)*TICK,L), top=Math.min((k+0.5)*TICK,H);
+      const b=zB>1e-12?(normCdf((top-muB)/sg)-normCdf((bot-muB)/sg))/zB*bv:0;
+      const s=zS>1e-12?(normCdf((top-muS)/sg)-normCdf((bot-muS)/sg))/zS*sv:0;
+      rows.push({p:k*TICK,b:b,s:s}); mass+=b+s;
+    }
+
+    document.getElementById("cVal").textContent="C "+C.toFixed(2)+"  ·  "+Math.round(frac*100)+"% of range";
+    document.getElementById("kVal").textContent=K.toFixed(1)+"  ·  sigma "+sg.toFixed(3);
+    document.getElementById("rShare").textContent=share.toFixed(3);
+    document.getElementById("rBuy").textContent=bv.toFixed(1);
+    document.getElementById("rSell").textContent=sv.toFixed(1);
+    document.getElementById("rMuB").textContent=muB.toFixed(3);
+    document.getElementById("rMuS").textContent=muS.toFixed(3);
+    document.getElementById("rMass").textContent=mass.toFixed(3);
+
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const top=30, bot=380, y=p=>bot-(p-L)/(H-L)*(bot-top);
+
+    /* --- candle --- */
+    const g=el(svg,"g",{"font-family":"ui-monospace, monospace","font-size":"12"});
+    el(g,"line",{x1:70,y1:y(H),x2:70,y2:y(L),stroke:"var(--ink-2)","stroke-width":1.5});
+    el(g,"line",{x1:56,y1:y(H),x2:84,y2:y(H),stroke:"var(--ink-2)","stroke-width":1.5});
+    el(g,"line",{x1:56,y1:y(L),x2:84,y2:y(L),stroke:"var(--ink-2)","stroke-width":1.5});
+    el(g,"rect",{x:52,y:y(C)-1.5,width:36,height:3,fill:"var(--poc)"});
+    txt(g,26,y(H)+4,"H",{fill:"var(--muted)","text-anchor":"end"});
+    txt(g,26,y(L)+4,"L",{fill:"var(--muted)","text-anchor":"end"});
+    txt(g,26,y(C)+4,"C",{fill:"var(--poc)","text-anchor":"end"});
+
+    /* --- bells: density vs price, drawn rightward from x=140 --- */
+    const x0=140, wid=330, N=140;
+    let peak=0;
+    const pts=[];
+    for(let i=0;i<=N;i++){
+      const p=L+(H-L)*i/N;
+      const db=zB>1e-12?normPdf((p-muB)/sg)/(sg*zB)*bv:0;
+      const ds=zS>1e-12?normPdf((p-muS)/sg)/(sg*zS)*sv:0;
+      pts.push({p:p,db:db,ds:ds}); peak=Math.max(peak,db,ds);
+    }
+    if(peak<=0)peak=1;
+    const path=key=>{
+      let d="M"+x0+","+y(L);
+      pts.forEach(q=>{d+=" L"+(x0+q[key]/peak*wid).toFixed(1)+","+y(q.p).toFixed(1);});
+      d+=" L"+x0+","+y(H)+" Z"; return d;
+    };
+    el(g,"path",{d:path("ds"),fill:"var(--sell)","fill-opacity":.16,stroke:"var(--sell)","stroke-width":1.4});
+    el(g,"path",{d:path("db"),fill:"var(--buy)","fill-opacity":.16,stroke:"var(--buy)","stroke-width":1.4});
+    el(g,"line",{x1:x0,y1:top,x2:x0,y2:bot,stroke:"var(--rule)"});
+    /* mu markers */
+    el(g,"line",{x1:x0,y1:y(muB),x2:x0+wid,y2:y(muB),stroke:"var(--buy)","stroke-width":1,"stroke-dasharray":"3 4","opacity":.55});
+    el(g,"line",{x1:x0,y1:y(muS),x2:x0+wid,y2:y(muS),stroke:"var(--sell)","stroke-width":1,"stroke-dasharray":"3 4","opacity":.55});
+    txt(g,x0+wid+6,y(muB)+4,"mu_b",{fill:"var(--buy)","font-size":"11"});
+    txt(g,x0+wid+6,y(muS)+4,"mu_s",{fill:"var(--sell)","font-size":"11"});
+    txt(g,x0,20,"volume per unit price  →",{fill:"var(--muted)","font-size":"11"});
+
+    /* --- ladder --- */
+    const lx=560, rowH=(bot-top)/rows.length;
+    txt(g,lx+40,20,"sell",{fill:"var(--muted)","font-size":"11","text-anchor":"middle"});
+    txt(g,lx+180,20,"buy",{fill:"var(--muted)","font-size":"11","text-anchor":"middle"});
+    rows.slice().reverse().forEach((r,i)=>{
+      const ry=top+i*rowH;
+      if(i%2===0) el(g,"rect",{x:lx-60,y:ry,width:300,height:rowH,fill:"var(--surface-2)"});
+      txt(g,lx-8,ry+rowH/2+4,r.p.toFixed(2),{fill:"var(--muted)","font-size":"11","text-anchor":"end"});
+      txt(g,lx+70,ry+rowH/2+4,"−"+r.s.toFixed(1),{fill:"var(--sell)","font-size":"11.5","text-anchor":"end"});
+      txt(g,lx+220,ry+rowH/2+4,"+"+r.b.toFixed(1),{fill:"var(--buy)","font-size":"11.5","text-anchor":"end"});
+    });
+    el(g,"rect",{x:lx-60,y:top,width:300,height:bot-top,fill:"none",stroke:"var(--rule)"});
+  }
+  cS.addEventListener("input",draw); kS.addEventListener("input",draw); draw();
+})();
+
+/* ================= Figure 6 · mixture ================= */
+(function(){
+  const svg=document.getElementById("mixSvg"); if(!svg) return;
+  const bars=[{L:99.2,H:100.4,C:100.1,w:900},{L:99.8,H:101.2,C:100.2,w:1400},{L:100.6,H:101.6,C:101.4,w:700}];
+  const lo=99.0, hi=101.8, x0=60, x1=840, top=30, bot=210;
+  const X=p=>x0+(p-lo)/(hi-lo)*(x1-x0);
+  const g=el(svg,"g",{"font-family":"ui-monospace, monospace","font-size":"11"});
+  const comps=bars.map(b=>{
+    const sg=(b.H-b.L)/3, mu=b.L+(b.C-b.L)/2;
+    const Z=normCdf((b.H-mu)/sg)-normCdf((b.L-mu)/sg);
+    return {mu:mu,sg:sg,coef:b.w/(sg*Z),lo:b.L,hi:b.H};
+  });
+  const dens=(p,cs)=>cs.reduce((a,c)=>a+(p>=c.lo&&p<=c.hi?c.coef*normPdf((p-c.mu)/c.sg):0),0);
+  const N=600, xs=[];
+  for(let i=0;i<=N;i++) xs.push(lo+(hi-lo)*i/N);
+  let peak=0; xs.forEach(p=>{peak=Math.max(peak,dens(p,comps));});
+  const Y=v=>bot-v/peak*(bot-top);
+  /* individual components, faint */
+  comps.forEach((c,i)=>{
+    let d="";
+    xs.forEach(p=>{const v=dens(p,[c]); d+=(d?" L":"M")+X(p).toFixed(1)+","+Y(v).toFixed(1);});
+    el(g,"path",{d:d,fill:"none",stroke:"var(--faint)","stroke-width":1,"stroke-dasharray":"3 3"});
+    txt(g,X(c.mu),Y(dens(c.mu,[c]))-7,"bar "+(i+1),{fill:"var(--faint)","text-anchor":"middle","font-size":"10.5"});
+  });
+  /* mixture */
+  let d="M"+X(lo)+","+bot;
+  xs.forEach(p=>{d+=" L"+X(p).toFixed(1)+","+Y(dens(p,comps)).toFixed(1);});
+  d+=" L"+X(hi)+","+bot+" Z";
+  el(g,"path",{d:d,fill:"var(--buy)","fill-opacity":.14,stroke:"var(--buy)","stroke-width":1.6});
+  el(g,"line",{x1:x0,y1:bot,x2:x1,y2:bot,stroke:"var(--rule)"});
+  /* bar-boundary cut lines */
+  const cuts=[...new Set(bars.flatMap(b=>[b.L,b.H]))].sort((a,b)=>a-b);
+  cuts.forEach(p=>{
+    el(g,"line",{x1:X(p),y1:top-6,x2:X(p),y2:bot,stroke:"var(--poc)","stroke-width":1,"stroke-dasharray":"2 5",opacity:.75});
+    txt(g,X(p),bot+16,p.toFixed(1),{fill:"var(--muted)","text-anchor":"middle","font-size":"10.5"});
+  });
+  txt(g,x0,20,"mixture density  (volume per unit price)",{fill:"var(--muted)"});
+  txt(g,x0,bot+42,"amber lines = bar boundaries = where the mixture kinks and the integrator must cut a new piece",{fill:"var(--poc)","font-size":"11"});
+})();
+
+/* ================= Figure 7 · value area stepper ================= */
+(function(){
+  const svg=document.getElementById("vaSvg"); if(!svg) return;
+  const levels=[
+    {p:104.40,v:2.0},{p:104.35,v:3.0},{p:104.30,v:5.0},{p:104.25,v:9.0},
+    {p:104.20,v:14.0},{p:104.15,v:20.0},{p:104.10,v:8.0},{p:104.05,v:3.0},{p:104.00,v:2.0}
+  ];
+  const total=levels.reduce((a,l)=>a+l.v,0), target=0.7*total;
+  let poc=0; levels.forEach((l,i)=>{if(l.v>levels[poc].v)poc=i;});
+  let lo=poc, hi=poc, acc=levels[poc].v, lastMove=-1;
+
+  function step(){
+    if(acc>=target || (lo===0 && hi===levels.length-1)) return false;
+    /* index 0 is the TOP of the ladder, so "up in price" is a lower index */
+    const canDn=hi<levels.length-1, canUp=lo>0;
+    const vDn=canDn?levels[hi+1].v:0, vUp=canUp?levels[lo-1].v:0;
+    if(!canDn){lo--;acc+=vUp;lastMove=lo;}
+    else if(!canUp){hi++;acc+=vDn;lastMove=hi;}
+    else if(vUp>=vDn){lo--;acc+=vUp;lastMove=lo;}
+    else {hi++;acc+=vDn;lastMove=hi;}
+    return true;
+  }
+  function draw(){
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    const g=el(svg,"g",{"font-family":"ui-monospace, monospace","font-size":"12"});
+    const top=26, rowH=38, x0=110, maxW=560, vmax=20;
+    levels.forEach((l,i)=>{
+      const y=top+i*rowH, w=l.v/vmax*maxW, inBand=i>=lo&&i<=hi;
+      if(inBand) el(g,"rect",{x:x0-56,y:y-3,width:maxW+96,height:rowH-4,fill:"var(--va-soft)"});
+      el(g,"rect",{x:x0,y:y,width:w,height:rowH-12,
+        fill:i===poc?"var(--poc)":(inBand?"var(--va)":"var(--grid)"),
+        "fill-opacity":i===poc?.85:(inBand?.6:.5)});
+      txt(g,x0-10,y+rowH/2-2,l.p.toFixed(2),{fill:inBand?"var(--ink)":"var(--muted)","text-anchor":"end","font-size":"12"});
+      txt(g,x0+w+9,y+rowH/2-2,l.v.toFixed(1),{fill:"var(--muted)","font-size":"11.5"});
+      if(i===poc) txt(g,x0+w+50,y+rowH/2-2,"POC",{fill:"var(--poc)","font-size":"11","font-weight":"700"});
+      if(i===lastMove&&i!==poc) txt(g,x0+w+50,y+rowH/2-2,"◀ added",{fill:"var(--va)","font-size":"11"});
+    });
+    const yTop=top+lo*rowH-3, yBot=top+hi*rowH+rowH-7;
+    el(g,"line",{x1:x0-64,y1:yTop,x2:x0+maxW+40,y2:yTop,stroke:"var(--va)","stroke-width":1.5,"stroke-dasharray":"5 4"});
+    el(g,"line",{x1:x0-64,y1:yBot,x2:x0+maxW+40,y2:yBot,stroke:"var(--va)","stroke-width":1.5,"stroke-dasharray":"5 4"});
+    txt(g,x0+maxW+46,yTop+4,"VAH",{fill:"var(--va)","font-size":"11","font-weight":"700"});
+    txt(g,x0+maxW+46,yBot+4,"VAL",{fill:"var(--va)","font-size":"11","font-weight":"700"});
+    document.getElementById("vaState").textContent=
+      "inside band: "+acc.toFixed(1)+" of "+total.toFixed(1)+"  ·  target "+target.toFixed(1)+
+      "  ·  "+(100*acc/total).toFixed(1)+"%"+(acc>=target?"  ·  DONE":"");
+  }
+  document.getElementById("vaStep").addEventListener("click",()=>{step();draw();});
+  document.getElementById("vaAuto").addEventListener("click",()=>{let n=0;while(step()&&n++<40);draw();});
+  document.getElementById("vaReset").addEventListener("click",()=>{lo=hi=poc;acc=levels[poc].v;lastMove=-1;draw();});
+  draw();
+})();
+
+/* ================= Figure 8 · OVL comparison ================= */
+(function(){
+  function drawOvl(id,muB,muS,label,sub){
+    const svg=document.getElementById(id); if(!svg) return;
+    const lo=97, hi=103, x0=40, x1=380, top=34, bot=182, sg=0.75;
+    const X=p=>x0+(p-lo)/(hi-lo)*(x1-x0);
+    const g=el(svg,"g",{"font-family":"ui-monospace, monospace","font-size":"11"});
+    const N=400, xs=[];
+    for(let i=0;i<=N;i++) xs.push(lo+(hi-lo)*i/N);
+    const fb=p=>normPdf((p-muB)/sg)/sg, fs=p=>normPdf((p-muS)/sg)/sg;
+    let peak=0; xs.forEach(p=>{peak=Math.max(peak,fb(p),fs(p));});
+    const Y=v=>bot-v/peak*(bot-top);
+    /* overlap area = pointwise minimum */
+    let dm="M"+X(lo)+","+bot;
+    xs.forEach(p=>{dm+=" L"+X(p).toFixed(1)+","+Y(Math.min(fb(p),fs(p))).toFixed(1);});
+    dm+=" L"+X(hi)+","+bot+" Z";
+    el(g,"path",{d:dm,fill:"var(--poc)","fill-opacity":.3,stroke:"none"});
+    [[fb,"var(--buy)"],[fs,"var(--sell)"]].forEach(([f,c])=>{
+      let d="";
+      xs.forEach(p=>{d+=(d?" L":"M")+X(p).toFixed(1)+","+Y(f(p)).toFixed(1);});
+      el(g,"path",{d:d,fill:"none",stroke:c,"stroke-width":1.6});
+    });
+    /* numeric OVL by trapezoid on the same grid */
+    let area=0;
+    for(let i=1;i<xs.length;i++){
+      const a=Math.min(fb(xs[i-1]),fs(xs[i-1])), b=Math.min(fb(xs[i]),fs(xs[i]));
+      area+=(a+b)/2*(xs[i]-xs[i-1]);
+    }
+    el(g,"line",{x1:x0,y1:bot,x2:x1,y2:bot,stroke:"var(--rule)"});
+    txt(g,x0,20,label,{fill:"var(--ink)","font-size":"12","font-weight":"700"});
+    txt(g,x0,206,"OVL "+area.toFixed(2)+"   ·   "+sub,{fill:"var(--poc)","font-size":"11.5"});
+    txt(g,x0,228,"blue = buy density   ·   red = sell density",{fill:"var(--muted)","font-size":"10.5"});
+  }
+  drawOvl("ovlA",100.0,100.15,"Balanced","both sides worked the same prices");
+  drawOvl("ovlB",99.0,101.2,"Off balance","each side held its own territory");
+})();
+</script>

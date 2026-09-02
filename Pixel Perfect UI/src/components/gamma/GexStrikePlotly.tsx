@@ -449,8 +449,9 @@ export function GexStrikePlotly({
       return;
     }
 
-    const paper = isDark ? "#0b0f14" : "#ffffff";
-    const plotBg = isDark ? "#0b0f14" : "#fafafa";
+    // Blue-black, not #0b0f14 (near pure black) -- matches the shell's --card.
+    const paper = isDark ? "#1b2029" : "#ffffff";
+    const plotBg = isDark ? "#171b22" : "#fafafa";
     const grid = isDark ? "rgba(148, 163, 184, 0.18)" : "rgba(148, 163, 184, 0.28)";
     const axis = isDark ? "rgba(226, 232, 240, 0.75)" : "rgba(51, 65, 85, 0.85)";
     const zeroLine = isDark ? "rgba(226, 232, 240, 0.45)" : "rgba(100, 116, 139, 0.55)";

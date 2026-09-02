@@ -11,9 +11,11 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WidgetDeskRouteImport } from './routes/widget-desk'
 import { Route as WaveRouteImport } from './routes/wave'
+import { Route as VolumeFootprintRouteImport } from './routes/volume-footprint'
 import { Route as VolSurfaceRouteImport } from './routes/vol-surface'
 import { Route as VannaExposureRouteImport } from './routes/vanna-exposure'
 import { Route as TradeSuggestionsRouteImport } from './routes/trade-suggestions'
+import { Route as ThetaDecayRouteImport } from './routes/theta-decay'
 import { Route as SurvivorRouteImport } from './routes/survivor'
 import { Route as StraddleWatchRouteImport } from './routes/straddle-watch'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -21,6 +23,7 @@ import { Route as RrgRouteImport } from './routes/rrg'
 import { Route as RollingStraddleRouteImport } from './routes/rolling-straddle'
 import { Route as PricingEngineRouteImport } from './routes/pricing-engine'
 import { Route as PremiumBookRouteImport } from './routes/premium-book'
+import { Route as OptArbRouteImport } from './routes/opt-arb'
 import { Route as OiVarRouteImport } from './routes/oi-var'
 import { Route as OiTrackerRouteImport } from './routes/oi-tracker'
 import { Route as OiProfileRouteImport } from './routes/oi-profile'
@@ -29,11 +32,13 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as LatencyRouteImport } from './routes/latency'
 import { Route as IvSmileRouteImport } from './routes/iv-smile'
+import { Route as IvSkewRouteImport } from './routes/iv-skew'
 import { Route as GammaDensityRouteImport } from './routes/gamma-density'
 import { Route as ExecutionRouteImport } from './routes/execution'
 import { Route as EquityReportRouteImport } from './routes/equity-report'
 import { Route as DeltaVelocityRouteImport } from './routes/delta-velocity'
 import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as ChainBuildupRouteImport } from './routes/chain-buildup'
 import { Route as CasIndicativeRouteImport } from './routes/cas-indicative'
 import { Route as BacktestRouteImport } from './routes/backtest'
 import { Route as ArbitrageRouteImport } from './routes/arbitrage'
@@ -50,6 +55,11 @@ const WaveRoute = WaveRouteImport.update({
   path: '/wave',
   getParentRoute: () => rootRouteImport,
 } as any)
+const VolumeFootprintRoute = VolumeFootprintRouteImport.update({
+  id: '/volume-footprint',
+  path: '/volume-footprint',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const VolSurfaceRoute = VolSurfaceRouteImport.update({
   id: '/vol-surface',
   path: '/vol-surface',
@@ -63,6 +73,11 @@ const VannaExposureRoute = VannaExposureRouteImport.update({
 const TradeSuggestionsRoute = TradeSuggestionsRouteImport.update({
   id: '/trade-suggestions',
   path: '/trade-suggestions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ThetaDecayRoute = ThetaDecayRouteImport.update({
+  id: '/theta-decay',
+  path: '/theta-decay',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SurvivorRoute = SurvivorRouteImport.update({
@@ -98,6 +113,11 @@ const PricingEngineRoute = PricingEngineRouteImport.update({
 const PremiumBookRoute = PremiumBookRouteImport.update({
   id: '/premium-book',
   path: '/premium-book',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OptArbRoute = OptArbRouteImport.update({
+  id: '/opt-arb',
+  path: '/opt-arb',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OiVarRoute = OiVarRouteImport.update({
@@ -140,6 +160,11 @@ const IvSmileRoute = IvSmileRouteImport.update({
   path: '/iv-smile',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IvSkewRoute = IvSkewRouteImport.update({
+  id: '/iv-skew',
+  path: '/iv-skew',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GammaDensityRoute = GammaDensityRouteImport.update({
   id: '/gamma-density',
   path: '/gamma-density',
@@ -163,6 +188,11 @@ const DeltaVelocityRoute = DeltaVelocityRouteImport.update({
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ChainBuildupRoute = ChainBuildupRouteImport.update({
+  id: '/chain-buildup',
+  path: '/chain-buildup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CasIndicativeRoute = CasIndicativeRouteImport.update({
@@ -197,11 +227,13 @@ export interface FileRoutesByFullPath {
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
+  '/chain-buildup': typeof ChainBuildupRoute
   '/dashboard': typeof DashboardRoute
   '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
+  '/iv-skew': typeof IvSkewRoute
   '/iv-smile': typeof IvSmileRoute
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
@@ -210,6 +242,7 @@ export interface FileRoutesByFullPath {
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/opt-arb': typeof OptArbRoute
   '/premium-book': typeof PremiumBookRoute
   '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
@@ -217,9 +250,11 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
+  '/theta-decay': typeof ThetaDecayRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
+  '/volume-footprint': typeof VolumeFootprintRoute
   '/wave': typeof WaveRoute
   '/widget-desk': typeof WidgetDeskRoute
 }
@@ -229,11 +264,13 @@ export interface FileRoutesByTo {
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
+  '/chain-buildup': typeof ChainBuildupRoute
   '/dashboard': typeof DashboardRoute
   '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
+  '/iv-skew': typeof IvSkewRoute
   '/iv-smile': typeof IvSmileRoute
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
@@ -242,6 +279,7 @@ export interface FileRoutesByTo {
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/opt-arb': typeof OptArbRoute
   '/premium-book': typeof PremiumBookRoute
   '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
@@ -249,9 +287,11 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
+  '/theta-decay': typeof ThetaDecayRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
+  '/volume-footprint': typeof VolumeFootprintRoute
   '/wave': typeof WaveRoute
   '/widget-desk': typeof WidgetDeskRoute
 }
@@ -262,11 +302,13 @@ export interface FileRoutesById {
   '/arbitrage': typeof ArbitrageRoute
   '/backtest': typeof BacktestRoute
   '/cas-indicative': typeof CasIndicativeRoute
+  '/chain-buildup': typeof ChainBuildupRoute
   '/dashboard': typeof DashboardRoute
   '/delta-velocity': typeof DeltaVelocityRoute
   '/equity-report': typeof EquityReportRoute
   '/execution': typeof ExecutionRoute
   '/gamma-density': typeof GammaDensityRoute
+  '/iv-skew': typeof IvSkewRoute
   '/iv-smile': typeof IvSmileRoute
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
@@ -275,6 +317,7 @@ export interface FileRoutesById {
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
   '/oi-var': typeof OiVarRoute
+  '/opt-arb': typeof OptArbRoute
   '/premium-book': typeof PremiumBookRoute
   '/pricing-engine': typeof PricingEngineRoute
   '/rolling-straddle': typeof RollingStraddleRoute
@@ -282,9 +325,11 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/straddle-watch': typeof StraddleWatchRoute
   '/survivor': typeof SurvivorRoute
+  '/theta-decay': typeof ThetaDecayRoute
   '/trade-suggestions': typeof TradeSuggestionsRoute
   '/vanna-exposure': typeof VannaExposureRoute
   '/vol-surface': typeof VolSurfaceRoute
+  '/volume-footprint': typeof VolumeFootprintRoute
   '/wave': typeof WaveRoute
   '/widget-desk': typeof WidgetDeskRoute
 }
@@ -296,11 +341,13 @@ export interface FileRouteTypes {
     | '/arbitrage'
     | '/backtest'
     | '/cas-indicative'
+    | '/chain-buildup'
     | '/dashboard'
     | '/delta-velocity'
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
+    | '/iv-skew'
     | '/iv-smile'
     | '/latency'
     | '/live'
@@ -309,6 +356,7 @@ export interface FileRouteTypes {
     | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/opt-arb'
     | '/premium-book'
     | '/pricing-engine'
     | '/rolling-straddle'
@@ -316,9 +364,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/straddle-watch'
     | '/survivor'
+    | '/theta-decay'
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
+    | '/volume-footprint'
     | '/wave'
     | '/widget-desk'
   fileRoutesByTo: FileRoutesByTo
@@ -328,11 +378,13 @@ export interface FileRouteTypes {
     | '/arbitrage'
     | '/backtest'
     | '/cas-indicative'
+    | '/chain-buildup'
     | '/dashboard'
     | '/delta-velocity'
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
+    | '/iv-skew'
     | '/iv-smile'
     | '/latency'
     | '/live'
@@ -341,6 +393,7 @@ export interface FileRouteTypes {
     | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/opt-arb'
     | '/premium-book'
     | '/pricing-engine'
     | '/rolling-straddle'
@@ -348,9 +401,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/straddle-watch'
     | '/survivor'
+    | '/theta-decay'
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
+    | '/volume-footprint'
     | '/wave'
     | '/widget-desk'
   id:
@@ -360,11 +415,13 @@ export interface FileRouteTypes {
     | '/arbitrage'
     | '/backtest'
     | '/cas-indicative'
+    | '/chain-buildup'
     | '/dashboard'
     | '/delta-velocity'
     | '/equity-report'
     | '/execution'
     | '/gamma-density'
+    | '/iv-skew'
     | '/iv-smile'
     | '/latency'
     | '/live'
@@ -373,6 +430,7 @@ export interface FileRouteTypes {
     | '/oi-profile'
     | '/oi-tracker'
     | '/oi-var'
+    | '/opt-arb'
     | '/premium-book'
     | '/pricing-engine'
     | '/rolling-straddle'
@@ -380,9 +438,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/straddle-watch'
     | '/survivor'
+    | '/theta-decay'
     | '/trade-suggestions'
     | '/vanna-exposure'
     | '/vol-surface'
+    | '/volume-footprint'
     | '/wave'
     | '/widget-desk'
   fileRoutesById: FileRoutesById
@@ -393,11 +453,13 @@ export interface RootRouteChildren {
   ArbitrageRoute: typeof ArbitrageRoute
   BacktestRoute: typeof BacktestRoute
   CasIndicativeRoute: typeof CasIndicativeRoute
+  ChainBuildupRoute: typeof ChainBuildupRoute
   DashboardRoute: typeof DashboardRoute
   DeltaVelocityRoute: typeof DeltaVelocityRoute
   EquityReportRoute: typeof EquityReportRoute
   ExecutionRoute: typeof ExecutionRoute
   GammaDensityRoute: typeof GammaDensityRoute
+  IvSkewRoute: typeof IvSkewRoute
   IvSmileRoute: typeof IvSmileRoute
   LatencyRoute: typeof LatencyRoute
   LiveRoute: typeof LiveRoute
@@ -406,6 +468,7 @@ export interface RootRouteChildren {
   OiProfileRoute: typeof OiProfileRoute
   OiTrackerRoute: typeof OiTrackerRoute
   OiVarRoute: typeof OiVarRoute
+  OptArbRoute: typeof OptArbRoute
   PremiumBookRoute: typeof PremiumBookRoute
   PricingEngineRoute: typeof PricingEngineRoute
   RollingStraddleRoute: typeof RollingStraddleRoute
@@ -413,9 +476,11 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   StraddleWatchRoute: typeof StraddleWatchRoute
   SurvivorRoute: typeof SurvivorRoute
+  ThetaDecayRoute: typeof ThetaDecayRoute
   TradeSuggestionsRoute: typeof TradeSuggestionsRoute
   VannaExposureRoute: typeof VannaExposureRoute
   VolSurfaceRoute: typeof VolSurfaceRoute
+  VolumeFootprintRoute: typeof VolumeFootprintRoute
   WaveRoute: typeof WaveRoute
   WidgetDeskRoute: typeof WidgetDeskRoute
 }
@@ -434,6 +499,13 @@ declare module '@tanstack/react-router' {
       path: '/wave'
       fullPath: '/wave'
       preLoaderRoute: typeof WaveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/volume-footprint': {
+      id: '/volume-footprint'
+      path: '/volume-footprint'
+      fullPath: '/volume-footprint'
+      preLoaderRoute: typeof VolumeFootprintRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/vol-surface': {
@@ -455,6 +527,13 @@ declare module '@tanstack/react-router' {
       path: '/trade-suggestions'
       fullPath: '/trade-suggestions'
       preLoaderRoute: typeof TradeSuggestionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/theta-decay': {
+      id: '/theta-decay'
+      path: '/theta-decay'
+      fullPath: '/theta-decay'
+      preLoaderRoute: typeof ThetaDecayRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/survivor': {
@@ -504,6 +583,13 @@ declare module '@tanstack/react-router' {
       path: '/premium-book'
       fullPath: '/premium-book'
       preLoaderRoute: typeof PremiumBookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/opt-arb': {
+      id: '/opt-arb'
+      path: '/opt-arb'
+      fullPath: '/opt-arb'
+      preLoaderRoute: typeof OptArbRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/oi-var': {
@@ -562,6 +648,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IvSmileRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/iv-skew': {
+      id: '/iv-skew'
+      path: '/iv-skew'
+      fullPath: '/iv-skew'
+      preLoaderRoute: typeof IvSkewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/gamma-density': {
       id: '/gamma-density'
       path: '/gamma-density'
@@ -595,6 +688,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/chain-buildup': {
+      id: '/chain-buildup'
+      path: '/chain-buildup'
+      fullPath: '/chain-buildup'
+      preLoaderRoute: typeof ChainBuildupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/cas-indicative': {
@@ -641,11 +741,13 @@ const rootRouteChildren: RootRouteChildren = {
   ArbitrageRoute: ArbitrageRoute,
   BacktestRoute: BacktestRoute,
   CasIndicativeRoute: CasIndicativeRoute,
+  ChainBuildupRoute: ChainBuildupRoute,
   DashboardRoute: DashboardRoute,
   DeltaVelocityRoute: DeltaVelocityRoute,
   EquityReportRoute: EquityReportRoute,
   ExecutionRoute: ExecutionRoute,
   GammaDensityRoute: GammaDensityRoute,
+  IvSkewRoute: IvSkewRoute,
   IvSmileRoute: IvSmileRoute,
   LatencyRoute: LatencyRoute,
   LiveRoute: LiveRoute,
@@ -654,6 +756,7 @@ const rootRouteChildren: RootRouteChildren = {
   OiProfileRoute: OiProfileRoute,
   OiTrackerRoute: OiTrackerRoute,
   OiVarRoute: OiVarRoute,
+  OptArbRoute: OptArbRoute,
   PremiumBookRoute: PremiumBookRoute,
   PricingEngineRoute: PricingEngineRoute,
   RollingStraddleRoute: RollingStraddleRoute,
@@ -661,9 +764,11 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   StraddleWatchRoute: StraddleWatchRoute,
   SurvivorRoute: SurvivorRoute,
+  ThetaDecayRoute: ThetaDecayRoute,
   TradeSuggestionsRoute: TradeSuggestionsRoute,
   VannaExposureRoute: VannaExposureRoute,
   VolSurfaceRoute: VolSurfaceRoute,
+  VolumeFootprintRoute: VolumeFootprintRoute,
   WaveRoute: WaveRoute,
   WidgetDeskRoute: WidgetDeskRoute,
 }

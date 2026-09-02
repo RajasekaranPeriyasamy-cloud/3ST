@@ -14,7 +14,12 @@ This file provides guidance to Claude (Claude Code / Cowork) when working with c
 | Live Desk / Watchlist | `/live` | `execution/watchlist_activation.py`, `watchlist_exit_runner.py` |
 | Algo Execution (taskbar) | `/execution` | `execution/execution_queue.py` |
 | Equity Report | `/equity-report` | `analysis/equity_report/` |
+| Delta Velocity | `/delta-velocity` | `analysis/delta_velocity/` (API prefix `/velocity`) |
+| Theta Decay | `/theta-decay` | `analysis/theta_decay/` (API prefix `/decay`) |
 | RRG, OI Tracker, OI VAR, Gamma Density, Vanna Exposure, Vol Surface, IV Smile, Pricing Engine, Calendar Arb, OI Profile, Analogue Paths | various | `analysis/`, `options/` |
+| Volume Footprint | `/volume-footprint` | `analysis/volume_profile/` + `vendor/volume_footprint/` |
+| Chain Build-Up | `/chain-buildup` | `analysis/chain_buildup/` (API prefix `/buildup`) |
+| Options Arbitrage | `/opt-arb` | `analysis/opt_arb/` (API prefix `/oarb`) |
 
 Legacy **Streamlit** UI (`app.py`) still exists but is not actively developed — treat `Pixel Perfect UI` + FastAPI as canonical.
 
@@ -99,6 +104,32 @@ options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG
                   Two backends behind one generate_report(): agent.py (Anthropic,
                   web_search + web_fetch) and gemini_backend.py (Gemini Interactions API).
                   See "Equity Report providers" below before touching either.
+                — analysis/theta_decay/ (added 2026-08-13): burn rate + decay capture. Has
+                  **no collector, store or runner** — it reads analysis/delta_velocity/'s
+                  minute archive and re-derives theta/gamma/vega from the stored full-precision
+                  IV on every read (~0.3s/session vectorised). Do not "optimise" that by
+                  storing greeks in the snapshot: the collector computes at q=0.012 while the
+                  archived IV is solved at q=0, and mixing them shifts ATM theta ~5%. Read
+                  features.py's docstring before trusting capture_ratio — burn rate is solid,
+                  decay capture is a session-scale statistic with a quality gate.
+                — analysis/chain_buildup/ (added 2026-08-27): Option Chain Build-Up desk.
+                  Like theta_decay it has **no collector, store or runner** — it buckets the
+                  analysis/delta_velocity/ minute archive into 5/15/30/60m OI columns. The
+                  archive only holds ATM +/- STRIKE_WIDTH strikes *at capture time*, so its
+                  strike set drifts with spot; wider strike ranges opt into Kite historical
+                  OI candles (`widen=true`), capped at MAX_WIDEN_LEGS and cached per
+                  (token, timeframe, session). Read-only; places no orders.
+                — analysis/opt_arb/ (added 2026-08-25): option-to-option arbitrage scanner.
+                  Scan-and-alert only — imports nothing from broker/ execution/ risk/ and
+                  places no orders. Prices every leg at bid/ask (never LTP) and nets every
+                  row against costs.py before surfacing it. Its universe is self-contained
+                  rather than going through INDEX_OPTIONS, deliberately: that constant is
+                  what ANALYTICS_HISTORY_SAMPLE_UNDERLYINGS filters against, so adding
+                  GOLD/SILVER there would silently start Gamma-Density/OI-VAR sampling them.
+vendor/         Third-party code, verbatim, each subpackage with its own LICENSE.
+                — vendor/volume_footprint/ (added 2026-08-20): MPL-2.0 Pine port behind the
+                  Volume Footprint desk. Do NOT edit in place — it is kept diffable against
+                  upstream; 3ST-side wiring belongs in analysis/volume_profile/.
 strategy_3st.py, backtest_engine.py   Core indicator + backtest engine
 tests/          40+ pytest files — good coverage of strategy parity, risk limits,
                 reconcile, bar-churn, exit-grace edge cases
@@ -124,6 +155,7 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | `kite_instruments.json` | `instruments.py` cache |
 | `equity_reports.json` + `equity_reports/*.md` | `analysis/equity_report/store.py` |
 | `equity_pins.json` | `analysis/equity_report/pins.py` |
+| `opt_arb_config.json` | `analysis/opt_arb/store.py` |
 
 There is no single source of truth across runners for "what legs are open" today — that's exactly the gap `position_ledger.py` exists to close, once runners migrate to it.
 
@@ -206,8 +238,18 @@ CI runs this on every push/PR — `.github/workflows/ci.yml` (added 2026-07-25).
 **`tests/conftest.py` blocks live Kite in every test.** It patches the client accessors that every market-data path resolves at call time (`_kite_direct_client`, `get_kite_client`, `kite_read_client`), so nothing can reach the broker. This is *not* optional politeness: one gamma-snapshot test used to walk a whole option chain issuing ~80 per-strike 60min historical requests (`gamma_density` → `oi_movers.ensure_session_open_oi` → `fetch_historical_by_token`), taking 80+ seconds and returning different data every run. Blocking it took the suite from **402s to ~25s** and made CI runnable without a broker session.
 
 - Patch the *accessors*, not `kite_client.fetch_*` — modules do `from kite_client import fetch_historical_by_token` at import time and hold their own reference, so patching the wrapper misses them.
+- **The same binding trap applies to `settings.data_dir`, and it bites harder.** Stores do `from settings import data_dir` at import time, so `monkeypatch.setattr("settings.data_dir", ...)` leaves them pointed at the real `data/`. A theta-decay fixture did exactly that on 2026-08-13 and appended 1,800 synthetic snapshots into the live delta-velocity archive before anyone noticed. Patch the *module under test's* reference — `monkeypatch.setattr(store, "data_dir", lambda: tmp_path)`. Since 2026-08-27 the conftest guard below enforces this for you, but keep writing the explicit patch: it also documents what the file starts out holding.
 - A test that genuinely needs a broker can use `@pytest.mark.live_kite` (nothing does today).
 - `tests/test_offline_guard.py` asserts the guard is still live, so renaming an accessor fails loudly instead of silently turning it into a no-op.
+
+**`tests/conftest.py` also blocks writes into the real `data/` directory** (added 2026-08-27). Two layers:
+
+- `isolate_real_data_writes` (autouse) redirects every known store path constant — the `_REDIRECTS` table — at the *store module's own* reference, into a per-test tmp sandbox. A test that patches a constant itself still wins; this is the floor, not a replacement.
+- A call-level guard armed by `pytest_collection_finish` wraps `open`/`Path.write_*`/`os.replace`/`rename`/`remove` and raises `RealDataWriteBlocked` on anything still landing under the live `data/`. So a store added later cannot silently join the list — it fails with a message naming the fix. Opt out with `@pytest.mark.writes_real_data` (nothing does today). Collection and import stay unguarded, because a couple of modules create `data/` subdirectories at import time. It stays armed for the whole run rather than per test: `pytest_runtest_teardown` fires *before* fixture finalizers, which is exactly when `monkeypatch` restores the real paths — disarming there would leave a finalizer's write unguarded against a restored constant.
+- `real_store_files_untouched` (session-scoped) is the backstop CLAUDE.md's line-count rule asks for: the live store files must be byte-identical after the suite. It only *fails* when the call-level guard also caught this process attempting the write — the desk may legitimately be running alongside pytest, and an otherwise unexplained change is reported as a warning instead of a false failure.
+- `tests/test_store_isolation.py` pins all of it, the way `test_offline_guard.py` pins the Kite guard: a renamed store constant makes its `_REDIRECTS` entry a no-op, and the parametrized checks fail loudly rather than letting that store quietly go back to writing live files.
+
+This closed a live bug on 2026-08-27: `test_mcx_rolling_straddle.py`'s `_ensure_state_underlying` and `status_bundle` tests never mentioned a store, but reached `clear_spot_state_for_underlying` → `save_state` + `append_log` two frames down and rewrote the live `data/rolling_straddle_{state,log}.json` on every run. They passed in isolation and failed only with the desk running, when the test and the live runner raced for the same file. The same audit found writes to the live `arm_state.json` (`test_panic.py`), `latency_log.jsonl`, `cas_history.jsonl` and `oi_movers_prev_day_oi.json`.
 
 **Date-sensitive fixtures must derive from `date.today()`**, never hardcode a date that is *current* when written — that is what rotted before. `test_vol_surface.py` builds weekly expiries with `_weekly_expiries()`; `test_mcx_rolling_straddle.py` derives its stale expiry as `today - 90d`. A hardcoded date that is *already past* (and meant to be) is fine; one that is *currently valid* will silently stop testing anything the moment it expires. `test_fpi_sectors.py` reads its expected values out of `data/fpi_sectors_seed.json` rather than hardcoding NSDL numbers that change whenever the seed is refreshed.
 

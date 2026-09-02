@@ -10,6 +10,11 @@ Phase 0 finding baked into the defaults: with one or two expiries per
 underlying, days-to-expiry is confounded with calendar date, so ``EXPIRIES``
 defaults to 3 — the same session then appears at several DTEs and the two can
 be separated.
+
+One minute of archive is ~2.3x its pre-2026-08-27 size after the STRIKE_WIDTH
+widening below (~27 MB/day across the three underlyings). ``runner._maybe_prune``
+enforces ``RAW_RETENTION_DAYS`` once a calendar day against that, overridable
+with ``DELTA_VELOCITY_RETENTION_DAYS`` (0 disables).
 """
 
 from __future__ import annotations
@@ -35,9 +40,21 @@ logger = get_logger("delta_velocity.collector")
 
 UNDERLYINGS: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX")
 
-# Strikes each side of ATM. 5 -> 11 strikes x 2 types x 3 expiries x 3
-# underlyings = 198 legs, comfortably inside the 500-instrument quote ceiling.
-STRIKE_WIDTH = 5
+# Strikes each side of ATM. The leg count is (2*W + 1) * 2 types * EXPIRIES *
+# len(UNDERLYINGS), so W=12 -> 25 * 2 * 3 * 3 = 450 legs against the
+# 500-instrument quote ceiling: 50 spare, and one batch call either way.
+#
+# Widened from 5 (198 legs) on 2026-08-27. The wings are where positioning is
+# interesting, and every downstream study was constrained by this: the
+# Chain Build-Up desk could only reach past ATM+/-5 through per-leg Kite
+# historical calls, and its validation studies were power-bound on a narrow
+# archive. This is forward-only — no amount of later work widens data that was
+# never written — which is why it was raised as early as possible rather than
+# after the analysis asked for it.
+#
+# Raising it further needs the ceiling arithmetic redone, not just this number:
+# W=13 is 486 legs and W=14 is 522, past the ceiling.
+STRIKE_WIDTH = 12
 EXPIRIES = 3
 
 RISK_FREE = float(PRICING_ENGINE_DEFAULTS.get("risk_free_rate", 0.065))
@@ -120,6 +137,45 @@ def tracked_legs(underlying: str, spot: float, *, width: int = STRIKE_WIDTH) -> 
     return legs
 
 
+def _num_or_none(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
+def _top_of_book(quote: dict[str, Any]) -> dict[str, float | None]:
+    """Best bid/ask and their sizes, from the depth the quote already carries.
+
+    Recorded from 2026-08-28 so trade direction can be inferred later: with a
+    last traded price and the quote it printed against, volume can be classified
+    buyer- or seller-initiated (the quote rule). Without it there is no aggressor
+    anywhere in this repo's data, and Kite exposes no per-trade side at all.
+
+    Free in API terms — ``fetch_quote_batch`` has been returning this depth on
+    every leg every minute all along, and ``_mid_or_last`` read the top of it for
+    the IV mid and then discarded it.
+    """
+    depth = quote.get("depth") or {}
+    buy = (depth.get("buy") or [{}])[0]
+    sell = (depth.get("sell") or [{}])[0]
+
+    def _f(value: Any) -> float | None:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        return out if out > 0 else None
+
+    return {
+        "bid": _f(buy.get("price")),
+        "ask": _f(sell.get("price")),
+        "bid_qty": _f(buy.get("quantity")),
+        "ask_qty": _f(sell.get("quantity")),
+    }
+
+
 def _mid_or_last(quote: dict[str, Any]) -> float | None:
     """Prefer the bid/ask midpoint; fall back to last traded price.
 
@@ -177,11 +233,20 @@ def build_snapshot(
                 "expiry": leg["expiry"],
                 "strike": leg["strike"],
                 "option_type": leg["option_type"],
+                # NOTE: `ltp` is the bid/ask MID wherever depth is two-sided
+                # (see _mid_or_last) — it has never been the last traded price,
+                # despite the name. Kept as-is because 15 days of archive are
+                # written against that meaning and renaming would silently
+                # change what every historical read returns. `last_price` below
+                # is the real thing, added 2026-08-28, and is what a quote rule
+                # must classify against: a mid never trades.
                 "ltp": price,
+                "last_price": _num_or_none(quote.get("last_price")),
                 "oi": quote.get("oi"),
                 "volume": quote.get("volume") or quote.get("volume_traded"),
                 "iv": iv,
                 "delta": delta,
+                **_top_of_book(quote),
             }
         )
     return {
@@ -224,6 +289,7 @@ def sample_once(underlyings: tuple[str, ...] = UNDERLYINGS, *, now: datetime | N
         return {"ok": False, "error": str(exc)}
 
     all_legs: dict[str, list[dict[str, Any]]] = {}
+    all_spots: dict[str, float] = {}
     leg_keys: list[str] = []
     for u, info in plan.items():
         if "error" in info:
@@ -236,15 +302,36 @@ def sample_once(underlyings: tuple[str, ...] = UNDERLYINGS, *, now: datetime | N
         info["spot"] = float(spot)
         legs = tracked_legs(u, float(spot))
         all_legs[u] = legs
+        all_spots[u] = float(spot)
         leg_keys.extend(leg["key"] for leg in legs)
 
     if len(leg_keys) > _QUOTE_CEILING:
-        logger.warning(
-            "delta_velocity tracking %d legs, above the %d quote ceiling — truncating",
-            len(leg_keys),
-            _QUOTE_CEILING,
-        )
-        leg_keys = leg_keys[:_QUOTE_CEILING]
+        # Narrow every underlying evenly rather than slicing the tail off the
+        # list. ``leg_keys`` is built underlying by underlying, so a plain
+        # ``[:CEILING]`` silently drops the LAST underlying outright — SENSEX
+        # would vanish from the archive while NIFTY kept its full width, and
+        # nothing downstream could tell that had happened. Dropping the
+        # outermost strikes instead degrades all three the same way, which is
+        # both fairer and visible in the width the snapshot reports.
+        width = STRIKE_WIDTH
+        while width > 1:
+            width -= 1
+            rebuilt = {u: tracked_legs(u, all_spots[u], width=width) for u in all_legs}
+            keys = [leg["key"] for legs in rebuilt.values() for leg in legs]
+            if len(keys) <= _QUOTE_CEILING:
+                logger.warning(
+                    "delta_velocity tracking %d legs above the %d quote ceiling — "
+                    "narrowed to ATM+/-%d (%d legs)",
+                    len(leg_keys), _QUOTE_CEILING, width, len(keys),
+                )
+                all_legs, leg_keys = rebuilt, keys
+                break
+        else:
+            logger.warning(
+                "delta_velocity cannot fit %d legs under the %d ceiling — truncating",
+                len(leg_keys), _QUOTE_CEILING,
+            )
+            leg_keys = leg_keys[:_QUOTE_CEILING]
 
     try:
         leg_quotes = fetch_quote_batch(leg_keys) if leg_keys else {}

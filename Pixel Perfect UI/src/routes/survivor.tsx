@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ArrowLeft, Play, Power, RefreshCw, Save, ShieldOff, Square } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { LOT_SIZES } from "@/lib/instruments";
 import type { SurvivorConfig, SurvivorLogEntry, SurvivorStatus } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,12 +33,6 @@ import {
 export const Route = createFileRoute("/survivor")({
   component: SurvivorPage,
 });
-
-const LOT_SIZES: Record<SurvivorConfig["underlying"], number> = {
-  NIFTY: 65,
-  BANKNIFTY: 30,
-  SENSEX: 20,
-};
 
 const DEFAULT: SurvivorConfig = {
   underlying: "NIFTY",
@@ -126,7 +121,7 @@ function SurvivorPage() {
   }
 
   const running = status?.state?.runner === "running";
-  const lot = LOT_SIZES[config.underlying] ?? 1;
+  const lot = LOT_SIZES[config.underlying];
   const qtyInvalid =
     config.pe_quantity <= 0 ||
     config.ce_quantity <= 0 ||

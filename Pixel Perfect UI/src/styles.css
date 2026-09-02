@@ -58,6 +58,7 @@
   Cool mint/sky surfaces, teal primary, emerald bull / coral bear / amber warn.
 */
 :root {
+  color-scheme: light;
   --radius: 0.625rem;
   --background: oklch(0.955 0.016 195);
   --foreground: oklch(0.18 0.035 250);
@@ -101,48 +102,61 @@
   --desk-glow-c: oklch(0.9 0.05 155);
 }
 
-/* Optional darker mode — still colorful, not charcoal-flat */
+/*
+  Soft Dark Blue — the dark theme behind the header toggle (ThemeToggle).
+
+  Deliberately NOT pure black. Every surface is a desaturated blue-black /
+  grey-black (hue ~255, chroma <= 0.02): #000 next to bright teal/emerald text
+  maximises halation and is the least comfortable thing to stare at for a
+  full session. Foreground is an off-white (L .92), not #fff, for the same
+  reason. Surfaces step L .197 -> .208 -> .248 -> .298 (sidebar, background,
+  card, secondary) so elevation reads without any surface needing a hard
+  border.
+*/
 .dark {
-  --background: oklch(0.22 0.035 230);
-  --foreground: oklch(0.96 0.015 200);
-  --card: oklch(0.27 0.04 230);
-  --card-foreground: oklch(0.96 0.015 200);
-  --popover: oklch(0.27 0.04 230);
-  --popover-foreground: oklch(0.96 0.015 200);
-  --primary: oklch(0.78 0.14 195);
-  --primary-foreground: oklch(0.18 0.04 230);
-  --secondary: oklch(0.32 0.05 240);
-  --secondary-foreground: oklch(0.95 0.02 200);
-  --muted: oklch(0.3 0.04 230);
-  --muted-foreground: oklch(0.78 0.03 210);
-  --accent: oklch(0.4 0.08 85);
-  --accent-foreground: oklch(0.96 0.03 85);
-  --destructive: oklch(0.68 0.2 22);
-  --destructive-foreground: oklch(0.99 0.01 22);
-  --border: oklch(0.38 0.04 230);
-  --input: oklch(0.32 0.04 230);
-  --ring: oklch(0.72 0.12 195);
-  --bull: oklch(0.78 0.18 155);
-  --bull-foreground: oklch(0.16 0.04 155);
-  --bear: oklch(0.72 0.19 18);
-  --bear-foreground: oklch(0.99 0.01 18);
-  --warn: oklch(0.84 0.14 85);
-  --chart-1: oklch(0.78 0.18 155);
-  --chart-2: oklch(0.72 0.19 18);
-  --chart-3: oklch(0.78 0.14 195);
-  --chart-4: oklch(0.84 0.14 85);
-  --chart-5: oklch(0.75 0.14 320);
-  --sidebar: oklch(0.24 0.04 230);
-  --sidebar-foreground: oklch(0.95 0.015 200);
-  --sidebar-primary: oklch(0.78 0.14 195);
-  --sidebar-primary-foreground: oklch(0.18 0.04 230);
-  --sidebar-accent: oklch(0.34 0.05 210);
-  --sidebar-accent-foreground: oklch(0.96 0.015 200);
-  --sidebar-border: oklch(0.36 0.04 230);
-  --sidebar-ring: oklch(0.72 0.12 195);
-  --desk-glow-a: oklch(0.3 0.08 195);
-  --desk-glow-b: oklch(0.32 0.07 85);
-  --desk-glow-c: oklch(0.3 0.07 155);
+  color-scheme: dark;
+  --background: oklch(0.208 0.018 255);
+  --foreground: oklch(0.922 0.012 240);
+  --card: oklch(0.248 0.019 255);
+  --card-foreground: oklch(0.922 0.012 240);
+  --popover: oklch(0.258 0.02 255);
+  --popover-foreground: oklch(0.922 0.012 240);
+  --primary: oklch(0.755 0.105 205);
+  --primary-foreground: oklch(0.19 0.02 255);
+  --secondary: oklch(0.298 0.021 252);
+  --secondary-foreground: oklch(0.905 0.014 240);
+  --muted: oklch(0.278 0.019 254);
+  --muted-foreground: oklch(0.735 0.019 245);
+  --accent: oklch(0.33 0.045 90);
+  --accent-foreground: oklch(0.925 0.035 90);
+  --destructive: oklch(0.635 0.17 22);
+  --destructive-foreground: oklch(0.97 0.01 22);
+  --border: oklch(0.335 0.019 253);
+  --input: oklch(0.305 0.02 254);
+  --ring: oklch(0.68 0.095 205);
+  --bull: oklch(0.755 0.145 155);
+  --bull-foreground: oklch(0.19 0.03 155);
+  --bear: oklch(0.705 0.16 20);
+  --bear-foreground: oklch(0.98 0.01 20);
+  --warn: oklch(0.805 0.115 85);
+  --chart-1: oklch(0.755 0.145 155);
+  --chart-2: oklch(0.705 0.16 20);
+  --chart-3: oklch(0.755 0.105 205);
+  --chart-4: oklch(0.805 0.115 85);
+  --chart-5: oklch(0.735 0.115 320);
+  --sidebar: oklch(0.197 0.018 256);
+  --sidebar-foreground: oklch(0.9 0.013 240);
+  --sidebar-primary: oklch(0.755 0.105 205);
+  --sidebar-primary-foreground: oklch(0.19 0.02 255);
+  --sidebar-accent: oklch(0.288 0.024 250);
+  --sidebar-accent-foreground: oklch(0.93 0.012 240);
+  --sidebar-border: oklch(0.312 0.018 254);
+  --sidebar-ring: oklch(0.68 0.095 205);
+  /* Barely-there vignette. The light theme's glows are a feature; at these
+     lightnesses they only stop the dark background reading as flat paint. */
+  --desk-glow-a: oklch(0.265 0.026 235);
+  --desk-glow-b: oklch(0.244 0.018 285);
+  --desk-glow-c: oklch(0.25 0.02 200);
 }
 
 @layer base {
@@ -174,6 +188,13 @@
     color: oklch(0.2 0.08 200);
     font-weight: 650;
   }
+  /* Dark counterpart. Both of these are usually beaten by the data-[active]
+     utilities on SidebarMenuButton; the pair exists so that wherever the base
+     rule does land, it does not mix toward literal white on a dark shell. */
+  .dark [data-sidebar="menu-button"][data-active="true"] {
+    background: color-mix(in oklch, var(--primary) 20%, var(--sidebar));
+    color: var(--sidebar-accent-foreground);
+  }
 
   /* Stronger default text weight for readability on bright surfaces */
   body {
@@ -184,7 +205,10 @@
   h1, h2, h3, h4, .font-semibold, .font-medium {
     color: var(--foreground);
   }
-  .text-muted-foreground {
+  /* Scoped to light: on the bright desk the token alone is too faint. In dark
+     the utility's own var(--muted-foreground) is already tuned for contrast,
+     and an unscoped !important here made every secondary label unreadable. */
+  html:not(.dark) .text-muted-foreground {
     color: oklch(0.35 0.035 245) !important;
   }
 }
@@ -215,6 +239,18 @@
     inset 0 0 0 2px color-mix(in oklch, var(--bear) 90%, transparent),
     0 0 14px color-mix(in oklch, var(--bear) 40%, transparent);
 }
+/* Chain Build-Up reuses the breach language, ring only.
+
+   Its cell fill already encodes side (CE red / PE green) and magnitude, so a
+   breach cannot also claim the background the way breach-cell-up does -- it
+   would overwrite the very thing the grid is drawn to show. The ring is amber
+   in both themes so it reads as "threshold", not as a third side. */
+@utility breach-ring {
+  box-shadow:
+    inset 0 0 0 2px color-mix(in oklch, var(--warn) 95%, transparent),
+    0 0 10px color-mix(in oklch, var(--warn) 35%, transparent);
+}
+
 @utility breach-pill-up {
   background-color: var(--color-bull);
   color: var(--color-bull-foreground);

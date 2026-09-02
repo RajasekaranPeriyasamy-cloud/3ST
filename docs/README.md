@@ -18,10 +18,13 @@ Sidebar categories map to folders below. Deep conversation notes currently live 
 | Vanna Exposure | `/vanna-exposure` | [vanna-exposure/](vanna-exposure/) |
 | Vol Surface | `/vol-surface` | [vol-surface/](vol-surface/) |
 | IV Smile | `/iv-smile` | [iv-smile/](iv-smile/) |
+| IV Skew | `/iv-skew` | [iv-skew/](iv-skew/) — 25Δ risk reversal; forward-based, covers MCX |
 | IV Chart | `/iv-chart` | [iv-chart/](iv-chart/) |
 | Pricing Engine | `/pricing-engine` | [pricing-engine/](pricing-engine/) |
 | Calendar Arb | `/arbitrage` | [calendar-arb/](calendar-arb/) |
+| Options Arbitrage | `/opt-arb` | [options-arbitrage/](options-arbitrage/) — model-free violations, net of charges; API prefix `/oarb` |
 | OI Profile | `/oi-profile` | [oi-profile/](oi-profile/) |
+| Volume Footprint | `/volume-footprint` | [../volume Profile Gaucessian/](../volume%20Profile%20Gaucessian/) |
 | Straddle Watch | `/straddle-watch` | [straddle-watch/](straddle-watch/) |
 | Algo Execution | `/execution` | [algo-execution/](algo-execution/) |
 | Rolling Straddle | `/rolling-straddle` | [rolling-straddle/](rolling-straddle/) |

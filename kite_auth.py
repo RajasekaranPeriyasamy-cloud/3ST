@@ -6,9 +6,12 @@ import json
 import logging
 import socket
 import sys
+import threading
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -28,6 +31,8 @@ from settings import (
 )
 
 _ROOT = Path(__file__).resolve().parent
+IST = ZoneInfo("Asia/Kolkata")
+
 logger = logging.getLogger("3st.kite_auth")
 
 KiteEgressMode = Literal["local_bind", "staticip_proxy", "direct"]
@@ -324,6 +329,58 @@ def _kite(*, use_proxy: bool | None = None) -> KiteConnect:
     return kite
 
 
+# Memoised read-only client. Reads are always direct egress (no proxy, no
+# source bind) per the egress split in CLAUDE.md, so this cache carries no
+# egress state and can never be handed to an order path -- get_kite_client()
+# and the login flow keep constructing fresh clients against the egress plan.
+#
+# Rebuilding KiteConnect per call cost ~276 ms of pure setup: a new
+# requests.Session meant a new connection pool, a fresh TLS handshake and a
+# re-read of the CA bundle (load_verify_locations) on every single call.
+_READ_CLIENT: KiteConnect | None = None
+_READ_CLIENT_API_KEY: str | None = None
+_READ_CLIENT_LOCK = threading.Lock()
+
+
+def reset_kite_client_cache() -> None:
+    """Drop the memoised read client (re-login, logout, credential change)."""
+    global _READ_CLIENT, _READ_CLIENT_API_KEY
+    with _READ_CLIENT_LOCK:
+        _READ_CLIENT = None
+        _READ_CLIENT_API_KEY = None
+
+
+def read_only_kite_client() -> KiteConnect:
+    """Shared direct-egress KiteConnect for market-data reads.
+
+    Callers still set the access token themselves each call, so a re-login is
+    picked up without waiting for cache invalidation. Never use this to place
+    or cancel orders: it deliberately ignores kite_egress_plan(), so it is not
+    bound to the whitelisted IP.
+    """
+    global _READ_CLIENT, _READ_CLIENT_API_KEY
+    client = _READ_CLIENT
+    if client is not None and _READ_CLIENT_API_KEY == _cached_api_key():
+        return client
+
+    with _READ_CLIENT_LOCK:
+        api_key = _cached_api_key()
+        if _READ_CLIENT is not None and _READ_CLIENT_API_KEY == api_key:
+            return _READ_CLIENT
+        fresh = _kite(use_proxy=False)
+        _READ_CLIENT = fresh
+        _READ_CLIENT_API_KEY = api_key
+        return fresh
+
+
+def _cached_api_key() -> str | None:
+    """API key as currently loaded, without re-reading .env from disk."""
+    try:
+        return kite_credentials().get("api_key")
+    except Exception:
+        return None
+
+
 def _is_proxy_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     needles = ("proxy", "staticip", "getaddrinfo failed", "name resolution", "max retries exceeded")
@@ -427,6 +484,7 @@ def load_session() -> dict[str, Any] | None:
 
 
 def save_session(payload: dict[str, Any]) -> None:
+    reset_kite_client_cache()
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     out = _session_payload(payload)
     json_bytes = json.dumps(out).encode("utf-8")
@@ -435,6 +493,7 @@ def save_session(payload: dict[str, Any]) -> None:
 
 
 def clear_session() -> None:
+    reset_kite_client_cache()
     if SESSION_FILE.exists():
         SESSION_FILE.unlink()
 
@@ -485,6 +544,81 @@ def get_kite_client() -> KiteConnect:
         )
     kite.set_access_token(sess["access_token"])
     return kite
+
+
+#: Cached result of the live token probe. ``/health`` is polled continuously by
+#: the desk UI, and a Kite call per poll would burn rate limit to re-learn a fact
+#: that changes roughly once a day (tokens expire ~06:00 IST).
+_TOKEN_PROBE: dict[str, Any] = {"state": "unknown", "checked_at": None, "error": None, "at": 0.0}
+_TOKEN_PROBE_TTL_SEC = 60.0
+_TOKEN_PROBE_LOCK = threading.Lock()
+
+
+def _looks_like_auth_error(message: str) -> bool:
+    """Token rejected, as opposed to the API being unreachable.
+
+    The distinction decides what the operator is told to do, so it must not be a
+    catch-all: "your session expired, go and log in again" is wrong and wastes a
+    trading morning when the real problem is DNS. Kite phrases a rejected token
+    as "Incorrect `api_key` or `access_token`."
+    """
+    lower = str(message).lower()
+    if "incorrect" in lower and ("access_token" in lower or "api_key" in lower):
+        return True
+    return "tokenexception" in lower or ("token" in lower and "expired" in lower)
+
+
+def token_probe(*, max_age_sec: float = _TOKEN_PROBE_TTL_SEC, force: bool = False) -> dict[str, Any]:
+    """Does the stored token actually work? Cached, and honest about not knowing.
+
+    ``session_status`` answers a different and cheaper question — is there a
+    session file — and is called from order-adjacent hot paths, so it stays a
+    pure file read. This is the live check, and only ``/health`` calls it.
+
+    States, and why there are four rather than a boolean:
+
+    ``no_session``   nothing stored; log in.
+    ``valid``        a read succeeded just now.
+    ``invalid``      Kite rejected the token; log in again.
+    ``unreachable``  the call failed for a reason that is not authentication.
+                     Reported as its own state because telling an operator to
+                     re-login when the network is down sends them to fix the
+                     wrong thing.
+    """
+    if not load_session():
+        return {"state": "no_session", "checked_at": None, "error": None}
+
+    now = time.time()
+    with _TOKEN_PROBE_LOCK:
+        cached = dict(_TOKEN_PROBE)
+    if not force and cached["state"] != "unknown" and (now - cached["at"]) < max_age_sec:
+        return {k: cached[k] for k in ("state", "checked_at", "error")}
+
+    state, error = "valid", None
+    try:
+        # Deliberately routed through kite_client.kite_read_client rather than
+        # building a client here: that accessor is one of the three the unit
+        # suite's offline guard patches, so this probe is blocked in tests for
+        # free. Reaching past it would open a live path the guard cannot see —
+        # and widening the guard instead would break the tests that exist to
+        # verify read_only_kite_client's own memoisation.
+        from kite_client import kite_read_client
+
+        # profile() is the cheapest authenticated read Kite offers and needs no
+        # instrument tokens, so it cannot fail for a reason unrelated to auth.
+        kite_read_client().profile()
+    except Exception as exc:  # noqa: BLE001 — every failure mode is reported, none raised
+        error = str(exc)[:200]
+        state = "invalid" if _looks_like_auth_error(error) else "unreachable"
+
+    result = {
+        "state": state,
+        "checked_at": datetime.now(tz=IST).isoformat(timespec="seconds"),
+        "error": error,
+    }
+    with _TOKEN_PROBE_LOCK:
+        _TOKEN_PROBE.update({**result, "at": now})
+    return result
 
 
 def session_status() -> dict[str, Any]:

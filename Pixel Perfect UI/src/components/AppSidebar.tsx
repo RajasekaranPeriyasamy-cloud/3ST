@@ -1,8 +1,10 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  AlignVerticalDistributeCenter,
   Activity,
   ArrowLeftRight,
   BarChart3,
+  Blend,
   BookMarked,
   CandlestickChart,
   ChartNoAxesCombined,
@@ -11,7 +13,6 @@ import {
   Cpu,
   FileSearch,
   Gavel,
-  GitBranch,
   Layers,
   LayoutDashboard,
   LayoutGrid,
@@ -24,9 +25,9 @@ import {
   Scale,
   Sigma,
   Settings,
-  Sparkles,
   Target,
   TrendingUp,
+  TableProperties,
 } from "lucide-react";
 import { useExecutionQueue } from "@/hooks/useExecutionQueue";
 import { Button } from "@/components/ui/button";
@@ -50,7 +51,6 @@ const items = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Widget Desk", url: "/widget-desk", icon: LayoutGrid },
   { title: "Backtest", url: "/backtest", icon: BarChart3 },
-  { title: "RRG", url: "/rrg", icon: GitBranch },
   { title: "OI Tracker", url: "/oi-tracker", icon: Layers },
   { title: "OI Movers", url: "/oi-movers", icon: ArrowLeftRight },
   { title: "OI VAR Desk", url: "/oi-var", icon: Scale },
@@ -58,10 +58,12 @@ const items = [
   { title: "Delta Velocity", url: "/delta-velocity", icon: Radar },
   { title: "CAS Indicative", url: "/cas-indicative", icon: Gavel },
   { title: "Vanna Exposure", url: "/vanna-exposure", icon: Orbit },
-  { title: "Trade Suggestions", url: "/trade-suggestions", icon: Sparkles },
   { title: "Vol Surface", url: "/vol-surface", icon: Grid3x3 },
-  { title: "IV Smile", url: "/iv-smile", icon: LineChart },
+  { title: "IV Skew", url: "/iv-skew", icon: Blend },
   { title: "OI Profile", url: "/oi-profile", icon: CandlestickChart },
+  { title: "Chain Build-Up", url: "/chain-buildup", icon: TableProperties },
+  { title: "Options Arbitrage", url: "/opt-arb", icon: Scale },
+  { title: "Volume Footprint", url: "/volume-footprint", icon: AlignVerticalDistributeCenter },
   { title: "Equity Report", url: "/equity-report", icon: FileSearch },
   { title: "Algo Execution", url: "/execution", icon: Cpu },
   { title: "Straddle Watch", url: "/straddle-watch", icon: ChartNoAxesCombined },

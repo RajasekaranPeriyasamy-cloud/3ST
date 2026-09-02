@@ -290,6 +290,63 @@ def test_top5_share_and_full_contributor_list() -> None:
     assert abs(contributors[0]["share_sq"] - contributors[0]["share"] ** 2) < 1e-4
 
 
+def test_pin_source_distinguishes_a_real_pin_from_a_placeholder() -> None:
+    """The ATM fallback must not be indistinguishable from a gamma pin.
+
+    It sits next to spot by construction, so it reads rock-steady exactly when
+    there is no pin — pin-strength logic has to be able to reject it.
+    """
+    # Dominant strike clears the share threshold → a real gamma pin.
+    dominant = compute_gamma_concentration(
+        [_row(24500, 900), _row(24550, 100)],
+        spot=24500,
+        atm_strike=24500,
+        call_wall=24600,
+        put_wall=24400,
+        strike_step=50,
+        pin_threshold=0.18,
+    )
+    assert dominant["pin_source"] == "dominant"
+    assert dominant["pin_strike"] == 24500
+
+    # Flat book, walls present → wall midpoint, an inference not a pin.
+    flat = [_row(24400 + i * 50, 100) for i in range(5)]
+    wall_mid = compute_gamma_concentration(
+        flat,
+        spot=24500,
+        atm_strike=24500,
+        call_wall=24600,
+        put_wall=24400,
+        strike_step=50,
+        pin_threshold=0.9,
+    )
+    assert wall_mid["pin_source"] == "wall_mid"
+
+    # Flat book, no walls → ATM placeholder.
+    atm_only = compute_gamma_concentration(
+        flat,
+        spot=24500,
+        atm_strike=24500,
+        call_wall=None,
+        put_wall=None,
+        strike_step=50,
+        pin_threshold=0.9,
+    )
+    assert atm_only["pin_source"] == "atm"
+    assert atm_only["pin_strike"] == 24500
+
+    # No mass at all → the field still exists rather than being absent.
+    empty = compute_gamma_concentration(
+        [],
+        spot=24500,
+        atm_strike=24500,
+        call_wall=None,
+        put_wall=None,
+        strike_step=50,
+    )
+    assert empty["pin_source"] is None
+
+
 def test_conviction_and_market_read() -> None:
     conc = compute_gamma_concentration(
         [_row(24500, 900), _row(24550, 100)],

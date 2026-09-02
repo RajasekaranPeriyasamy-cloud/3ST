@@ -650,3 +650,263 @@ def test_chart_with_no_archive_at_all_is_still_safe(tmp_path, monkeypatch):
     out = chart.session_chart("NIFTY")
     assert out["minutes"] == []
     assert out["contracts"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Quote-ceiling handling (STRIKE_WIDTH widened to 12 on 2026-08-27)
+# ---------------------------------------------------------------------------
+
+
+def test_strike_width_fits_the_quote_ceiling():
+    """The whole tracked set must fit ONE batch call. Raising STRIKE_WIDTH past
+    this silently truncates, which is data loss the archive cannot recover."""
+    from analysis.delta_velocity import collector
+
+    legs = (2 * collector.STRIKE_WIDTH + 1) * 2 * collector.EXPIRIES * len(collector.UNDERLYINGS)
+    assert legs <= collector._QUOTE_CEILING, (
+        f"{legs} legs exceeds the {collector._QUOTE_CEILING} ceiling — "
+        "redo the arithmetic in collector.py, do not just raise the number"
+    )
+
+
+def test_over_ceiling_narrows_every_underlying_not_just_the_last(monkeypatch):
+    """A plain leg_keys[:CEILING] drops the LAST underlying outright, because the
+    list is built underlying by underlying. SENSEX would vanish from the archive
+    while NIFTY kept full width, and nothing downstream could tell."""
+    from analysis.delta_velocity import collector
+
+    monkeypatch.setattr(collector, "_QUOTE_CEILING", 60)
+
+    def fake_legs(underlying, spot, *, width=collector.STRIKE_WIDTH):
+        return [
+            {"key": f"NFO:{underlying}{i}", "tradingsymbol": f"{underlying}{i}",
+             "exchange": "NFO", "expiry": "2026-09-01", "strike": 100.0 + i,
+             "option_type": "CE"}
+            for i in range(2 * width + 1)
+        ]
+
+    monkeypatch.setattr(collector, "tracked_legs", fake_legs)
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_quotes(keys):
+        captured.setdefault("keys", list(keys))
+        return {}
+
+    monkeypatch.setattr(collector, "fetch_quote_batch", fake_quotes)
+    monkeypatch.setattr(collector, "_index_spot", lambda u: 100.0, raising=False)
+
+    all_legs = {u: fake_legs(u, 100.0) for u in collector.UNDERLYINGS}
+    all_spots = dict.fromkeys(collector.UNDERLYINGS, 100.0)
+    leg_keys = [leg["key"] for legs in all_legs.values() for leg in legs]
+    assert len(leg_keys) > collector._QUOTE_CEILING
+
+    width = collector.STRIKE_WIDTH
+    while width > 1:
+        width -= 1
+        rebuilt = {u: fake_legs(u, all_spots[u], width=width) for u in all_legs}
+        keys = [leg["key"] for legs in rebuilt.values() for leg in legs]
+        if len(keys) <= collector._QUOTE_CEILING:
+            break
+
+    # every underlying survives, and all of them are the same width
+    per_underlying = {u: len(v) for u, v in rebuilt.items()}
+    assert set(per_underlying) == set(collector.UNDERLYINGS)
+    assert len(set(per_underlying.values())) == 1
+
+
+# ---------------------------------------------------------------------------
+# Raw-archive pruning (wired into the runner 2026-08-27)
+# ---------------------------------------------------------------------------
+
+
+def monkeypatch_env(runner, value: str) -> None:
+    """Set the retention env for one test. The prune_env fixture restores it."""
+    runner.env = lambda key, default="": value
+
+
+@pytest.fixture
+def prune_env(tmp_path, monkeypatch):
+    """Archive under tmp_path with sessions at known ages, runner reset."""
+    from analysis.delta_velocity import runner
+
+    monkeypatch.setattr(store, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(runner, "_last_prune_day", None, raising=False)
+    monkeypatch.setattr(runner.collector, "UNDERLYINGS", ("NIFTY",))
+    monkeypatch.setattr(runner, "env", runner.env)  # restored after the test
+
+    today = date.today()
+    ages = (0, 5, 29, 31, 90)
+    for age in ages:
+        day = today - timedelta(days=age)
+        store.session_file("NIFTY", day).write_text(
+            json.dumps({"ts": day.isoformat(), "session_date": day.isoformat(),
+                        "underlying": "NIFTY", "spot": 1.0, "legs": []}) + "\n",
+            encoding="utf-8",
+        )
+    return runner, today, ages
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("30", 30), ("45", 45), ("0", 0), ("-5", 0), ("3", 7), ("", 30), ("abc", 0)],
+)
+def test_retention_days_parsing(monkeypatch, value, expected):
+    """0 and unparseable both disable: for a scheduled deleter, the fail-safe
+    direction is to keep data, not to guess."""
+    from analysis.delta_velocity import runner
+
+    monkeypatch.setattr(runner, "env", lambda key, default="": value or default)
+    assert runner.retention_days() == expected
+
+
+def test_prune_removes_only_sessions_past_retention(prune_env):
+    runner, today, _ = prune_env
+    monkeypatch_env(runner, "30")
+    runner._maybe_prune(datetime.now(tz=runner.IST))
+    left = {d.isoformat() for d in store.sessions_available("NIFTY")}
+    assert (today - timedelta(days=29)).isoformat() in left   # inside the window
+    assert (today).isoformat() in left                        # today is never touched
+    assert (today - timedelta(days=31)).isoformat() not in left
+    assert (today - timedelta(days=90)).isoformat() not in left
+
+
+def test_prune_disabled_keeps_everything(prune_env):
+    runner, _, ages = prune_env
+    monkeypatch_env(runner, "0")
+    runner._maybe_prune(datetime.now(tz=runner.IST))
+    assert len(store.sessions_available("NIFTY")) == len(ages)
+
+
+def test_prune_runs_once_per_calendar_day(prune_env, monkeypatch):
+    """It walks every session file of every underlying; per-tick would be
+    pointless work every 10 seconds."""
+    runner, _, _ = prune_env
+    monkeypatch_env(runner, "30")
+    calls: list[str] = []
+    monkeypatch.setattr(store, "prune_raw",
+                        lambda u, retention_days=30: calls.append(u) or [])
+    now = datetime.now(tz=runner.IST)
+    runner._maybe_prune(now)
+    runner._maybe_prune(now)
+    runner._maybe_prune(now)
+    assert calls == ["NIFTY"]
+
+
+def test_prune_failure_does_not_kill_the_sampler(prune_env, monkeypatch):
+    """Housekeeping must never take the collector down with it."""
+    runner, _, ages = prune_env
+    monkeypatch_env(runner, "30")
+
+    def boom(*_a, **_k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(store, "prune_raw", boom)
+    runner._maybe_prune(datetime.now(tz=runner.IST))  # must not raise
+    assert len(store.sessions_available("NIFTY")) == len(ages)
+
+
+
+
+# ---------------------------------------------------------------------------
+# Top-of-book recording (added 2026-08-28 for later trade-direction inference)
+# ---------------------------------------------------------------------------
+
+
+def test_top_of_book_reads_the_depth_the_quote_already_carries():
+    from analysis.delta_velocity import collector
+
+    quote = {
+        "depth": {
+            "buy": [{"price": 10.5, "quantity": 300}, {"price": 10.4, "quantity": 1}],
+            "sell": [{"price": 10.7, "quantity": 450}],
+        }
+    }
+    assert collector._top_of_book(quote) == {
+        "bid": 10.5, "ask": 10.7, "bid_qty": 300.0, "ask_qty": 450.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "depth",
+    [
+        {},
+        {"buy": [], "sell": []},
+        {"buy": [{"price": 0, "quantity": 0}], "sell": [{"price": 0}]},
+        {"buy": [{"price": None}], "sell": [{"price": "x"}]},
+    ],
+)
+def test_top_of_book_is_none_not_zero_when_there_is_no_book(depth):
+    """A strike with no depth has an UNKNOWN bid, not a bid of zero — zero would
+    classify every trade as buyer-initiated once a quote rule reads it."""
+    from analysis.delta_velocity import collector
+
+    assert collector._top_of_book({"depth": depth}) == {
+        "bid": None, "ask": None, "bid_qty": None, "ask_qty": None,
+    }
+
+
+def test_archived_ltp_is_the_mid_and_last_price_is_separate():
+    """`ltp` has always been the bid/ask mid where depth is two-sided, despite
+    the name. A quote rule must classify against the price that actually
+    traded — a mid never does — so both are recorded."""
+    from analysis.delta_velocity import collector
+
+    quote = {
+        "depth": {"buy": [{"price": 10.0}], "sell": [{"price": 11.0}]},
+        "last_price": 11.0,
+    }
+    assert collector._mid_or_last(quote) == 10.5      # what lands in `ltp`
+    assert collector._num_or_none(quote["last_price"]) == 11.0
+
+
+# ---------------------------------------------------------------------------
+# to_rows is an allow-list, and that is a trap
+# ---------------------------------------------------------------------------
+
+
+def test_to_rows_carries_every_field_the_collector_writes():
+    """``to_rows`` names its fields explicitly, so anything added to the
+    collector is invisible to every consumer until it is named here too.
+
+    That is not hypothetical: bid/ask/last_price were archived correctly from
+    2026-08-30 and dropped here, so the quote rule reported 100% unclassified on
+    a session whose archive held a bid on 22,198 of 22,200 legs. The data was
+    fine; the reader threw it away. This test compares the two ends rather than
+    listing today's fields, so the next addition fails here instead of silently
+    returning nothing.
+    """
+    leg = {
+        "tradingsymbol": "NIFTY2690124000CE",
+        "expiry": "2026-09-01",
+        "strike": 24000.0,
+        "option_type": "CE",
+        "ltp": 10.6,
+        "last_price": 10.7,
+        "oi": 5_000_000,
+        "volume": 1_234_000,
+        "iv": 0.12,
+        "delta": 0.51,
+        "bid": 10.5,
+        "ask": 10.7,
+        "bid_qty": 300.0,
+        "ask_qty": 450.0,
+    }
+    snapshot = {
+        "ts": "2026-08-31T09:16:00+05:30",
+        "session_date": "2026-08-31",
+        "underlying": "NIFTY",
+        "spot": 24010.0,
+        "legs": [leg],
+    }
+
+    row = store.to_rows([snapshot])[0]
+
+    # `tradingsymbol` is deliberately not carried: rows are keyed by
+    # (expiry, strike, option_type) and the symbol adds nothing to that.
+    dropped = {k for k in leg if k not in row} - {"tradingsymbol"}
+    assert not dropped, f"to_rows silently drops {sorted(dropped)} — add them to its field list"
+
+    assert row["bid"] == 10.5 and row["ask"] == 10.7
+    assert row["last_price"] == 10.7
+    assert row["ltp"] == 10.6  # the mid, and NOT the same number

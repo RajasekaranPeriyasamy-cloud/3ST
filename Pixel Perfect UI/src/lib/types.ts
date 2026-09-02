@@ -37,7 +37,6 @@ export interface StrategySettings {
   tsl_mode: RiskMode;
   tsl_value: number;
   product_type?: "MIS" | "NRML";
-  entry_mode: EntryMode;
 }
 
 export interface InstrumentHit {
@@ -75,6 +74,21 @@ export interface SpreadConfig {
 }
 
 export interface Selection extends StrategySettings {
+  /** Whether this selection arms on a signal or waits to be fired by hand.
+   *
+   *  Lives here rather than on StrategySettings because it is a *selection*
+   *  concern, not a strategy-parameter one: every backend reference is in
+   *  desk_trades / live_workflow / watchlist_* / reconcile, and the rolling
+   *  straddle config — the other type extending StrategySettings — has no such
+   *  field. Requiring it in the shared base made RollingStraddleConfig demand a
+   *  key its own store never writes.
+   *
+   *  Optional because the backend treats it that way: every read is
+   *  `item.get("entry_mode") or <default>` (desk_trades, live_workflow,
+   *  watchlist_activation, watchlist_runner), and the live watchlist carries 31
+   *  items with the key absent from all of them. Typing it required would have
+   *  reproduced the same defect one interface along. */
+  entry_mode?: EntryMode;
   instrument_token: number | null;
   exchange: string | null;
   tradingsymbol: string | null;
@@ -149,7 +163,6 @@ export interface ActiveTradeRow {
   trade_mode: "paper" | "live";
   entry_mode?: EntryMode;
   timeframe?: Timeframe;
-  signal?: "long" | "short" | null;
   entry_side?: "BUY" | "SELL" | null;
   entry_price?: number | null;
   quantity: number;
@@ -979,6 +992,12 @@ export interface GammaConcentration {
   dominant_share: number | null;
   pin_strike: number | null;
   pin_share: number | null;
+  /**
+   * Which rule produced the pin. Only `dominant` is a real gamma pin —
+   * `wall_mid` is inferred and `atm` sits next to spot by construction, so it
+   * looks steady precisely when no pin exists. Gate pin-strength reads on this.
+   */
+  pin_source?: "dominant" | "wall_mid" | "atm" | "fallback" | string | null;
   pin_stable: boolean | null;
   pin_stability_pct: number | null;
   call_hhi?: number | null;
@@ -1028,6 +1047,427 @@ export interface GammaConcentration {
   hhi_session_assumed_count?: number | null;
 }
 
+/**
+ * Session volume profile from the vendored footprint engine.
+ *
+ * `estimate` is always true and must be surfaced: the buy/sell split is inferred
+ * from candle geometry, not measured from an aggressor feed, so `tilt_pp`,
+ * `overlap_pct` and imbalance are structural readings. `residual_label` reports
+ * the health of the *arithmetic*, not of the market.
+ */
+/**
+ * One prominent peak in the session profile, with two readings of how its price
+ * band traded — neither of which is the current session tilt.
+ *
+ * Both tilts describe the **band**, not the side: a buy peak and a sell peak at
+ * the same price report the same numbers. The side only decides which peaks get
+ * detected.
+ */
+export interface VolumeProfilePeak {
+  price: number;
+  density: number;
+  /** Height above the separating saddle, as a share of this side's tallest peak. */
+  prominence_pct: number;
+  band_lo: number;
+  band_hi: number;
+  /** Option A - tilt of the fitted mixture inside the band. */
+  band_tilt_pp: number | null;
+  band_buy: number;
+  band_sell: number;
+  /** Option C - tilt of the bars that actually traded through the band. */
+  flow_tilt_pp: number | null;
+  bar_count: number;
+  /** Formation window, never a moment. HH:MM. */
+  first: string | null;
+  last: string | null;
+  /** Middle 50% of the band's volume. */
+  q1: string | null;
+  q3: string | null;
+  /** True when that middle 50% fits in 45 minutes - only then is naming a time honest. */
+  concentrated: boolean;
+}
+
+/** One price the POC held today, merged across every spell it spent there. */
+export interface PocTrailLevel {
+  poc: number;
+  lo: number;
+  hi: number;
+  /** Total minutes this price was the POC. */
+  minutes: number;
+  /** Share of the recorded session — the chart weights the line by it. */
+  dwell_pct: number;
+  /** How many separate times the POC came back here. */
+  spells: number;
+  /** "09:30-14:30" per spell. */
+  windows: string[];
+}
+
+export interface PocTrail {
+  available: boolean;
+  /** "not_sampled" | "no_trail_yet" | "store_unavailable" */
+  reason: string | null;
+  levels?: PocTrailLevel[];
+  /** Chronological runs, kept for the tooltip. */
+  segments?: { poc: number; from: string; to: string; minutes: number }[];
+  /** The band the POC travelled through, for the shaded region. */
+  band_lo?: number;
+  band_hi?: number;
+  first?: string;
+  last?: string;
+  checkpoints?: number;
+}
+
+export interface VolumeProfileSnapshot {
+  underlying: string;
+  available: boolean;
+  reason: string | null;
+  asof: string;
+  engine: string;
+  estimate: boolean;
+  bars: number;
+  compute_ms?: number;
+  mintick?: number;
+  /** `index` once the basis is removed; `future` for MCX, where none is needed. */
+  price_axis?: "index" | "future" | string;
+  basis?: {
+    mode: "per_bar" | "none" | string;
+    matched_bars: number;
+    median: number | null;
+    last: number | null;
+    reason: string | null;
+  };
+  fut_symbol?: string | null;
+  fut_token?: number | null;
+  poc?: number | null;
+  vah?: number | null;
+  val?: number | null;
+  value_area_pts?: number | null;
+  /** Percentage points, + = buy side carried the session. */
+  tilt_pp?: number | null;
+  /** Overlap coefficient 0–100; ≥75 reads as balanced/rotational. */
+  overlap_pct?: number | null;
+  balance_verdict?: string | null;
+  residual_ppm?: number | null;
+  residual_label?: "EXACT" | "DRIFT" | string;
+  total_buy?: number | null;
+  total_sell?: number | null;
+  price_lo?: number | null;
+  price_hi?: number | null;
+  curve?: { price: number; buy: number; sell: number }[];
+  /** Where the POC has sat today. Stored, not recomputed — tracked underlyings only. */
+  poc_trail?: PocTrail;
+  /** Price-axis gridline spacing — the strike step (NIFTY 50, SENSEX 100, NG 5). */
+  grid_step?: number | null;
+  /**
+   * Peak of each side's own density, from the full-resolution arrays.
+   * Distinct from `poc`, which is the peak of the combined profile.
+   * `null` when that side carried no volume.
+   */
+  buy_peak?: { price: number; density: number } | null;
+  sell_peak?: { price: number; density: number } | null;
+  /** Top peaks per side by prominence, tallest first. [0] is `buy_peak`/`sell_peak`. */
+  buy_peaks?: VolumeProfilePeak[];
+  sell_peaks?: VolumeProfilePeak[];
+  contract?: {
+    expiry?: string | null;
+    tradingsymbol?: string | null;
+    instrument_token?: number | null;
+    requested?: string | null;
+  };
+}
+
+/** Session volume attributed to each strike band (exact, not resampled). */
+export interface GammaStrikeVolume {
+  available: boolean;
+  reason: string | null;
+  bands: { strike: number; buy: number; sell: number; total: number }[];
+  max_total?: number;
+  covered?: number;
+  /** Mass outside the strike window — surfaced, never normalised away. */
+  off_frame?: number;
+  off_frame_pct?: number | null;
+}
+
+/** One futures contract available to the Volume Footprint desk. */
+export interface VolumeFootprintContract {
+  expiry: string;
+  tradingsymbol: string;
+  instrument_token: number;
+  tick_size?: number | null;
+  rank?: number;
+  /** `near` = front month, `far` = next, then `+2`, `+3`. */
+  label?: string;
+}
+
+/**
+ * GEX reference levels overlaid on the profile chart. Same price axis as the
+ * profile: index for cash indices (basis-shifted), futures for MCX.
+ */
+export interface VolumeFootprintLevels {
+  underlying: string;
+  available: boolean;
+  reason: string | null;
+  asof?: string;
+  expiry?: string | null;
+  spot?: number | null;
+  call_wall?: number | null;
+  put_wall?: number | null;
+  flip?: number | null;
+  pin?: number | null;
+  /** Only `dominant` is a real gamma pin. */
+  pin_source?: string | null;
+  pos_gamma_peak?: number | null;
+  neg_gamma_peak?: number | null;
+  gamma_regime?: string | null;
+}
+
+/** One strike in the OI ladder beside the volume profile. */
+export interface VolumeFootprintOiRow {
+  strike: number;
+  /** OI at the session-open capture (09:20 IST), or the prev-close fallback. */
+  ce_open_oi: number | null;
+  pe_open_oi: number | null;
+  ce_oi: number | null;
+  pe_oi: number | null;
+  /** Current minus baseline. `null` means no baseline was captured — not zero. */
+  ce_doi: number | null;
+  pe_doi: number | null;
+  /** ΔOI as a share of the baseline. `null` on a zero or missing baseline. */
+  ce_doi_pct: number | null;
+  pe_doi_pct: number | null;
+  /** Null unless BOTH sides are measured. */
+  net_doi: number | null;
+  /** "open" | "prev_close" | null — which baseline this side actually used. */
+  ce_oi_base_source: string | null;
+  pe_oi_base_source: string | null;
+  /** Session volume in this strike's band. Null when the session is too thin. */
+  volume: number | null;
+  buy_volume: number | null;
+  sell_volume: number | null;
+}
+
+export interface VolumeFootprintOiLadder {
+  underlying: string;
+  available: boolean;
+  reason: string | null;
+  asof?: string;
+  expiry?: string | null;
+  spot?: number | null;
+  atm_strike?: number | null;
+  strike_step?: number;
+  rows: VolumeFootprintOiRow[];
+  oi_baseline_mode?: string | null;
+  oi_baseline_note?: string | null;
+  oi_baseline_open_count?: number | null;
+  oi_baseline_prev_close_count?: number | null;
+  total_ce_doi?: number | null;
+  total_pe_doi?: number | null;
+  /** Shared bar scale across both sides, so equal lengths mean equal contracts. */
+  max_abs_doi?: number | null;
+  volume_available?: boolean;
+  volume_reason?: string | null;
+  price_axis?: string;
+}
+
+/** One prior session in the tilt comparison window. */
+export interface TiltHistoryPoint {
+  date: string;
+  tilt_pp: number;
+  /** "live" = sampled as the session ran; "backfill" = recomputed later. */
+  source: string;
+}
+
+export interface VolumeFootprintTiltHistory {
+  underlying: string;
+  available: boolean;
+  /** "too_early" | "no_history" | "window_too_thin" | a profile reason. */
+  reason: string | null;
+  /** Elapsed session minute both sides of the comparison are read at. */
+  checkpoint_min: number | null;
+  current_tilt_pp: number | null;
+  current_bars?: number | null;
+  balance_verdict?: string | null;
+  contract?: string | null;
+  dead_zone_pp?: number;
+  /** Prior sessions in the window. Never render a percentile without it. */
+  n: number;
+  window: number;
+  percentile?: number;
+  median?: number;
+  min?: number;
+  max?: number;
+  /** How many of the n are recomputed rather than observed live. */
+  backfilled?: number;
+  first_date?: string;
+  last_date?: string;
+  series?: TiltHistoryPoint[];
+}
+
+export type ExpiryPinState = "no_pin" | "shifting" | "stable" | "locked";
+
+/** One strike in the pressure ladder. */
+export interface ExpiryMagnetStrike {
+  strike: number;
+  /** Gross dealer gamma at the strike, ₹. |CE γ| + |PE γ|. */
+  gamma: number;
+  /** Signed — a magnet on short dealer gamma reads differently from long. */
+  net_gamma: number;
+  distance_pts: number;
+  distance_sigma: number;
+  /** exp(−d²/2σ²) — the settle-probability weight. */
+  weight: number;
+  /** Γ × weight, normalised so the leader is 1.0. The sort key. */
+  pressure: number;
+  /** Raw gamma share, for seeing where pressure and gamma invert. */
+  gamma_share: number;
+  rank: number;
+}
+
+/**
+ * Expiry Magnet: which strike is pulling settlement, and how hard.
+ *
+ * `conviction.calibrated` is false until the daily_pin trail can fit the
+ * weights against outcomes — the score is a summary of its four components,
+ * not an independent measurement.
+ */
+export interface ExpiryMagnet {
+  pin: number;
+  pin_gamma: number;
+  pin_net_gamma: number;
+  distance_pts: number;
+  distance_sigma: number;
+  sigma_pts: number | null;
+  dte: number | null;
+  /** √(t_ref / t_now): how much harder the clock is squeezing than at t_ref. */
+  time_boost: number | null;
+  time_boost_reference_dte: number;
+  runner_up: number | null;
+  runner_up_pressure: number | null;
+  margin: number | null;
+  leader_share: number;
+  stability_pct: number | null;
+  state: ExpiryPinState | string;
+  state_label: string;
+  state_description: string;
+  conviction: {
+    score: number | null;
+    parts: Record<string, number | null>;
+    weights: Record<string, number>;
+    calibrated: boolean;
+  };
+  top: ExpiryMagnetStrike[];
+  ladder: ExpiryMagnetStrike[];
+  thresholds: {
+    min_leader_share: number;
+    dominant_margin: number;
+    held_stability_pct: number;
+  };
+}
+
+export type GammaRegimeState =
+  | "unmeasured"
+  | "pinned"
+  | "coiled_box"
+  | "short_gamma_trend"
+  | "long_gamma_drift"
+  | "transition"
+  | "mixed";
+
+/** One key level as points and σ from spot (signed: + above, − below). */
+export interface GammaSigmaLevel {
+  level: number | null;
+  pts: number | null;
+  sigma: number | null;
+}
+
+/**
+ * Structural state: gamma pin vs volume POC, every level in σ, and a
+ * classification with its evidence.
+ *
+ * Describes the book only — it carries no directional or positional
+ * suggestion, and a backend test enforces that it stays that way.
+ */
+export interface GammaRegime {
+  state: GammaRegimeState | string;
+  label: string;
+  description: string;
+  evidence: string[];
+  sigma1_pts: number | null;
+  confluence: {
+    pin: number | null;
+    poc: number | null;
+    gap_pts: number | null;
+    gap_steps: number | null;
+    /** null = could not compare, which is not the same as "they agree". */
+    aligned: boolean | null;
+    confluence_steps: number;
+    pin_in_value: boolean | null;
+    value_area: { low: number; high: number; width_pts: number } | null;
+  };
+  levels: Record<string, GammaSigmaLevel>;
+  features: {
+    gamma_sign: "positive" | "negative" | null;
+    flip_sigma: number | null;
+    flip_near: boolean | null;
+    box_pts: number | null;
+    box_sigma: number | null;
+    spot_in_box: boolean | null;
+    pin_is_dominant: boolean | null;
+    pin_gates_passed: boolean | null;
+    containment_pct: number | null;
+    containment_holds: boolean | null;
+    hhi_band: string | null;
+    overlap_pct: number | null;
+    volume_balanced: boolean | null;
+    confluence_aligned: boolean | null;
+    confluence_gap_steps: number | null;
+    pin: number | null;
+  };
+}
+
+export type GammaPinWindow = "15m" | "30m" | "60m" | "session";
+
+/**
+ * Pin strength: hard gates plus components, deliberately with **no blended
+ * score** — the weights are not calibrated yet. `null` on any field means "could
+ * not be measured", which is different from a failed gate.
+ */
+export interface GammaPinLock {
+  window: GammaPinWindow | string;
+  window_minutes: number | null;
+  pin: number | null;
+  /** Modal pin across the window — the anchor, not the latest tick's pin. */
+  pin_mode: number | null;
+  pin_source?: string | null;
+  gates: {
+    /** Only a `dominant` pin is a real gamma pin. */
+    pin_is_dominant: boolean | null;
+    dealers_long_gamma: boolean | null;
+    long_gamma_share: number | null;
+    passed: boolean | null;
+  };
+  components: {
+    stability_pct: number | null;
+    /** Share of *minutes* spent within `containment_steps` of the pin. */
+    containment_pct: number | null;
+    containment_steps: number;
+    crossings: number | null;
+    crossings_per_hour: number | null;
+    flip_room_sigma: number | null;
+    flip_room_ok: boolean | null;
+    pin_doi: number | null;
+    pin_doi_direction: "writing" | "unwinding" | "flat" | string | null;
+  };
+  breaker: {
+    level: number | null;
+    direction: "above" | "below" | string | null;
+    label: string;
+  };
+  samples: { ticks: number; minutes: number };
+  /** Plain-language reasons the gates did not pass. */
+  reasons: string[];
+}
+
 export interface GammaConviction {
   score: number | null;
   delta: number | null;
@@ -1064,6 +1504,53 @@ export interface GammaReferenceLevels {
   prev_week_high?: number | null;
   prev_week_low?: number | null;
   prev_week_close?: number | null;
+}
+
+/** Additive measurement-quality block (options/hhi_stats.py). Never affects the
+ *  existing HHI fields — it says how much to believe them. */
+export interface HhiCohort {
+  n_total: number;
+  today_dte: number | null;
+  today_bucket: string | null;
+  eta_sq: number | null;
+  min_cohort_for_percentile: number;
+  mixed: { n: number; mean: number; percentile: number | null; vs_mean_pct?: number | null } | null;
+  cohort: {
+    bucket: string;
+    n: number;
+    mean: number;
+    vs_mean_pct: number | null;
+    percentile: number | null;
+  } | null;
+}
+
+export interface HhiContribution {
+  strike: number;
+  share: number;
+  share_sq: number;
+  pct_of_index: number;
+  cum_pct: number;
+  d_hhi: number;
+  rank: number;
+}
+
+export interface HhiStats {
+  n_strikes: number | null;
+  floor: number | null;
+  hhi: number | null;
+  hhi_norm: number | null;
+  se: number | null;
+  se_norm: number | null;
+  hill: { order: number | "inf"; n_eff: number | null }[] | null;
+  quality: {
+    dropped_share: number | null;
+    inflation: number | null;
+    legs_quoted: number | null;
+    legs_total: number | null;
+    legs_dropped_pct: number | null;
+  };
+  cohort: HhiCohort | null;
+  contributions: HhiContribution[] | null;
 }
 
 export interface GammaSnapshot {
@@ -1104,6 +1591,12 @@ export interface GammaSnapshot {
   primary_weight?: number;
   vanna_strip?: GammaVannaStrip | null;
   concentration?: GammaConcentration | null;
+  pin_lock?: GammaPinLock | null;
+  volume_profile?: VolumeProfileSnapshot | null;
+  strike_volume?: GammaStrikeVolume | null;
+  regime?: GammaRegime | null;
+  expiry_magnet?: ExpiryMagnet | null;
+  hhi_stats?: HhiStats | null;
   conviction?: GammaConviction | null;
   momentum?: GammaMomentum | null;
   market_read?: GammaMarketRead | null;
@@ -1466,6 +1959,128 @@ export interface IvSmileSnapshot {
   updated_at: string;
 }
 
+export interface IvSkewConfig {
+  underlyings: OiUnderlying[];
+  max_expiries: number;
+  target_delta: number;
+  refresh_seconds: number;
+  wing_delta: number;
+}
+
+export interface IvSkewPoint {
+  strike: number;
+  abs_delta: number;
+  iv: number | null;
+  option_type: "CE" | "PE";
+}
+
+/** How the 25Δ IV was obtained. */
+export type IvSkewQuality = "interpolated" | "extrapolated" | "unavailable";
+
+/** Whether the chain underneath was good enough to believe it. */
+export type IvSkewConfidence = "clean" | "degraded" | "unavailable";
+
+export interface IvSkewExpiry {
+  expiry: string;
+  dte: number;
+  ok: boolean;
+  quality: IvSkewQuality;
+  confidence: IvSkewConfidence;
+  warnings: string[];
+  error?: string;
+  half_width?: number | null;
+  forward?: number | null;
+  // Present only on resolved rows.
+  tte_years?: number;
+  forward_basis?: number;
+  forward_spread_bps?: number;
+  atm_strike?: number | null;
+  atm_iv?: number | null;
+  atm_parity_gap?: number | null;
+  call_iv?: number | null;
+  put_iv?: number | null;
+  call_quality?: IvSkewQuality;
+  put_quality?: IvSkewQuality;
+  call_delta_range?: [number, number] | null;
+  put_delta_range?: [number, number] | null;
+  call_bracket_gap?: number | null;
+  put_bracket_gap?: number | null;
+  risk_reversal?: number | null;
+  butterfly?: number | null;
+  legs_resolved?: number;
+  legs_dropped?: Record<string, number>;
+  points?: IvSkewPoint[];
+}
+
+export interface IvSkewSnapshot {
+  underlying: OiUnderlying;
+  label: string;
+  exchange: string;
+  reference: number;
+  reference_source: string;
+  strike_step: number;
+  target_delta: number;
+  expiries: IvSkewExpiry[];
+  updated_at: string;
+}
+
+export interface IvSkewDailyPoint {
+  date: string;
+  underlying: OiUnderlying;
+  expiry: string;
+  rank: number;
+  dte: number | null;
+  rr: number | null;
+  fly: number | null;
+  atm_iv: number | null;
+  call_iv: number | null;
+  put_iv: number | null;
+  forward_basis: number | null;
+  parity_gap: number | null;
+  confidence: IvSkewConfidence;
+  quality: IvSkewQuality;
+  reference: number | null;
+  ts: string | null;
+  samples: number;
+}
+
+export interface IvSkewDailySeries {
+  underlying: OiUnderlying;
+  rank: number;
+  clean_only: boolean;
+  points: IvSkewDailyPoint[];
+  /** Sessions held back by clean_only — surfaced, never silently dropped. */
+  excluded_degraded: string[];
+}
+
+export interface IvSkewIntradayRow {
+  expiry: string;
+  dte: number;
+  rank: number;
+  ok: boolean;
+  confidence: IvSkewConfidence;
+  quality: IvSkewQuality;
+  rr?: number | null;
+  fly?: number | null;
+  atm_iv?: number | null;
+}
+
+export interface IvSkewIntradaySample {
+  ts: string;
+  session_date: string;
+  underlying: OiUnderlying;
+  reference: number | null;
+  reference_source: string;
+  expiries: IvSkewIntradayRow[];
+}
+
+export interface IvSkewSeries {
+  underlying: OiUnderlying;
+  session_date: string | null;
+  samples: number;
+  points: IvSkewIntradaySample[];
+}
+
 export interface ArbitrageConfig {
   default_exchanges: string[];
   supported_exchanges: string[];
@@ -1508,6 +2123,184 @@ export interface ArbitrageSnapshot {
   generated_at: string;
   rows: ArbitrageRow[];
   updated_at: string;
+}
+
+// --- Options Arbitrage desk (/oarb) -----------------------------------------
+
+export interface OptArbLeg {
+  exchange: string;
+  tradingsymbol: string;
+  segment: string;
+  side: "BUY" | "SELL";
+  price: number;
+  units: number;
+  strike?: number;
+  option_type?: string;
+  expiry?: string;
+}
+
+export interface OptArbPayoffPoint {
+  spot: number;
+  gross: number;
+  net: number;
+}
+
+export interface OptArbPayoff {
+  points: OptArbPayoffPoint[];
+  strikes: number[];
+  spot: number | null;
+  charges: number;
+  assumptions: string[];
+  summary: {
+    flat?: boolean;
+    max_profit?: number;
+    max_loss?: number;
+    profit_at_spot?: number | null;
+    breakevens?: number[];
+    risk_free?: boolean;
+    unbounded_loss?: boolean;
+    range?: [number, number];
+  };
+}
+
+export interface OptArbRow {
+  family: "xcontract" | "butterfly" | "vertical" | "box";
+  tier: "A" | "B";
+  id: string;
+  net: number;
+  gross: number;
+  cost: number;
+  legs: OptArbLeg[];
+  warnings: string[];
+  max_lots?: number;
+  underlying?: string;
+  exchange?: string;
+  expiry?: string;
+  option_type?: string;
+  strike?: number;
+  width?: number;
+  lower_strike?: number;
+  upper_strike?: number;
+  violation?: string | null;
+  direction?: string;
+  label?: string;
+  edge_per_unit?: number;
+  unit?: string;
+  ratio?: number;
+  mini_lots?: number;
+  exercise?: { applies: boolean; reason: string; intrinsic: number; stt: number };
+  payoff?: OptArbPayoff;
+}
+
+export interface OptArbPair {
+  key: string;
+  big: string;
+  mini: string;
+  exchange: string;
+  label: string;
+  unit: string;
+  ratio: number;
+  clean: boolean;
+  reason: string;
+  front_clean: boolean;
+  front_reason: string;
+  front_expiry: { big: string | null; mini: string | null; matched: boolean };
+  referenced_future: { big: string | null; mini: string | null; matched: boolean };
+  shared_expiries: string[];
+  clean_expiries: string[];
+}
+
+export interface OptArbPairs {
+  pairs: OptArbPair[];
+  counts: { total: number; clean: number };
+}
+
+export interface OptArbXCell {
+  edge_per_unit: number;
+  gross: number;
+  cost: number;
+  net: number;
+  big_price: number;
+  mini_price: number;
+  max_lots: number;
+  passes: boolean;
+}
+
+export interface OptArbXSheet {
+  pair: OptArbPair;
+  clean: boolean;
+  reason: string;
+  option_type: string;
+  lots: number;
+  threshold: number;
+  unit: string;
+  ratio: number;
+  expiry: { big: string | null; mini: string | null; matched: boolean };
+  forward: { big: number | null; mini: number | null };
+  basis: { value: number | null; unit: string; note: string };
+  atm_strike: number | null;
+  rows: Array<{ strike: number; buy: OptArbXCell | null; sell: OptArbXCell | null }>;
+  skipped: string | null;
+}
+
+export interface OptArbConfig {
+  min_net_rs: number;
+  lots: number;
+  require_clean: boolean;
+  require_depth: boolean;
+  families: string[];
+  strike_window: number;
+  rate_pct: number;
+  underlyings: Array<{ name: string; exchange: string }>;
+  rates: Record<string, Record<string, number | boolean | string>>;
+  rates_asof: string;
+}
+
+export interface OptArbScan {
+  generated_at: string;
+  families: string[];
+  pairs: OptArbPair[];
+  underlyings: Array<{
+    underlying: string;
+    exchange: string;
+    expiry: string | null;
+    implied_spot: number | null;
+    rows: number;
+  }>;
+  counts: { rows: number; tier_a: number; tier_b: number; instruments_quoted: number };
+  rows: OptArbRow[];
+  skipped: Record<string, unknown>;
+}
+
+export interface OptArbSheetCell {
+  strike: number;
+  width: number;
+  buy: number | null;
+  sell: number | null;
+  violation: string | null;
+  net: number | null;
+}
+
+export interface OptArbSheet {
+  family: string;
+  underlying: string;
+  exchange: string;
+  expiry: string;
+  option_type: string;
+  strike_step: number;
+  units_per_lot: number;
+  widths: string[];
+  rows: Array<{ strike: number; cells: Record<string, OptArbSheetCell | null> }>;
+  violations: OptArbRow[];
+  skipped: string | null;
+}
+
+export interface OptArbExpiries {
+  underlying: string;
+  exchange: string;
+  expiries: string[];
+  segment: string;
+  physically_settled: boolean;
 }
 
 export type OiProfileUnderlying = "NIFTY" | "BANKNIFTY" | "FINNIFTY" | "SENSEX";
@@ -1647,6 +2440,14 @@ export type OrderSizeMode = "lots" | "qty";
 export interface RollingStraddleConfig extends StrategySettings {
   underlying: RollingUnderlying;
   expiry: string;
+  /** Candle the runner reads for signals and for the bar-close exit.
+   *
+   *  Required, not optional: `rolling_straddle_store` ships it in the defaults
+   *  so every config the API returns carries one, and the page renders
+   *  `config.timeframe` unconditionally. It was simply absent from this type —
+   *  eight tsc errors on a desk that places real orders, invisible because
+   *  `vite build` does not typecheck. */
+  timeframe: Timeframe;
   entry_start: string;
   order_type: "MARKET" | "LIMIT";
   product: "MIS" | "NRML";
@@ -1663,6 +2464,65 @@ export interface RollingStraddleConfig extends StrategySettings {
   exit_on_bar_close_only?: boolean;
   /** Exit #1: TF close against entry (Short above / Long below). Default true. */
   entry_exit_enabled?: boolean;
+}
+
+/** One rung of the rolling-straddle exit ladder — `_leg_exit_params` in
+ *  execution/rolling_straddle.py builds these as plain dict literals.
+ *
+ *  Note there is no `label` field. The row names itself with `category`; the
+ *  only `*_label` keys the producer emits (`zone_exit_label`,
+ *  `trade_side_label`) sit one level up on ExecutionExitTriggers.
+ */
+export interface ExitLevel {
+  order: number;
+  category: "Entry" | "ATR" | "ST1" | "SL" | "Target";
+  /** Null on a rung the runner cannot price yet — those carry `missing: true`. */
+  price: number | null;
+  triggered: boolean;
+  /** Human-readable condition, e.g. "Long: 5min close below entry 214.50". */
+  rule: string;
+  /** False for a rung switched off by config (ATR TSL disabled, say). */
+  enabled: boolean;
+  distance?: number;
+  source?: string;
+  missing?: boolean;
+  dynamic?: boolean;
+}
+
+/** `exit_triggers` on an execution-queue item.
+ *
+ *  Two disjoint shapes reach this field, which is why every key is optional:
+ *  the rolling-straddle source passes the leg's whole `exit_params` (or a
+ *  three-key stub when the ladder has not been built), and the watchlist source
+ *  passes `{exit_label, exit_line, st_exit_price, st_exit_label}`. Both are
+ *  produced in execution/execution_queue.py.
+ */
+export interface ExecutionExitTriggers {
+  next_exit?: ExitLevel | null;
+  exit_levels?: ExitLevel[];
+  position_side?: "long" | "short" | null;
+  trade_side_label?: string;
+  zone_exit_label?: string | null;
+  zone_exit_level?: number | null;
+  zone_exit_triggered?: boolean;
+  zone_exit_at_ltp?: boolean;
+  zone_exit_ltp_distance?: number;
+  in_hold_zone?: boolean;
+  st1?: number | null;
+  signal_close?: number | null;
+  force_exit?: string | null;
+  force_exit_due?: boolean;
+  session_end?: string | null;
+  timeframe?: string;
+  st_method?: string | null;
+  entry_exit_enabled?: boolean;
+  atr_tsl_enabled?: boolean;
+  entry_source?: "fill" | "kite_avg" | null;
+  /** Watchlist source only. */
+  exit_label?: string | null;
+  exit_line?: number | null;
+  st_exit_price?: number | null;
+  st_exit_label?: string | null;
 }
 
 export interface ExecutionQueueItem {
@@ -1682,7 +2542,7 @@ export interface ExecutionQueueItem {
   entry_price?: number | null;
   ltp?: number | null;
   pnl?: number | null;
-  exit_triggers?: Record<string, unknown> | null;
+  exit_triggers?: ExecutionExitTriggers | null;
   signal_note?: string | null;
   actions: string[];
   meta?: Record<string, unknown>;
@@ -2283,9 +3143,68 @@ export interface PricingDeskSnapshot {
   note?: string;
 }
 
+/** `bs` block of POST /pricing/calculate — `pricing.bs_engine.solve_iv_and_greeks`.
+ *
+ *  The four core greeks are always present: when no IV can be solved the engine
+ *  returns `{delta, gamma, theta, vega}` all null rather than omitting them. The
+ *  second-order greeks below it are NOT — that fallback branch drops them
+ *  entirely, which is why they are optional and the core four are not.
+ */
+export interface PricingBsResult {
+  option_type: "CE" | "PE";
+  spot: number;
+  strike: number;
+  tte_years: number;
+  risk_free_rate: number;
+  market_price: number | null;
+  /** Solved from `market_price`, in PERCENT. `iv_decimal` is the same number as a fraction. */
+  iv: number | null;
+  iv_decimal: number | null;
+  /** Percent. The vol fair value was priced at: the supplied model IV, else the solved one. */
+  model_iv: number | null;
+  bs_fair_value: number | null;
+  /** `market_price - bs_fair_value`, rupees. Null unless both exist. */
+  edge: number | null;
+  edge_pct: number | null;
+  rich_cheap: "rich" | "cheap" | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  vanna?: number | null;
+  rho?: number | null;
+  charm?: number | null;
+  vomma?: number | null;
+  zomma?: number | null;
+  speed?: number | null;
+  color?: number | null;
+}
+
+/** `heston` block — `pricing.heston_cos.heston_cos_price`.
+ *
+ *  Two shapes. On invalid inputs (spot/strike/tte <= 0) it returns only
+ *  `{price: null, error}`; everything else is absent, hence optional. The full
+ *  shape can still carry null prices when the expansion does not converge.
+ */
+export interface PricingHestonResult {
+  price: number | null;
+  /** Present only on the short shape above. */
+  error?: string;
+  model?: string;
+  option_type?: "CE" | "PE";
+  spot?: number;
+  strike?: number;
+  tte_years?: number;
+  call_price?: number | null;
+  put_price?: number | null;
+  params?: Record<string, number>;
+  n_terms?: number;
+}
+
 export interface PricingCalcResult {
-  bs: Record<string, number | string | null>;
-  heston?: Record<string, number | null> | null;
+  bs: PricingBsResult;
+  /** Null unless the request asked for it (`include_heston`). */
+  heston?: PricingHestonResult | null;
 }
 
 /** IV vs GARCH-forecast realized vol desk — GET /dashboard/iv-vs-garch/{config,data} */
@@ -2631,4 +3550,419 @@ export interface VelocityChart {
     contemporaneous: number | null;
     interpretation: string;
   };
+}
+
+/* ---------------------------------------------------------------------------
+ * Theta Decay desk (/decay/*)
+ *
+ * Reads the same archive as Delta Velocity — hence the reuse of
+ * VelocityContext and VelocityLagPoint rather than near-identical copies.
+ * ------------------------------------------------------------------------ */
+
+export interface ThetaDecayMinute {
+  ts: string;
+  clock: string;
+  spot: number;
+  /** ATM straddle burn, re-struck each minute against that minute's spot. */
+  burn_straddle: number | null;
+  /** Fixed at the session's closing ATM strike — a different question. */
+  burn_atm_ce: number | null;
+  burn_atm_pe: number | null;
+  burn_med: number | null;
+}
+
+export interface ThetaBurnBucket {
+  dte: number;
+  n: number;
+  p50: number;
+  p95: number;
+  expiry: string;
+}
+
+export interface ThetaBurnStrike {
+  strike: number;
+  option_type: string;
+  premium: number | null;
+  theta: number | null;
+  burn_pct_day: number | null;
+}
+
+/** Why a capture ratio is or is not worth reading. See features.capture_quality. */
+export type ThetaCaptureQuality =
+  | "ok"
+  | "too_few_windows"
+  | "theta_too_small"
+  | "vega_dominated"
+  | "no_data";
+
+export interface ThetaCaptureBucket {
+  dte: number;
+  /** Rows: one per (contract, window). Not a sample count — see time_windows. */
+  windows: number;
+  /** Distinct clock windows. The strikes inside one window are not independent. */
+  time_windows: number;
+  capture: number | null;
+  quality: ThetaCaptureQuality;
+  /** Share of absolute price movement the theta term explains — the honesty number. */
+  theta_share: number | null;
+  vega_share: number | null;
+  theoretical: number;
+  realized: number;
+}
+
+export interface ThetaDecayChart {
+  underlying: string;
+  session_date: string | null;
+  atm_strike: number | null;
+  expiries: string[];
+  selected_expiry: string | null;
+  contracts: number;
+  step: number;
+  context: VelocityContext;
+  minutes: ThetaDecayMinute[];
+  burn_by_dte: ThetaBurnBucket[];
+  burn_by_strike: ThetaBurnStrike[];
+  capture: {
+    horizon_min: number;
+    by_dte: ThetaCaptureBucket[];
+    /** Always populated — explains an empty or partly-gated table. */
+    note: string;
+  };
+}
+
+export interface ThetaVelocityMinute {
+  ts: string;
+  clock: string;
+  spot: number;
+  tau_med: number | null;
+  tau_max: number | null;
+}
+
+export interface ThetaVelocityChart {
+  underlying: string;
+  session_date: string | null;
+  selected_expiry: string | null;
+  minutes: ThetaVelocityMinute[];
+  thresholds: { p95?: number | null; p99?: number | null };
+  blanks: string;
+  correlation: {
+    n: number;
+    lag_profile: VelocityLagPoint[];
+    best_lag: number | null;
+    best_corr?: number | null;
+    contemporaneous: number | null;
+    interpretation: string;
+  };
+}
+
+export interface ThetaDecayStatus {
+  source: string;
+  collector_alive: boolean;
+  underlyings: string[];
+  coverage: VelocityCoverage;
+  defaults: {
+    horizon_min: number;
+    min_premium: number;
+    min_theta_share: number;
+    max_vega_share: number;
+    risk_free_rate: number;
+    dividend_yield: number;
+  };
+}
+
+// --- Option Chain Build-Up (/buildup) ---------------------------------------
+
+export type BuildupClass =
+  | "long_buildup"
+  | "short_buildup"
+  | "short_covering"
+  | "long_unwinding";
+
+export interface BuildupCell {
+  oi: number | null;
+  d_oi: number | null;
+  d_oi_pct: number | null;
+  cum: number | null;
+  cum_pct: number | null;
+  ltp: number | null;
+  d_price: number | null;
+  volume: number | null;
+  /** Traded volume IN this bucket (archive stores cumulative; this is the diff). */
+  d_volume: number | null;
+  cum_volume: number | null;
+  /** Buy-minus-sell volume by the quote rule. 0 with unclassified_vol > 0 means
+   *  volume traded that could not be attributed — not a balanced market. */
+  delta_vol: number | null;
+  cum_delta_vol: number | null;
+  unclassified_vol: number | null;
+  cls: BuildupClass | null;
+  breach: boolean;
+}
+
+export interface BuildupSide {
+  baseline: number | null;
+  latest_oi: number | null;
+  latest_ltp: number | null;
+  total_delta: number | null;
+  total_delta_pct: number | null;
+  breach: boolean;
+  cells: BuildupCell[];
+}
+
+export interface BuildupRow {
+  strike: number;
+  atm: boolean;
+  ce: BuildupSide;
+  pe: BuildupSide;
+}
+
+export interface BuildupBucket {
+  key: string;
+  end: string;
+  spot: number | null;
+}
+
+export interface BuildupScale {
+  p95: number | null;
+  p50: number | null;
+  max: number | null;
+}
+
+export interface BuildupGrid {
+  underlying: string;
+  expiry: string;
+  session_date: string;
+  spot: number | null;
+  atm: number | null;
+  timeframe_min: number;
+  strike_range: string;
+  baseline_mode: string;
+  buckets: BuildupBucket[];
+  rows: BuildupRow[];
+  scale: {
+    ce: Record<string, BuildupScale>;
+    pe: Record<string, BuildupScale>;
+  };
+  totals: {
+    ce_oi: number;
+    pe_oi: number;
+    ce_delta: number;
+    pe_delta: number;
+    pcr_oi: number | null;
+    pcr_delta: number | null;
+    strikes: number;
+  };
+  class_codes: Record<BuildupClass, string>;
+  thresholds: BuildupThresholds;
+  alert: BuildupAlert;
+  meta: {
+    source: string;
+    archive_strikes: number;
+    rendered_strikes: number;
+    widen: {
+      legs_requested: number;
+      legs_failed: number;
+      truncated: boolean;
+      strikes_not_listed: number[];
+    } | null;
+    notes: string[];
+    is_live: boolean;
+    generated_at: string;
+  };
+}
+
+export interface BuildupStatus {
+  source: string;
+  collector_alive: boolean;
+  underlyings: string[];
+  coverage: VelocityCoverage;
+  sessions: string[];
+  defaults: {
+    underlyings: string[];
+    timeframes_min: number[];
+    timeframe_min: number;
+    strike_ranges: string[];
+    strike_range: string;
+    baseline_modes: string[];
+    baseline_mode: string;
+    refresh_seconds: number;
+    max_widen_legs: number;
+    archive_strike_width: number;
+  };
+}
+
+export interface BuildupThresholds {
+  mode: "fixed" | "adaptive";
+  requested_mode: "fixed" | "adaptive";
+  dte_bucket: string;
+  /** Under "adaptive" this is the session mean; the bar varies per column. */
+  pct: number;
+  pct_min: number | null;
+  pct_max: number | null;
+  pct_by_bucket: number[];
+  cum_pct: number;
+  min_abs_oi: number;
+  alert_ratio: number;
+  fitted_sessions: number;
+}
+
+export interface BuildupAlertSide {
+  breached: number;
+  cells: number;
+  ratio: number;
+  alert: boolean;
+}
+
+export interface BuildupAlert {
+  bucket_index: number | null;
+  ce: BuildupAlertSide;
+  pe: BuildupAlertSide;
+  ratio_threshold: number;
+}
+
+export type BuildupLevelKey = "call_wall" | "put_wall" | "pin" | "flip" | "fut_poc";
+
+export interface BuildupLevel {
+  key: BuildupLevelKey;
+  label: string;
+  /** "strike" lands on a row; "price" sits between two and is drawn as a rule. */
+  kind: "strike" | "price";
+  price: number | null;
+  strike: number | null;
+  between: [number | null, number | null] | null;
+  in_ladder: boolean;
+  source: "live" | "history";
+  /** Non-null when the level is weaker than its label implies (a derived pin). */
+  note: string | null;
+}
+
+export interface BuildupLevels {
+  underlying: string;
+  session_date: string;
+  is_live: boolean;
+  source: "live" | "history";
+  asof: string | null;
+  gamma_regime: string | null;
+  gamma_expiry: string | null;
+  grid_expiry: string | null;
+  /** false = levels belong to a different expiry than the ladder. */
+  expiry_match: boolean | null;
+  levels: BuildupLevel[];
+  skipped: Record<string, string>;
+  /** Present only when requested with track=true. */
+  track?: BuildupTrack;
+}
+
+export interface BuildupTrackPoint {
+  key: string;
+  call_wall: number | null;
+  put_wall: number | null;
+  pin: number | null;
+  flip: number | null;
+  fut_poc: number | null;
+}
+
+export interface BuildupTrack {
+  underlying: string;
+  session_date: string;
+  expiry: string | null;
+  available: boolean;
+  trail_points: number;
+  buckets: number;
+  /** Buckets each level actually filled — "did not move" vs "never recorded". */
+  coverage: Record<string, number>;
+  points: BuildupTrackPoint[];
+}
+
+export interface BuildupFlowPoint {
+  key: string;
+  volume: number | null;
+  cum_volume: number | null;
+  close: number | null;
+}
+
+export interface BuildupFlow {
+  underlying: string;
+  session_date: string;
+  timeframe_min: number;
+  available: boolean;
+  reason: string | null;
+  coverage: number;
+  buckets: number;
+  max_volume: number | null;
+  total_volume: number | null;
+  points: BuildupFlowPoint[];
+}
+
+// --- Straddle Watch (/straddle-watch/*) -------------------------------------
+//
+// Derived from what `options/straddle_watch.build_straddle_watch_snapshot`
+// actually returns, not from what the page happens to read. These were imported
+// by StraddleWatchChart.tsx and straddle-watch.tsx and exported by nothing —
+// three type errors that `vite build` never surfaced, because it does not
+// typecheck.
+
+export type StraddleWatchRange = "1D" | "5D" | "30D";
+
+export interface StraddleWatchLeg {
+  tradingsymbol: string;
+  exchange: string;
+  instrument_token: number;
+  ltp: number | null;
+}
+
+/** Flattened from three builders: _fut_quote_summary, _spot_fair_summary, and
+ *  the pricing block. Every field is nullable because each can independently
+ *  fail to resolve — a missing future quote does not blank the IV. */
+export interface StraddleWatchSummary {
+  fut_symbol: string | null;
+  fut_tradingsymbol: string | null;
+  fut_ltp: number | null;
+  fut_chg: number | null;
+  fut_chg_pct: number | null;
+  fut_token: number | null;
+  fut_expiry: string | null;
+  asof: string | null;
+  fair_price: number | null;
+  fair_chg: number | null;
+  fair_chg_pct: number | null;
+  lot_size: number | null;
+  iv: number | null;
+  ivr: number | null;
+  ivp: number | null;
+  max_pain: number | null;
+  pcr: number | null;
+  straddle_ltp: number | null;
+  straddle_bs: number | null;
+  spot: number | null;
+}
+
+/** Parallel arrays on one time axis — `t[i]` indexes every other series. Entries
+ *  are nullable rather than gap-free: a bar the feed did not carry is a hole,
+ *  and the chart must draw a break there rather than joining across it. */
+export interface StraddleWatchSeries {
+  t: string[];
+  call_price: (number | null)[];
+  put_price: (number | null)[];
+  straddle_price: (number | null)[];
+  straddle_vwap: (number | null)[];
+  call_oi: (number | null)[];
+  put_oi: (number | null)[];
+  iv: (number | null)[];
+}
+
+export interface StraddleWatchSnapshot {
+  ok: boolean;
+  mode: string;
+  underlying: string;
+  expiry: string;
+  call_strike: number;
+  put_strike: number;
+  atm_strike: number;
+  range: StraddleWatchRange;
+  ce: StraddleWatchLeg;
+  pe: StraddleWatchLeg;
+  summary: StraddleWatchSummary;
+  series: StraddleWatchSeries;
+  updated_at: string;
 }
