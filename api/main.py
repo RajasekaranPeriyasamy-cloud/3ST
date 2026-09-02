@@ -39,6 +39,9 @@ from analysis.delta_velocity import collector as dv_collector
 from analysis.delta_velocity import store as delta_velocity_store
 from analysis.delta_velocity.runner import is_alive as delta_velocity_alive
 from analysis.delta_velocity.runner import last_report as delta_velocity_last_report
+from analysis.news_desk import feed as news_feed
+from analysis.news_desk import runner as news_runner
+from analysis.news_desk import store as news_store
 from analysis.delta_velocity.runner import start as start_delta_velocity_runner
 from analysis.delta_velocity.runner import stop as stop_delta_velocity_runner
 from analysis.iv_skew import build_iv_skew, iv_skew_config
@@ -193,6 +196,7 @@ async def _lifespan(app: FastAPI):
     start_analytics_scheduler()
     start_report_runner()
     start_delta_velocity_runner()
+    news_runner.start()
     iv_skew_runner.start()
     threading.Thread(target=warm_instruments_cache, name="instruments-warm", daemon=True).start()
     await start_ltp_feed()
@@ -873,6 +877,7 @@ def health() -> dict[str, Any]:
         "spread_templates": list(SPREAD_TEMPLATES.keys()),
         "st_methods": ["heikin_ashi", "regular", "hybrid"],
         "delta_velocity_runner_alive": delta_velocity_alive(),
+        "news_runner_alive": news_runner.is_alive(),
         "iv_skew_runner_alive": iv_skew_runner.is_alive(),
         **analytics_scheduler_status(),
         **report_runner_status(),
@@ -3792,6 +3797,103 @@ def oarb_costs(
     leg = oarb_costs.leg_cost(segment.upper(), side.upper(), price, units)  # type: ignore[arg-type]
     return {"rates_asof": oarb_costs.RATES_ASOF, "leg": leg.as_dict()}
 
+
+# --- Live Market News desk -------------------------------------------------
+# Prefix is /newsfeed, not /news, so a hard browser load of the SPA page /news
+# is not swallowed by is_api_path() in api/ui_static.py. Same trick as
+# /oarb <-> /opt-arb and /buildup <-> /chain-buildup.
+
+
+def _watchlist_symbols() -> list[str]:
+    """Symbols the operator is actually watching, for the 'News for Me' tab.
+
+    Both tradingsymbol and name are collected: an options leg carries
+    tradingsymbol NIFTY2671423900CE but name NIFTY, and it is the underlying
+    that headlines talk about.
+    """
+    try:
+        from watchlist_store import list_items
+
+        symbols: set[str] = set()
+        for item in list_items():
+            if item.get("status") == "closed":
+                continue
+            for key in ("tradingsymbol", "name"):
+                value = str(item.get(key) or "").strip().upper()
+                if value:
+                    symbols.add(value)
+        return sorted(symbols)
+    except Exception:
+        return []
+
+
+@app.get("/newsfeed/items")
+def newsfeed_items(
+    tab: str = Query("all", pattern="^(all|mine|actions)$"),
+    limit: int = Query(60, ge=1, le=300),
+    sentiment: str = Query("", pattern="^(|positive|negative|neutral)$"),
+    symbol: str = Query("", max_length=40),
+    since: str = Query("", max_length=40),
+    prices: bool = Query(True, description="Attach live LTP/change to resolved symbols"),
+) -> dict[str, Any]:
+    try:
+        return news_feed.build(
+            tab=tab,
+            limit=limit,
+            sentiment_filter=sentiment,
+            symbol=symbol.strip().upper(),
+            since=since.strip(),
+            watchlist_symbols=_watchlist_symbols() if tab == "mine" else None,
+            with_prices=prices,
+        )
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/newsfeed/sources")
+def newsfeed_sources() -> dict[str, Any]:
+    """Per-source health. A dead publisher shows here rather than emptying the feed."""
+    try:
+        return {
+            "sources": news_store.get_health(),
+            "last_poll": news_store.get_last_poll(),
+            "items": news_store.count(),
+            "runner_alive": news_runner.is_alive(),
+            "engine": news_runner.status()["engine"],
+        }
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.get("/newsfeed/config")
+def newsfeed_get_config() -> dict[str, Any]:
+    return news_store.get_config()
+
+
+@app.post("/newsfeed/config")
+def newsfeed_save_config(patch: dict[str, Any]) -> dict[str, Any]:
+    try:
+        saved = news_store.save_config(patch or {})
+        news_runner.wake()
+        return saved
+    except Exception as e:
+        raise _err(e) from e
+
+
+@app.post("/newsfeed/refresh")
+def newsfeed_refresh() -> dict[str, Any]:
+    """Poll now instead of waiting out the interval.
+
+    Wakes the existing runner rather than polling inline — a synchronous fetch of
+    eleven publishers would hold a request open for many seconds.
+    """
+    try:
+        if not news_runner.is_alive():
+            news_runner.start()
+        news_runner.wake()
+        return {"ok": True, "runner_alive": news_runner.is_alive()}
+    except Exception as e:
+        raise _err(e) from e
 
 @app.get("/api/meta")
 def api_meta() -> dict[str, str | bool]:

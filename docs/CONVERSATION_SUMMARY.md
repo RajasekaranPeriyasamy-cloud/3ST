@@ -1,8 +1,8 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-08-31  
+**Last updated:** 2026-09-02  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Gamma Density page de-duplicated — and three display defects it surfaced
+**Session focus:** Live Market News desk — RSS + NSE filings, sentiment, ticker resolution
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
@@ -10,7 +10,61 @@ This file captures recent development context from Cursor agent sessions. Full c
 
 ---
 
-## Session 2026-08-31 (last) — Gamma Density de-duplication
+## Session 2026-09-02 (last) — Live Market News desk
+
+New desk: `analysis/news_desk/` + `/newsfeed/*` + the SPA page `/news`. Eleven
+public sources (ten publisher RSS feeds and NSE corporate announcements), each
+headline scored for sentiment, tagged with a category, and matched to NSE
+tradingsymbols with live LTP attached at read time.
+
+**Why not the repo that prompted it.**
+`RelativelyBurberry/Indian-Stock-News-Sentiment-Analysis` is a Kaggle notebook,
+not a dashboard. Its method (label -> compound score -> per-stock aggregation) is
+worth copying; its ingestion is a reverse-engineered private Groww endpoint with
+no documented URLs, and its scorer is FinBERT — torch + transformers into a repo
+that places real orders, on a Python 3.14 venv where cp314 wheels are not
+assured. Public RSS keeps working; an undocumented endpoint breaks on the
+vendor's schedule.
+
+**The one that would have bitten silently.** All eleven sources went healthy
+standalone and `ProxyError` the moment the desk ran under uvicorn.
+`settings.apply_kite_proxy_env()` pins `HTTP(S)_PROXY` process-wide so no Kite
+call escapes the whitelisted static IP — and it deliberately **deletes
+`NO_PROXY`**, so nothing opts out via env. Every `requests` call in the process
+inherits it, ours included, and publisher traffic was being pushed through
+metered order egress. `analysis/news_desk/net.py` exists solely to hold
+`trust_env = False`; `test_news_sessions_bypass_the_kite_static_ip_proxy` pins
+it, because no test running outside the API process can catch this.
+
+**Ticker resolution is the soft part, and the guards are load-bearing.** A naive
+name match produced `GLOBAL`, `RETAIL`, `MOMENTUM`, `CONSUMER` and `DEFENCE` on
+ordinary market copy — all real NSE names — and 17.5k index keys, half of them
+ETF paper. Three rules took it to 8.7k keys and clean output: drop fund/ETF rows,
+refuse single generic English words, and require keys of five characters or fewer
+to appear **in caps** (a headline writes `BEML`, prose writes "beml"). Known
+cost: `BSE` is blocklisted, so a genuine BSE Ltd story gets no chip. Aliases live
+in `data/news_aliases.json` and are expected to grow — the instrument master says
+`INTERGLOBE AVIATION`, every headline says "IndiGo", and `TATAMOTORS` no longer
+exists post-demerger (`TMPV` / `TMCV`).
+
+**Scoring is free by default.** `NEWS_SENTIMENT_PROVIDER=lexicon` is a
+finance-tuned word list — offline, deterministic, no key — so the desk works on a
+fresh clone and the suite scores real fixture headlines with no network.
+`anthropic` is opt-in, batched, daily-capped, and always falls back to the
+lexicon: an unscored item is retried every poll forever, which on a paid backend
+is the expensive failure mode. Sentiment is stored on the item and keyed by a
+stable id, so a headline is scored once, ever.
+
+Not wired: BSE announcements. Its `AnnGetData` endpoint returned zero rows for
+every parameter combination tried, and NSE already carries the `symbol` field
+that was the point of using an exchange feed.
+
+The desk imports nothing from `broker/`, `execution/` or `risk/` and places no
+orders. Suite green at 1270.
+
+---
+
+## Session 2026-08-31 — Gamma Density de-duplication
 
 The page had grown by accretion: Profile was the original board, Concentration
 was where newer instruments landed, and both had come to answer "where is the

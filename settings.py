@@ -181,6 +181,48 @@ def equity_report_ready() -> bool:
     return anthropic_ready()
 
 
+_NEWS_PROVIDERS = {"lexicon", "anthropic"}
+
+
+def news_desk_config() -> dict:
+    """Ingestion + scoring settings for the Live Market News desk.
+
+    Defaults are deliberately zero-cost and offline-capable: the lexicon engine
+    needs no key and no network beyond the feeds themselves, so the desk works
+    on a fresh clone. ``anthropic`` is an opt-in upgrade that also produces the
+    category tags.
+    """
+    provider = env("NEWS_SENTIMENT_PROVIDER", "lexicon").lower()
+    if provider not in _NEWS_PROVIDERS:
+        provider = "lexicon"
+    try:
+        poll = int(env("NEWS_POLL_SEC", "60"))
+    except ValueError:
+        poll = 60
+    try:
+        cap = float(env("NEWS_LLM_DAILY_USD_CAP", "2"))
+    except ValueError:
+        cap = 2.0
+    try:
+        batch = int(env("NEWS_LLM_BATCH", "25"))
+    except ValueError:
+        batch = 25
+    return {
+        "provider": provider,
+        # Haiku by default: this is a classification task on short text, and the
+        # per-headline cost is what keeps the daily cap meaningful.
+        "model": env("NEWS_LLM_MODEL", "claude-haiku-4-5"),
+        "poll_sec": max(15, poll),
+        "daily_usd_cap": max(cap, 0.0),
+        "batch": max(1, min(batch, 50)),
+        "announcements": env("NEWS_ANNOUNCEMENTS", "1").lower() in {"1", "true", "yes", "on"},
+    }
+
+
+def news_llm_ready() -> bool:
+    return news_desk_config()["provider"] == "anthropic" and anthropic_ready()
+
+
 def data_dir() -> Path:
     d = _ROOT / "data"
     d.mkdir(parents=True, exist_ok=True)

@@ -3966,3 +3966,95 @@ export interface StraddleWatchSnapshot {
   series: StraddleWatchSeries;
   updated_at: string;
 }
+
+// --- Live Market News desk -------------------------------------------------
+
+export type NewsSentimentLabel = "positive" | "negative" | "neutral";
+
+export interface NewsSentiment {
+  label: NewsSentimentLabel;
+  score: number;
+  confidence: number;
+  category: string;
+  engine: "lexicon" | "anthropic";
+}
+
+/** Prices are attached at request time and are never persisted server-side —
+ *  `last_price` is absent whenever the broker read failed or the desk was
+ *  asked for a feed without quotes. */
+export interface NewsSymbol {
+  exchange: string;
+  tradingsymbol: string;
+  name: string;
+  instrument_token?: number;
+  last_price?: number;
+  change?: number;
+  change_pct?: number;
+}
+
+export interface NewsRelated {
+  id: string;
+  title: string;
+  publisher: string;
+  published_at: string;
+  url: string;
+  sentiment: NewsSentiment | null;
+}
+
+export interface NewsItem {
+  id: string;
+  title: string;
+  summary: string;
+  url: string;
+  publisher: string;
+  source_key: string;
+  /** 'action' items are exchange filings and live on the Corporate Actions tab. */
+  kind: "news" | "action";
+  published_at: string;
+  fetched_at: string;
+  symbols: NewsSymbol[];
+  sentiment: NewsSentiment | null;
+  also_reported_by?: string[];
+  related: NewsRelated[];
+  related_count: number;
+  extra?: { industry?: string | null; subject?: string };
+}
+
+export interface NewsLastPoll {
+  at: string | null;
+  added: number;
+  error: string;
+}
+
+export interface NewsFeedSnapshot {
+  items: NewsItem[];
+  tab: string;
+  total: number;
+  returned: number;
+  last_poll: NewsLastPoll;
+  generated_at: string;
+}
+
+export interface NewsSourceHealth {
+  key: string;
+  publisher: string;
+  ok: boolean;
+  count: number;
+  error: string;
+  checked_at: string;
+}
+
+export interface NewsSourcesSnapshot {
+  sources: NewsSourceHealth[];
+  last_poll: NewsLastPoll;
+  items: number;
+  runner_alive: boolean;
+  engine: {
+    provider: string;
+    model: string | null;
+    key_present?: boolean;
+    spent_today_usd?: number;
+    daily_usd_cap?: number;
+    capped?: boolean;
+  };
+}

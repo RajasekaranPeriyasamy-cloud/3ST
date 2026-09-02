@@ -28,6 +28,7 @@ import { Route as OiVarRouteImport } from './routes/oi-var'
 import { Route as OiTrackerRouteImport } from './routes/oi-tracker'
 import { Route as OiProfileRouteImport } from './routes/oi-profile'
 import { Route as OiMoversRouteImport } from './routes/oi-movers'
+import { Route as NewsRouteImport } from './routes/news'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as LatencyRouteImport } from './routes/latency'
@@ -140,6 +141,11 @@ const OiMoversRoute = OiMoversRouteImport.update({
   path: '/oi-movers',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NewsRoute = NewsRouteImport.update({
+  id: '/news',
+  path: '/news',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -238,6 +244,7 @@ export interface FileRoutesByFullPath {
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/news': typeof NewsRoute
   '/oi-movers': typeof OiMoversRoute
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
@@ -275,6 +282,7 @@ export interface FileRoutesByTo {
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/news': typeof NewsRoute
   '/oi-movers': typeof OiMoversRoute
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
@@ -313,6 +321,7 @@ export interface FileRoutesById {
   '/latency': typeof LatencyRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/news': typeof NewsRoute
   '/oi-movers': typeof OiMoversRoute
   '/oi-profile': typeof OiProfileRoute
   '/oi-tracker': typeof OiTrackerRoute
@@ -352,6 +361,7 @@ export interface FileRouteTypes {
     | '/latency'
     | '/live'
     | '/login'
+    | '/news'
     | '/oi-movers'
     | '/oi-profile'
     | '/oi-tracker'
@@ -389,6 +399,7 @@ export interface FileRouteTypes {
     | '/latency'
     | '/live'
     | '/login'
+    | '/news'
     | '/oi-movers'
     | '/oi-profile'
     | '/oi-tracker'
@@ -426,6 +437,7 @@ export interface FileRouteTypes {
     | '/latency'
     | '/live'
     | '/login'
+    | '/news'
     | '/oi-movers'
     | '/oi-profile'
     | '/oi-tracker'
@@ -464,6 +476,7 @@ export interface RootRouteChildren {
   LatencyRoute: typeof LatencyRoute
   LiveRoute: typeof LiveRoute
   LoginRoute: typeof LoginRoute
+  NewsRoute: typeof NewsRoute
   OiMoversRoute: typeof OiMoversRoute
   OiProfileRoute: typeof OiProfileRoute
   OiTrackerRoute: typeof OiTrackerRoute
@@ -620,6 +633,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OiMoversRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/news': {
+      id: '/news'
+      path: '/news'
+      fullPath: '/news'
+      preLoaderRoute: typeof NewsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -752,6 +772,7 @@ const rootRouteChildren: RootRouteChildren = {
   LatencyRoute: LatencyRoute,
   LiveRoute: LiveRoute,
   LoginRoute: LoginRoute,
+  NewsRoute: NewsRoute,
   OiMoversRoute: OiMoversRoute,
   OiProfileRoute: OiProfileRoute,
   OiTrackerRoute: OiTrackerRoute,
