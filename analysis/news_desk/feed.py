@@ -12,10 +12,11 @@ one, so a stock with five filings occupies one row rather than five.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import store
+from . import store, tickers
 
 # Cap on how many distinct symbols we ask the broker to quote for one page of
 # results. Kite accepts 500 per call; this is a page of feed, not a scan.
@@ -80,6 +81,43 @@ def attach_prices(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
+def _match_symbol(items: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
+    """Items about ``symbol`` — resolved chips **or** a mention in the text.
+
+    A resolved-only match would make the search box weaker than it looks. The
+    resolver is deliberately conservative and only ever ran against the text an
+    item had at ingest, so searching RELIANCE would silently drop headlines that
+    plainly say "Reliance" but were never tagged. Text terms come from
+    ``tickers.search_terms`` and are matched on a word boundary, so RELIANCE does
+    not also match RELIANCEPOWER.
+    """
+    target = symbol.strip().upper()
+    if not target:
+        return items
+
+    try:
+        terms = tickers.search_terms(target)
+    except Exception as exc:
+        # No instrument cache — fall back to the resolved-chip match rather than
+        # returning nothing.
+        _log(logging.INFO, "news_search_terms_unavailable", error=str(exc))
+        terms = [target]
+
+    patterns = [re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE) for t in terms if t]
+
+    matched: list[dict[str, Any]] = []
+    for item in items:
+        if any(
+            str(s.get("tradingsymbol", "")).upper() == target for s in (item.get("symbols") or [])
+        ):
+            matched.append(item)
+            continue
+        haystack = f"{item.get('title', '')} {item.get('summary') or ''}"
+        if any(p.search(haystack) for p in patterns):
+            matched.append(item)
+    return matched
+
+
 def _cluster(items: list[dict[str, Any]], window_days: int) -> list[dict[str, Any]]:
     """Collapse same-symbol items inside the window under the newest one."""
     cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat(
@@ -126,6 +164,7 @@ def build(
     limit: int = 60,
     sentiment_filter: str = "",
     symbol: str = "",
+    q: str = "",
     since: str = "",
     watchlist_symbols: list[str] | None = None,
     with_prices: bool = True,
@@ -158,12 +197,17 @@ def build(
             ]
 
     if symbol:
-        target = symbol.upper()
-        items = [
-            i
-            for i in items
-            if any(str(s.get("tradingsymbol", "")).upper() == target for s in (i.get("symbols") or []))
-        ]
+        items = _match_symbol(items, symbol)
+
+    if q:
+        needle = q.strip().lower()
+        if needle:
+            items = [
+                i
+                for i in items
+                if needle in i.get("title", "").lower()
+                or needle in (i.get("summary") or "").lower()
+            ]
 
     if sentiment_filter:
         wanted_label = sentiment_filter.lower()
@@ -173,8 +217,21 @@ def build(
         items = [i for i in items if i.get("published_at", "") > since]
 
     items.sort(key=lambda i: i.get("published_at", ""), reverse=True)
-    clustered = _cluster(items, int(config.get("cluster_days") or 7))
-    page = clustered[: max(1, limit)]
+
+    # Clustering groups by primary symbol, which is exactly wrong during a
+    # search: every hit for RELIANCE shares that symbol, so the whole result set
+    # would collapse into one row reading "+12 more" and the search would look
+    # broken. Someone who searched a stock wants the list, so show it flat.
+    searching = bool(symbol.strip() or q.strip())
+    if searching:
+        for item in items:
+            item["related"] = []
+            item["related_count"] = 0
+        rows = items
+    else:
+        rows = _cluster(items, int(config.get("cluster_days") or 7))
+
+    page = rows[: max(1, limit)]
 
     if with_prices:
         page = attach_prices(page)
@@ -182,7 +239,10 @@ def build(
     return {
         "items": page,
         "tab": tab,
-        "total": len(clustered),
+        "symbol": symbol.strip().upper(),
+        "q": q.strip(),
+        "clustered": not searching,
+        "total": len(rows),
         "returned": len(page),
         "last_poll": store.get_last_poll(),
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),

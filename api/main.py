@@ -3832,7 +3832,8 @@ def newsfeed_items(
     tab: str = Query("all", pattern="^(all|mine|actions)$"),
     limit: int = Query(60, ge=1, le=300),
     sentiment: str = Query("", pattern="^(|positive|negative|neutral)$"),
-    symbol: str = Query("", max_length=40),
+    symbol: str = Query("", max_length=40, description="NSE tradingsymbol — matches resolved chips AND text mentions"),
+    q: str = Query("", max_length=120, description="Free-text search over headline and summary"),
     since: str = Query("", max_length=40),
     prices: bool = Query(True, description="Attach live LTP/change to resolved symbols"),
 ) -> dict[str, Any]:
@@ -3842,6 +3843,7 @@ def newsfeed_items(
             limit=limit,
             sentiment_filter=sentiment,
             symbol=symbol.strip().upper(),
+            q=q.strip(),
             since=since.strip(),
             watchlist_symbols=_watchlist_symbols() if tab == "mine" else None,
             with_prices=prices,

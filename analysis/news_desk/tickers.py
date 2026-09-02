@@ -348,6 +348,40 @@ def resolve(title: str, summary: str = "", limit: int = 3) -> list[dict[str, Any
     return hits
 
 
+def search_terms(tradingsymbol: str) -> list[str]:
+    """Text forms that mean ``tradingsymbol``, for searching raw headline text.
+
+    Search has to be looser than resolution. ``resolve()`` is deliberately
+    conservative — it would rather miss a mention than tag the wrong stock, and
+    it only ran against the text a headline had *when it was ingested*. Someone
+    typing "RELIANCE" into the search box wants every headline that talks about
+    Reliance, including ones the resolver passed over and ones that arrived
+    before an alias existed.
+
+    So: the symbol, its cleaned registered name, and every alias pointing at it.
+    A false positive here costs a stray row in a search someone asked for, which
+    is a far cheaper mistake than a wrong ticker chip on the main feed.
+    """
+    target = (tradingsymbol or "").strip().upper()
+    if not target:
+        return []
+
+    terms = {target}
+    for key, meta in build_index():
+        if meta["tradingsymbol"] == target and len(key) >= 3:
+            terms.add(key)
+
+    # Aliases are keyed phrase -> symbol, so they are not all in the index under
+    # this symbol (only the cleaned form is).
+    for phrase, symbol in load_aliases().items():
+        if symbol.upper() == target:
+            cleaned = _clean_name(phrase)
+            if len(cleaned) >= 3:
+                terms.add(cleaned)
+
+    return sorted(terms, key=len, reverse=True)
+
+
 def reset_index() -> None:
     """Drop the cached index — used by tests and after an alias-file edit."""
     global _INDEX, _INDEX_BUILT

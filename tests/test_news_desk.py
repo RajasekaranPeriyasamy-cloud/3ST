@@ -482,3 +482,223 @@ def test_alias_file_overrides_seed(tmp_path, monkeypatch):
     path.write_text(json.dumps({"aliases": {"my company": "RELIANCE"}}), encoding="utf-8")
     monkeypatch.setattr(tickers, "ALIAS_FILE", path)
     assert tickers.load_aliases()["my company"] == "RELIANCE"
+
+
+# --- LLM daily spend cap -----------------------------------------------------
+
+
+@pytest.fixture
+def spend_store(tmp_path, monkeypatch):
+    """Point the spend ledger at a tmp file and start from empty."""
+    from analysis.news_desk import llm
+
+    monkeypatch.setattr(llm, "SPEND_FILE", tmp_path / "news_llm_spend.json")
+    monkeypatch.setattr(llm, "_SPEND", {})
+    return llm
+
+
+def test_spend_survives_a_restart(spend_store):
+    """The cap is per DAY, not per process.
+
+    This was the bug: _SPEND was in-memory, so every API restart handed the desk
+    a fresh budget. The desk restarts several times on a working day, so a "$2
+    daily cap" could be spent repeatedly.
+    """
+    llm = spend_store
+    llm._record_spend(1.25)
+    assert llm.spend_today_usd() == 1.25
+
+    # Simulate a process restart: drop the in-memory tally, reload from disk.
+    llm._SPEND.clear()
+    assert llm.spend_today_usd() == 0.0, "sanity — the tally really was cleared"
+    llm.load_persisted_spend()
+
+    assert llm.spend_today_usd() == 1.25, "spend must be restored from disk"
+
+
+def test_spend_accumulates_across_restarts(spend_store):
+    llm = spend_store
+    llm._record_spend(0.80)
+    llm._SPEND.clear()
+    llm.load_persisted_spend()
+    llm._record_spend(0.75)
+    assert llm.spend_today_usd() == pytest.approx(1.55)
+
+
+def test_cap_blocks_scoring_after_a_restart(spend_store, monkeypatch):
+    """Over-cap must stay over-cap across a restart, and fall back to lexicon."""
+    llm = spend_store
+    monkeypatch.setattr(
+        "settings.news_desk_config",
+        lambda: {
+            "provider": "anthropic", "model": "claude-haiku-4-5", "poll_sec": 60,
+            "daily_usd_cap": 2.0, "batch": 25, "announcements": False,
+        },
+    )
+    monkeypatch.setattr("settings.anthropic_api_key", lambda: "sk-test")
+
+    llm._record_spend(2.5)
+    assert llm.cap_status()["capped"] is True
+
+    llm._SPEND.clear()
+    llm.load_persisted_spend()
+    assert llm.cap_status()["capped"] is True, "restart must not clear the cap"
+
+    # No anthropic stub needed, and that is the point: the cap is checked before
+    # the SDK is imported, so an over-cap call cannot reach the network even in
+    # an environment where the package is not installed.
+    item = _item("Tata Steel profit jumps 40%", "2026-09-01T10:00:00+00:00")
+    assert llm.score_batch([item]) == {}
+
+
+def test_spend_ledger_prunes_old_days(spend_store):
+    from datetime import date, timedelta
+
+    llm = spend_store
+    stale = (date.today() - timedelta(days=llm.SPEND_RETENTION_DAYS + 5)).isoformat()
+    llm._SPEND[stale] = 9.99
+    llm._record_spend(0.10)
+    assert stale not in llm._SPEND
+    llm._SPEND.clear()
+    llm.load_persisted_spend()
+    assert stale not in llm._SPEND
+
+
+def test_corrupt_spend_ledger_does_not_crash(spend_store):
+    """A bad ledger loses the tally but must not take scoring down."""
+    llm = spend_store
+    llm.SPEND_FILE.write_text("{not json", encoding="utf-8")
+    llm.load_persisted_spend()
+    assert llm.spend_today_usd() == 0.0
+    llm._record_spend(0.5)
+    assert llm.spend_today_usd() == 0.5
+
+
+def test_unreadable_spend_file_does_not_break_a_poll(spend_store, monkeypatch):
+    """An unwritable ledger degrades to per-process, it does not raise."""
+    llm = spend_store
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(type(llm.SPEND_FILE), "write_text", boom)
+    llm._record_spend(0.25)
+    assert llm.spend_today_usd() == 0.25, "in-memory tally still works"
+
+
+# --- equity search -----------------------------------------------------------
+
+
+def test_search_terms_include_symbol_name_and_aliases(stub_index):
+    terms = tickers.search_terms("INDIGO")
+    assert "INDIGO" in terms
+    assert "INTERGLOBE AVIATION" in terms, "registered name must be searchable"
+    assert any("INTERGLOBE" in t for t in terms)
+    # Longest first, so a caller matching greedily hits the specific form first.
+    assert terms == sorted(terms, key=len, reverse=True)
+
+
+def test_search_terms_empty_for_blank_symbol(stub_index):
+    assert tickers.search_terms("") == []
+    assert tickers.search_terms("   ") == []
+
+
+def test_search_finds_untagged_text_mentions(clean_store, stub_index):
+    """The whole point: search is looser than resolution.
+
+    An item the resolver passed over must still be findable by name — otherwise
+    the search box is silently weaker than the ticker chips suggest.
+    """
+    tagged = _item(
+        "Hero MotoCorp shares slide 5%",
+        "2026-09-01T10:00:00+00:00",
+        symbols=[{"exchange": "NSE", "tradingsymbol": "HEROMOTOCO", "name": "HERO MOTOCORP"}],
+    )
+    untagged = _item("Analysts remain split on Hero MotoCorp after weak retails", "2026-09-01T09:00:00+00:00")
+    store.upsert_many([tagged, untagged])
+
+    found = feed.build(symbol="HEROMOTOCO", with_prices=False)
+    assert found["returned"] == 2, "must find the untagged mention too"
+
+
+def test_search_matches_on_word_boundary(clean_store, stub_index):
+    """RELIANCE must not drag in RELIANCEPOWER."""
+    store.upsert_many(
+        [
+            _item("Swiggy posts wider loss", "2026-09-01T10:00:00+00:00"),
+            _item("Swiggyverse launches something unrelated", "2026-09-01T09:00:00+00:00"),
+        ]
+    )
+    found = feed.build(symbol="SWIGGY", with_prices=False)
+    titles = [i["title"] for i in found["items"]]
+    assert "Swiggy posts wider loss" in titles
+    assert "Swiggyverse launches something unrelated" not in titles
+
+
+def test_search_does_not_cluster_results(clean_store, stub_index):
+    """Clustering keys on primary symbol, so a symbol search would collapse to
+    one row and look broken. Search results are flat."""
+    symbols = [{"exchange": "NSE", "tradingsymbol": "HEROMOTOCO", "name": "HERO MOTOCORP"}]
+    from datetime import datetime, timedelta
+
+    now = datetime.now(UTC)
+    store.upsert_many(
+        [
+            _item("Hero MotoCorp falls 5%", (now - timedelta(hours=1)).isoformat(), symbols=symbols),
+            _item("Hero MotoCorp exports drop", (now - timedelta(hours=2)).isoformat(), symbols=symbols),
+            _item("Hero MotoCorp wholesales weak", (now - timedelta(hours=3)).isoformat(), symbols=symbols),
+        ]
+    )
+    # Unfiltered: clustered into one row.
+    assert feed.build(with_prices=False)["returned"] == 1
+    # Searched: flat.
+    searched = feed.build(symbol="HEROMOTOCO", with_prices=False)
+    assert searched["returned"] == 3
+    assert searched["clustered"] is False
+    assert all(i["related_count"] == 0 for i in searched["items"])
+
+
+def test_free_text_search_matches_title_and_summary(clean_store):
+    store.upsert_many(
+        [
+            normalize.build_item(
+                title="Board approves dividend",
+                url="https://x.test/1",
+                summary="The company will pay a special payout.",
+                published="2026-09-01T10:00:00+00:00",
+            ),
+            normalize.build_item(
+                title="Quarterly numbers disappoint",
+                url="https://x.test/2",
+                published="2026-09-01T09:00:00+00:00",
+            ),
+        ]
+    )
+    assert feed.build(q="dividend", with_prices=False)["returned"] == 1
+    assert feed.build(q="special payout", with_prices=False)["returned"] == 1, "summary is searched"
+    assert feed.build(q="DIVIDEND", with_prices=False)["returned"] == 1, "case-insensitive"
+    assert feed.build(q="nothing matches this", with_prices=False)["returned"] == 0
+
+
+def test_search_echoes_the_active_query(clean_store, stub_index):
+    snap = feed.build(symbol="heromotoco", q=" dividend ", with_prices=False)
+    assert snap["symbol"] == "HEROMOTOCO"
+    assert snap["q"] == "dividend"
+
+
+def test_search_survives_a_missing_instrument_cache(clean_store, monkeypatch):
+    """No instrument master: fall back to the plain symbol, don't return nothing."""
+    def boom(_symbol):
+        raise RuntimeError("no instrument cache")
+
+    monkeypatch.setattr(tickers, "search_terms", boom)
+    store.upsert_many(
+        [
+            _item(
+                "HEROMOTOCO slides",
+                "2026-09-01T10:00:00+00:00",
+                symbols=[{"exchange": "NSE", "tradingsymbol": "HEROMOTOCO", "name": ""}],
+            )
+        ]
+    )
+    assert feed.build(symbol="HEROMOTOCO", with_prices=False)["returned"] == 1

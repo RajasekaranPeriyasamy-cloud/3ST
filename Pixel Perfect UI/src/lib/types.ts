@@ -4029,6 +4029,12 @@ export interface NewsLastPoll {
 export interface NewsFeedSnapshot {
   items: NewsItem[];
   tab: string;
+  /** Echo of the active search, so the UI can label what it filtered on. */
+  symbol: string;
+  q: string;
+  /** False while a search is active — search results are flat, not grouped by
+   *  symbol, since every hit would otherwise collapse into one row. */
+  clustered: boolean;
   total: number;
   returned: number;
   last_poll: NewsLastPoll;
