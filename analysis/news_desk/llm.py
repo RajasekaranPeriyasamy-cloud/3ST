@@ -15,7 +15,9 @@ Cost control, in order:
 2. Batched (``NEWS_LLM_BATCH``, default 25 headlines per call).
 3. Hard daily USD cap (``NEWS_LLM_DAILY_USD_CAP``, default $2). Over the cap it
    returns nothing and the caller falls back to the lexicon, so the desk keeps
-   working rather than going blank.
+   working rather than going blank. The tally is persisted to
+   ``data/news_llm_spend.json``, so the cap is genuinely per *day* and not per
+   process — a restart no longer hands the desk a fresh budget.
 
 Nothing here raises on failure — a scoring backend that is down must degrade to
 the lexicon, not take the feed offline.
@@ -27,10 +29,10 @@ import json
 import logging
 import re
 import threading
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
-from settings import anthropic_api_key, news_desk_config
+from settings import anthropic_api_key, data_dir, news_desk_config
 
 # USD per million tokens (input, output), mirroring the table in
 # analysis/equity_report/store.py. Unknown models bill at the Haiku rate rather
@@ -63,9 +65,17 @@ _SYSTEM = (
     '[{"n": 1, "sentiment": "negative", "score": -0.6, "category": "Earnings"}]'
 )
 
+SPEND_FILE = data_dir() / "news_llm_spend.json"
+
+# How many days of history to keep. Only today's figure gates the cap; the rest
+# is there so an operator can see what the desk has been costing.
+SPEND_RETENTION_DAYS = 30
+
 _LOCK = threading.RLock()
-# {iso date: usd spent}. In-memory only — a restart resets the day's tally,
-# which is acceptable for a $2 cap and avoids another store file.
+# {iso date: usd spent}, persisted. This was in-memory until 2026-09-02, which
+# meant a restart reset the day's tally and the "daily" cap could be enforced
+# once per process rather than once per day — the desk restarts several times on
+# a normal working day, so the cap did not do what its name said.
 _SPEND: dict[str, float] = {}
 
 
@@ -76,6 +86,49 @@ def _log(level: int, message: str, **fields: Any) -> None:
         log_event(get_logger("news_desk_llm"), level, message, **fields)
     except Exception:
         pass
+
+
+def _prune_locked() -> None:
+    cutoff = (date.today() - timedelta(days=SPEND_RETENTION_DAYS)).isoformat()
+    for day in [d for d in _SPEND if d < cutoff]:
+        del _SPEND[day]
+
+
+def _save_spend_locked() -> None:
+    try:
+        SPEND_FILE.write_text(json.dumps({"spend": _SPEND}, indent=2), encoding="utf-8")
+    except OSError as exc:
+        # A cap that cannot persist is still better than a crashed poll. Log it
+        # loudly — this is the one failure that silently restores the old
+        # per-process behaviour.
+        _log(logging.ERROR, "news_llm_spend_save_failed", error=str(exc))
+
+
+def load_persisted_spend() -> None:
+    """Restore the spend ledger from disk (survives API restart)."""
+    global _SPEND
+    with _LOCK:
+        _SPEND = {}
+        if not SPEND_FILE.exists():
+            return
+        try:
+            raw = json.loads(SPEND_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            # A corrupt ledger must not disable scoring, but it does mean today's
+            # tally is lost — say so rather than starting silently from zero.
+            _log(logging.WARNING, "news_llm_spend_unreadable", error=str(exc))
+            return
+        spend = raw.get("spend") if isinstance(raw, dict) else None
+        if isinstance(spend, dict):
+            for day, usd in spend.items():
+                try:
+                    _SPEND[str(day)] = float(usd)
+                except (TypeError, ValueError):
+                    continue
+        _prune_locked()
+
+
+load_persisted_spend()
 
 
 def estimate_cost_usd(usage: Any, model: str) -> float:
@@ -93,9 +146,17 @@ def spend_today_usd() -> float:
 
 
 def _record_spend(usd: float) -> None:
+    """Add to today's tally and persist immediately.
+
+    Written on every call rather than batched: the window between spending money
+    and recording it is exactly where a crash loses the tally, and the file is
+    thirty small floats.
+    """
     with _LOCK:
         key = date.today().isoformat()
         _SPEND[key] = _SPEND.get(key, 0.0) + usd
+        _prune_locked()
+        _save_spend_locked()
 
 
 def cap_status() -> dict[str, Any]:

@@ -482,3 +482,105 @@ def test_alias_file_overrides_seed(tmp_path, monkeypatch):
     path.write_text(json.dumps({"aliases": {"my company": "RELIANCE"}}), encoding="utf-8")
     monkeypatch.setattr(tickers, "ALIAS_FILE", path)
     assert tickers.load_aliases()["my company"] == "RELIANCE"
+
+
+# --- LLM daily spend cap -----------------------------------------------------
+
+
+@pytest.fixture
+def spend_store(tmp_path, monkeypatch):
+    """Point the spend ledger at a tmp file and start from empty."""
+    from analysis.news_desk import llm
+
+    monkeypatch.setattr(llm, "SPEND_FILE", tmp_path / "news_llm_spend.json")
+    monkeypatch.setattr(llm, "_SPEND", {})
+    return llm
+
+
+def test_spend_survives_a_restart(spend_store):
+    """The cap is per DAY, not per process.
+
+    This was the bug: _SPEND was in-memory, so every API restart handed the desk
+    a fresh budget. The desk restarts several times on a working day, so a "$2
+    daily cap" could be spent repeatedly.
+    """
+    llm = spend_store
+    llm._record_spend(1.25)
+    assert llm.spend_today_usd() == 1.25
+
+    # Simulate a process restart: drop the in-memory tally, reload from disk.
+    llm._SPEND.clear()
+    assert llm.spend_today_usd() == 0.0, "sanity — the tally really was cleared"
+    llm.load_persisted_spend()
+
+    assert llm.spend_today_usd() == 1.25, "spend must be restored from disk"
+
+
+def test_spend_accumulates_across_restarts(spend_store):
+    llm = spend_store
+    llm._record_spend(0.80)
+    llm._SPEND.clear()
+    llm.load_persisted_spend()
+    llm._record_spend(0.75)
+    assert llm.spend_today_usd() == pytest.approx(1.55)
+
+
+def test_cap_blocks_scoring_after_a_restart(spend_store, monkeypatch):
+    """Over-cap must stay over-cap across a restart, and fall back to lexicon."""
+    llm = spend_store
+    monkeypatch.setattr(
+        "settings.news_desk_config",
+        lambda: {
+            "provider": "anthropic", "model": "claude-haiku-4-5", "poll_sec": 60,
+            "daily_usd_cap": 2.0, "batch": 25, "announcements": False,
+        },
+    )
+    monkeypatch.setattr("settings.anthropic_api_key", lambda: "sk-test")
+
+    llm._record_spend(2.5)
+    assert llm.cap_status()["capped"] is True
+
+    llm._SPEND.clear()
+    llm.load_persisted_spend()
+    assert llm.cap_status()["capped"] is True, "restart must not clear the cap"
+
+    # No anthropic stub needed, and that is the point: the cap is checked before
+    # the SDK is imported, so an over-cap call cannot reach the network even in
+    # an environment where the package is not installed.
+    item = _item("Tata Steel profit jumps 40%", "2026-09-01T10:00:00+00:00")
+    assert llm.score_batch([item]) == {}
+
+
+def test_spend_ledger_prunes_old_days(spend_store):
+    from datetime import date, timedelta
+
+    llm = spend_store
+    stale = (date.today() - timedelta(days=llm.SPEND_RETENTION_DAYS + 5)).isoformat()
+    llm._SPEND[stale] = 9.99
+    llm._record_spend(0.10)
+    assert stale not in llm._SPEND
+    llm._SPEND.clear()
+    llm.load_persisted_spend()
+    assert stale not in llm._SPEND
+
+
+def test_corrupt_spend_ledger_does_not_crash(spend_store):
+    """A bad ledger loses the tally but must not take scoring down."""
+    llm = spend_store
+    llm.SPEND_FILE.write_text("{not json", encoding="utf-8")
+    llm.load_persisted_spend()
+    assert llm.spend_today_usd() == 0.0
+    llm._record_spend(0.5)
+    assert llm.spend_today_usd() == 0.5
+
+
+def test_unreadable_spend_file_does_not_break_a_poll(spend_store, monkeypatch):
+    """An unwritable ledger degrades to per-process, it does not raise."""
+    llm = spend_store
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(type(llm.SPEND_FILE), "write_text", boom)
+    llm._record_spend(0.25)
+    assert llm.spend_today_usd() == 0.25, "in-memory tally still works"

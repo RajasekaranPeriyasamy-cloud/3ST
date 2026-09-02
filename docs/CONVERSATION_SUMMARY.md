@@ -55,6 +55,18 @@ lexicon: an unscored item is retried every poll forever, which on a paid backend
 is the expensive failure mode. Sentiment is stored on the item and keyed by a
 stable id, so a headline is scored once, ever.
 
+**Follow-up the same day — the daily cap now survives a restart.** `llm._SPEND`
+was an in-memory dict, so the "$2 daily cap" was really a per-*process* cap: the
+desk restarts several times on a working day and each restart handed it a fresh
+budget. It is now persisted to `data/news_llm_spend.json`, written on every
+recorded spend (the window between spending money and recording it is exactly
+where a crash loses the tally), pruned to 30 days, and registered in the conftest
+write guard. `test_spend_survives_a_restart` and
+`test_cap_blocks_scoring_after_a_restart` pin it. A corrupt or unwritable ledger
+degrades to the old per-process behaviour and logs, rather than taking scoring
+down. Note the cap is checked *before* the `anthropic` import, so an over-cap
+call cannot reach the network even where the SDK is absent.
+
 Not wired: BSE announcements. Its `AnnGetData` endpoint returned zero rows for
 every parameter combination tried, and NSE already carries the `symbol` field
 that was the point of using an exchange feed.
