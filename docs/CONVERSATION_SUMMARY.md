@@ -55,6 +55,23 @@ lexicon: an unscored item is retried every poll forever, which on a paid backend
 is the expensive failure mode. Sentiment is stored on the item and keyed by a
 stable id, so a headline is scored once, ever.
 
+**Equity search.** A search box on the page, autocompleting NSE equities off the
+existing `/instruments/search`, plus a free-text `q=` fallback. Two decisions
+worth keeping:
+
+*Search is looser than resolution, on purpose.* `?symbol=` matches a resolved
+chip **or** a word-boundary text mention assembled from `tickers.search_terms()`
+(symbol, cleaned registered name, every alias pointing at it). Resolution is
+conservative and only ever ran against the text an item carried at ingest, so a
+chips-only search silently drops headlines that plainly name the stock — measured
+on live data, 1 of 11 HEROMOTOCO hits was text-only. A stray row in a search
+someone asked for is a much cheaper mistake than a wrong ticker chip on the feed.
+
+*Search suppresses clustering.* Clustering keys on primary symbol, so every hit
+for one stock would collapse into a single "+10 more" row and the search would
+look broken. `clustered: false` comes back in the payload and the UI says
+"not grouped".
+
 **Follow-up the same day — the daily cap now survives a restart.** `llm._SPEND`
 was an in-memory dict, so the "$2 daily cap" was really a per-*process* cap: the
 desk restarts several times on a working day and each restart handed it a fresh

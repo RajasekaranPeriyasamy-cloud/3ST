@@ -134,6 +134,13 @@ options/, analysis/   Desk engines (chain, greeks, IV, vanna, gamma density, RRG
                   ETF rows and sub-6-char lowercase tokens are refused on purpose. Read
                   its module docstring before loosening a guard. Aliases:
                   data/news_aliases.json.
+                  Equity search (?symbol=) is deliberately LOOSER than resolution: it
+                  matches resolved chips OR a word-boundary text mention built from
+                  tickers.search_terms(). Resolution is conservative and only ever ran
+                  against the text an item had at ingest, so a chips-only search would
+                  silently drop headlines that plainly name the stock. Search also
+                  suppresses clustering — every hit shares a primary symbol, so grouping
+                  would collapse the whole result set into one row.
                 — analysis/opt_arb/ (added 2026-08-25): option-to-option arbitrage scanner.
                   Scan-and-alert only — imports nothing from broker/ execution/ risk/ and
                   places no orders. Prices every leg at bid/ask (never LTP) and nets every

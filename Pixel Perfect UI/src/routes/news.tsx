@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { CircleDot, Pause, Play, RefreshCw } from "lucide-react";
 
+import { EquitySearch, type EquityQuery } from "@/components/news/EquitySearch";
 import { NewsRow } from "@/components/news/NewsRow";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ const POLL_SEC = 30;
 function NewsPage() {
   const [tab, setTab] = useState<string>("all");
   const [sentiment, setSentiment] = useState<string>("");
+  const [search, setSearch] = useState<EquityQuery>({ symbol: "", q: "" });
   const [snap, setSnap] = useState<NewsFeedSnapshot | null>(null);
   const [sources, setSources] = useState<NewsSourcesSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
@@ -44,6 +46,8 @@ function NewsPage() {
     try {
       const params = new URLSearchParams({ tab, limit: "80" });
       if (sentiment) params.set("sentiment", sentiment);
+      if (search.symbol) params.set("symbol", search.symbol);
+      if (search.q) params.set("q", search.q);
       const data = await api.get<NewsFeedSnapshot>(
         `/newsfeed/items?${params.toString()}`,
         { silent: true },
@@ -55,7 +59,7 @@ function NewsPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, sentiment]);
+  }, [tab, sentiment, search]);
 
   const refreshSources = useCallback(async () => {
     try {
@@ -164,6 +168,19 @@ function NewsPage() {
       </div>
 
       <Card className="p-3">
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <EquitySearch value={search} onChange={setSearch} />
+          {(search.symbol || search.q) && (
+            <span className="text-xs text-muted-foreground">
+              showing news for{" "}
+              <span className="font-medium text-foreground">
+                {search.symbol || `“${search.q}”`}
+              </span>
+              {snap && !snap.clustered && " · not grouped"}
+            </span>
+          )}
+        </div>
+
         <div className="flex flex-wrap items-center gap-3">
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
@@ -220,7 +237,16 @@ function NewsPage() {
           )}
           {snap && snap.returned === 0 && tab !== "mine" && (
             <p className="p-4 text-sm text-muted-foreground">
-              No items match this filter yet.
+              {search.symbol || search.q ? (
+                <>
+                  Nothing stored for{" "}
+                  <span className="font-medium">{search.symbol || search.q}</span> yet. The
+                  desk keeps 7 days of headlines, so a quiet stock can legitimately have
+                  none.
+                </>
+              ) : (
+                "No items match this filter yet."
+              )}
             </p>
           )}
         </div>
