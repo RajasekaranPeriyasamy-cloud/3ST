@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import type {
   BuildupCell,
   BuildupClass,
+  BuildupPrevSession,
   BuildupGrid,
   BuildupRow,
   BuildupLevel,
@@ -16,6 +17,7 @@ import type {
   BuildupFlow,
   BuildupStatus,
   BuildupTrackPoint,
+  Metric,
 } from "@/lib/types";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -131,8 +133,11 @@ function centreCell(strong: boolean): string {
 
 /** What the wing cells show. OI and volume are both per-bucket or cumulative,
  *  but they never share a colour scale — volume is an order of magnitude larger
- *  on the same strike, so one ceiling would leave every OI cell white. */
-type Metric = "delta" | "cum" | "vol" | "cum_vol" | "delta_vol" | "cum_delta_vol";
+ *  on the same strike, so one ceiling would leave every OI cell white.
+ *
+ *  `Metric` is imported rather than declared here: the same six names key the
+ *  backend's TOTAL_METRICS and the grid's scale blocks, and a second copy is
+ *  a place for them to drift apart. */
 
 const METRICS: { value: Metric; label: string }[] = [
   { value: "delta", label: "ΔOI / bucket" },
@@ -369,6 +374,134 @@ function useColumnWindow(
   return { start: win.start, end: win.end, measure };
 }
 
+/** Height of the totals strip's plot area, in px. */
+const STRIP_H = 34;
+const BAR_W = 22;
+
+/** One bucket of the CE/PE totals strip: grouped bars, CE left, PE right.
+ *
+ *  Height carries magnitude here, where the grid below uses alpha — a strip one
+ *  row tall has no room for intensity to read, and a bar does not compete with
+ *  the numbers in the cells underneath it.
+ *
+ *  Direction keeps the grid's meaning but changes weight: a solid bar is
+ *  build-up, an outlined bar is unwinding. That is the same distinction the
+ *  cells draw with hatching, which does not survive at this size.
+ */
+function StripCell({
+  ce,
+  pe,
+  ceiling,
+  bucket,
+}: {
+  ce: number | null;
+  pe: number | null;
+  ceiling: number;
+  bucket: string;
+}) {
+  const bar = (v: number | null, hue: string) => {
+    // null is not zero: no strike carried this field in this bucket. A flat bar
+    // would read as "no net change", which is the opposite of "not measured".
+    if (v == null) return <div style={{ width: BAR_W }} />;
+    const h = ceiling > 0 ? Math.max(1, (Math.min(Math.abs(v), ceiling) / ceiling) * STRIP_H) : 1;
+    const building = v >= 0;
+    return (
+      <div
+        style={{
+          width: BAR_W,
+          height: h,
+          backgroundColor: building ? `rgba(${hue},0.75)` : "transparent",
+          border: building ? undefined : `1.5px solid rgba(${hue},0.9)`,
+        }}
+      />
+    );
+  };
+
+  const title = `${bucket} · CE ${signed(ce)} · PE ${signed(pe)}`;
+
+  return (
+    <div className="flex h-full items-end justify-center gap-1" title={title}>
+      <div className="flex items-end" style={{ height: STRIP_H }}>{bar(ce, HUE.ce)}</div>
+      <div className="flex items-end" style={{ height: STRIP_H }}>{bar(pe, HUE.pe)}</div>
+    </div>
+  );
+}
+
+/** Centre-block summary: this session's build against the whole of the previous
+ *  one, CE on the left and PE on the right, matching the ladder either side.
+ *
+ *  It exists first to keep the three panes aligned — the wings' strip added a
+ *  header row, and the panes line up by fixed heights rather than a grid — but
+ *  a spacer that says something beats a spacer that does not.
+ *
+ *  Both figures are "change since that session's open", so the ratio between
+ *  them is a pace: above 1x the chain is being written faster than it was all
+ *  of the previous day. Today solid, previous outlined, the same weights the
+ *  strip uses for build-up against unwinding.
+ */
+function CumulativeBand({
+  band,
+  label,
+}: {
+  band: {
+    ce: number | null;
+    pe: number | null;
+    prevCe: number | null;
+    prevPe: number | null;
+    prevDate: string | null;
+    reason: string | null;
+  };
+  label: string;
+}) {
+  const pace = (now: number | null, prev: number | null) =>
+    now != null && prev != null && prev !== 0 ? Math.abs(now) / Math.abs(prev) : null;
+
+  const sideBlock = (
+    now: number | null,
+    prev: number | null,
+    hue: string,
+    tone: string,
+    align: "items-start" | "items-end",
+  ) => {
+    const ceiling = Math.max(Math.abs(now ?? 0), Math.abs(prev ?? 0)) || 1;
+    const w = (v: number | null) => (v == null ? 0 : (Math.abs(v) / ceiling) * 62);
+    const p = pace(now, prev);
+    return (
+      <div className={`flex flex-col justify-center gap-[3px] ${align}`}>
+        <div className="flex items-baseline gap-1.5 font-mono text-[11px] tabular-nums">
+          <span style={{ color: `rgb(${hue})` }}>{signed(now)}</span>
+          {p == null ? null : (
+            <span className={`text-[9px] ${tone}`}>{p.toFixed(2)}x</span>
+          )}
+        </div>
+        {/* Widths, not heights: a 40px band has room across but not up. */}
+        <div className="flex flex-col gap-[2px]">
+          <div style={{ width: w(now), height: 4, backgroundColor: `rgba(${hue},0.75)` }} />
+          {prev == null ? null : (
+            <div style={{ width: w(prev), height: 4, border: `1px solid rgba(${hue},0.85)` }} />
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const title = band.reason
+    ? `${label} · session so far — CE ${signed(band.ce)} · PE ${signed(band.pe)}. ${band.reason}`
+    : `${label} · session so far vs all of ${band.prevDate} — ` +
+      `CE ${signed(band.ce)} vs ${signed(band.prevCe)} · PE ${signed(band.pe)} vs ${signed(band.prevPe)}`;
+
+  return (
+    <div className="flex h-full items-center justify-between px-2" title={title}>
+      {sideBlock(band.ce, band.prevCe, HUE.ce, "text-red-400/80", "items-start")}
+      <div className="flex flex-col items-center text-[8px] leading-tight text-muted-foreground">
+        <span>session</span>
+        <span>{band.reason ? "no prior" : `vs ${band.prevDate?.slice(5) ?? "—"}`}</span>
+      </div>
+      {sideBlock(band.pe, band.prevPe, HUE.pe, "text-emerald-400/80", "items-end")}
+    </div>
+  );
+}
+
 function Wing({
   side,
   rows,
@@ -378,6 +511,8 @@ function Wing({
   classCodes,
   trackMarks,
   flow,
+  totals,
+  totalsCeiling,
   scrollRef,
   onScroll,
 }: {
@@ -389,6 +524,8 @@ function Wing({
   classCodes: Record<BuildupClass, string>;
   trackMarks: Map<string, { key: BuildupLevelKey; edge: boolean }[]>;
   flow: BuildupFlow | null;
+  totals: { ce: (number | null)[]; pe: (number | null)[] } | null;
+  totalsCeiling: number;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onScroll: () => void;
 }) {
@@ -425,6 +562,33 @@ function Wing({
             ))}
             {padRight > 0 ? <th style={{ width: padRight, height: HEAD_H }} /> : null}
           </tr>
+          {/* Totals strip. In the thead, so it sticks under the time labels and
+              stays visible while the ladder scrolls — and inside THIS table, so
+              it cannot drift from the columns the way a sibling element would.
+              Same reason the futures flow strip is a tfoot. */}
+          {totals ? (
+            <tr>
+              {padLeft > 0 ? <th style={{ width: padLeft }} /> : null}
+              {shown.map((b, local) => {
+                const i = start + local;
+                return (
+                  <th
+                    key={b.key}
+                    style={{ width: COL_W, height: STRIP_H + 6, top: HEAD_H }}
+                    className="sticky z-10 border-b border-border/60 bg-background p-0 align-bottom font-normal"
+                  >
+                    <StripCell
+                      ce={totals.ce[i] ?? null}
+                      pe={totals.pe[i] ?? null}
+                      ceiling={totalsCeiling}
+                      bucket={b.key}
+                    />
+                  </th>
+                );
+              })}
+              {padRight > 0 ? <th style={{ width: padRight }} /> : null}
+            </tr>
+          ) : null}
         </thead>
         <tbody>
           {rows.map((row) => (
@@ -822,6 +986,54 @@ function ChainBuildupPage() {
   }, [levels, showLevels, grid]);
 
   const scaleKey = metric;
+
+  // The strip totals whatever the wings are showing, so it follows `metric`.
+  // One ceiling for both sides: grouped bars exist to be compared, and two
+  // ceilings would make equal heights mean different amounts.
+  const stripTotals = grid
+    ? { ce: grid.bucket_totals.ce[metric] ?? [], pe: grid.bucket_totals.pe[metric] ?? [] }
+    : null;
+  const stripCeiling = grid?.scale_totals?.[metric]?.p95 ?? 0;
+  const prevSession = grid?.bucket_totals.prev_session ?? null;
+
+  /** The band summarises a SESSION, so it reads the cumulative form of whatever
+   *  the wings are showing — "session cumulative" of a per-bucket metric is its
+   *  running total. Mirrors CUMULATIVE_FORM in features.py. */
+  const CUM_FORM: Record<Metric, Metric> = {
+    delta: "cum",
+    cum: "cum",
+    vol: "cum_vol",
+    cum_vol: "cum_vol",
+    delta_vol: "cum_delta_vol",
+    cum_delta_vol: "cum_delta_vol",
+  };
+  const bandMetric = CUM_FORM[metric];
+
+  /** Today so far, and the same measure over the whole previous session.
+   *
+   *  Today's figure is the last NON-null bucket, not the last: a session's
+   *  newest bucket can be a partial minute with nothing recorded yet, and
+   *  reading "—" there would blank the band a beat after every poll. */
+  const band = (() => {
+    const todayOf = (xs: (number | null)[] | undefined) => {
+      if (!xs) return null;
+      for (let i = xs.length - 1; i >= 0; i--) if (xs[i] != null) return xs[i];
+      return null;
+    };
+    const comparable = !!prevSession?.available && prevSession.metrics.includes(bandMetric);
+    return {
+      ce: todayOf(grid?.bucket_totals.ce[bandMetric]),
+      pe: todayOf(grid?.bucket_totals.pe[bandMetric]),
+      prevCe: comparable ? (prevSession?.ce?.[bandMetric] ?? null) : null,
+      prevPe: comparable ? (prevSession?.pe?.[bandMetric] ?? null) : null,
+      prevDate: prevSession?.date ?? null,
+      reason: comparable
+        ? null
+        : (prevSession?.reason ??
+          "No previous-session comparison for this metric — it would need the quote rule re-run over that whole session."),
+    };
+  })();
+
   const classCodes =
     grid?.class_codes ??
     ({
@@ -1158,6 +1370,8 @@ function ChainBuildupPage() {
               classCodes={classCodes}
               trackMarks={trackMarks}
               flow={flow}
+              totals={stripTotals}
+              totalsCeiling={stripCeiling}
               scrollRef={ceRef}
               onScroll={mirror(ceRef, peRef)}
             />
@@ -1233,6 +1447,23 @@ function ChainBuildupPage() {
                       className={CENTRE_HEAD_PE}
                       onSort={onSort}
                     />
+                  </tr>
+                  {/* Restores the row alignment the wings' strip broke: the
+                      three panes line up by fixed heights, not a grid, so a row
+                      added to the wing heads must be matched here or every
+                      strike label slides 40px off its own CE/PE cells.
+                      It carries the summary rather than being blank. */}
+                  <tr>
+                    <th
+                      colSpan={7}
+                      style={{ height: STRIP_H + 6, top: HEAD_H }}
+                      className="sticky z-10 border-b border-border/60 bg-muted/30 p-0 font-normal"
+                    >
+                      <CumulativeBand
+                        band={band}
+                        label={METRICS.find((m) => m.value === bandMetric)?.label ?? ""}
+                      />
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1355,6 +1586,8 @@ function ChainBuildupPage() {
               classCodes={classCodes}
               trackMarks={trackMarks}
               flow={flow}
+              totals={stripTotals}
+              totalsCeiling={stripCeiling}
               scrollRef={peRef}
               onScroll={mirror(peRef, ceRef)}
             />

@@ -3728,6 +3728,30 @@ export interface BuildupScale {
   max: number | null;
 }
 
+/** Metrics the strip can total. Mirrors `TOTAL_METRICS` in
+ *  analysis/chain_buildup/features.py and the page's own `Metric` union. */
+export type Metric = "delta" | "cum" | "vol" | "cum_vol" | "delta_vol" | "cum_delta_vol";
+
+/** Previous-session comparison for the centre band.
+ *
+ *  Both sides of the comparison are "change since THAT session's open", so
+ *  they share a construction and can be read against each other. A previous
+ *  day's CLOSE could not be: today's open is yesterday's close, so the gap
+ *  between them is the overnight move, not a measure of pace.
+ */
+export interface BuildupPrevSession {
+  available: boolean;
+  /** Why it is missing — shown instead of drawing a comparison against zero. */
+  reason: string | null;
+  /** The session being compared against, YYYY-MM-DD. */
+  date: string | null;
+  /** Cumulative metrics the prior session can be compared on. Buy−sell delta
+   *  is absent: it would need the quote rule run over that whole session. */
+  metrics: Metric[];
+  ce: Record<string, number> | null;
+  pe: Record<string, number> | null;
+}
+
 export interface BuildupGrid {
   underlying: string;
   expiry: string;
@@ -3752,6 +3776,17 @@ export interface BuildupGrid {
     pcr_delta: number | null;
     strikes: number;
   };
+  /** Column totals for the CE/PE strip — one array per metric, indexed by
+   *  bucket. `null` entries mean no strike carried that field in that bucket;
+   *  they are not zero and must not be drawn as a flat bar. */
+  bucket_totals: {
+    ce: Record<Metric, (number | null)[]>;
+    pe: Record<Metric, (number | null)[]>;
+    prev_session: BuildupPrevSession;
+  };
+  /** One ceiling per metric, shared by BOTH sides so grouped CE and PE bars
+   *  are height-comparable. Deliberately not the per-side `scale`. */
+  scale_totals: Record<Metric, BuildupScale>;
   class_codes: Record<BuildupClass, string>;
   thresholds: BuildupThresholds;
   alert: BuildupAlert;

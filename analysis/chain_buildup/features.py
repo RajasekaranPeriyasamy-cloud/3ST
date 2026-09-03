@@ -571,19 +571,107 @@ def _percentile(values: list[float], pct: float) -> float | None:
     return ordered[max(0, min(idx, len(ordered) - 1))]
 
 
-def _scale(cells: list[dict[str, Any]], key: str) -> dict[str, float | None]:
-    """Shading scale for one side.
+def _scale_from(mags: list[float]) -> dict[str, float | None]:
+    """Scale over already-extracted magnitudes.
 
     p95 rather than max: a single expiry-day print can be an order of magnitude
     above everything else, and scaling to it washes the whole grid to white.
     The UI clamps above p95 so the outlier still reads as full intensity.
     """
-    mags = [abs(c[key]) for c in cells if c.get(key) is not None and c[key] != 0]
     return {
         "p95": _percentile(mags, 95.0),
         "p50": _percentile(mags, 50.0),
         "max": max(mags) if mags else None,
     }
+
+
+def _scale(cells: list[dict[str, Any]], key: str) -> dict[str, float | None]:
+    """Shading scale for one side, over every cell on that side."""
+    return _scale_from([abs(c[key]) for c in cells if c.get(key) is not None and c[key] != 0])
+
+
+#: Metric name -> the cell field it reads. Mirrors ``metricValue`` in
+#: chain-buildup.tsx; the strip totals the same number the wing cells show, so
+#: the two must not drift apart.
+TOTAL_METRICS: dict[str, str] = {
+    "delta": "d_oi",
+    "cum": "cum",
+    "vol": "d_volume",
+    "cum_vol": "cum_volume",
+    "delta_vol": "delta_vol",
+    "cum_delta_vol": "cum_delta_vol",
+}
+
+#: The band summarises a SESSION, so it always reads the cumulative form of
+#: whatever the wings are showing. Picking "delta OI / bucket" gives the
+#: session's cumulative delta OI -- which is what "session cumulative" has to
+#: mean for a per-bucket metric.
+CUMULATIVE_FORM: dict[str, str] = {
+    "delta": "cum",
+    "cum": "cum",
+    "vol": "cum_vol",
+    "cum_vol": "cum_vol",
+    "delta_vol": "cum_delta_vol",
+    "cum_delta_vol": "cum_delta_vol",
+}
+
+#: Cumulative metrics the previous session can be compared on. Open interest
+#: and volume are both a first/last read over the prior session's rows. Buy
+#: minus sell is not: it needs the quote-rule classifier run across that whole
+#: session, so it is withheld with a reason rather than paid for on every poll.
+PREV_SESSION_METRICS: tuple[str, ...] = ("cum", "cum_vol")
+
+
+def bucket_totals(
+    rows: list[dict[str, Any]], bucket_count: int
+) -> dict[str, dict[str, list[float | None]]]:
+    """Chain-wide total per bucket, per side, per metric.
+
+    ``None``, never ``0``, when no strike carries that field in a bucket. The
+    first bucket is a baseline anchor and legitimately has no per-bucket delta,
+    so summing ``None`` into zero would draw "no net change" across the whole
+    chain where the truth is "nothing recorded" — the one confusion a totals
+    strip cannot afford, since a flat bar is its strongest statement.
+    """
+    out: dict[str, dict[str, list[float | None]]] = {}
+    for side in ("ce", "pe"):
+        per_metric: dict[str, list[float | None]] = {}
+        for metric, field in TOTAL_METRICS.items():
+            series: list[float | None] = []
+            for i in range(bucket_count):
+                total = 0.0
+                seen = False
+                for row in rows:
+                    cells = row[side]["cells"]
+                    value = cells[i].get(field) if i < len(cells) else None
+                    if value is not None:
+                        total += float(value)
+                        seen = True
+                series.append(round(total, 2) if seen else None)
+            per_metric[metric] = series
+        out[side] = per_metric
+    return out
+
+
+def _totals_scale(
+    totals: dict[str, dict[str, list[float | None]]],
+) -> dict[str, dict[str, float | None]]:
+    """One ceiling per metric, shared by BOTH sides.
+
+    Deliberately not per-side: the strip draws CE and PE as grouped bars, and
+    the only reason to group them is to compare their heights. Two ceilings
+    would make a tall red bar and a tall green bar mean different amounts.
+    """
+    out: dict[str, dict[str, float | None]] = {}
+    for metric in TOTAL_METRICS:
+        mags = [
+            abs(v)
+            for side in ("ce", "pe")
+            for v in totals[side][metric]
+            if v is not None and v != 0
+        ]
+        out[metric] = _scale_from(mags)
+    return out
 
 
 def _implied_baseline(
@@ -732,6 +820,8 @@ def build_grid(
             sink.extend(side["cells"])
         out_rows.append(row)
 
+    col_totals = bucket_totals(out_rows, len(bucket_ends))
+
     return {
         "timeframe_min": timeframe_min,
         "buckets": [
@@ -765,6 +855,12 @@ def build_grid(
             },
         },
         "totals": _totals(out_rows),
+        # Column totals for the CE/PE strip. Computed here rather than in the
+        # page because the strike-range filter is applied above, so these sum
+        # exactly the rows the ladder renders — a client-side sum would have to
+        # re-derive that agreement and could silently lose it.
+        "bucket_totals": col_totals,
+        "scale_totals": _totals_scale(col_totals),
         "class_codes": CLASS_CODES,
         "thresholds": {
             "mode": mode_used,

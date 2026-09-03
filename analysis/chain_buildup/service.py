@@ -182,6 +182,91 @@ def _window(strikes: list[float], atm: float | None, width: int | None) -> list[
     return ordered[lo:hi]
 
 
+#: Yesterday's closing OI per leg, keyed by (underlying, session, expiry).
+#: Immutable once the session is over, and reading it walks a whole archive
+#: file — without this, drawing the strip's reference would pay that read on
+#: every 60s grid poll for anyone not already on the prev-close baseline.
+_PREV_CLOSE_CACHE: dict[tuple[str, str, str], tuple[dict[tuple[float, str], float | None], str | None]] = {}
+
+
+def _prev_close_baselines_cached(
+    underlying: str, session_date: date, expiry: str | None
+) -> tuple[dict[tuple[float, str], float | None], str | None]:
+    key = (underlying, session_date.isoformat(), str(expiry or ""))
+    hit = _PREV_CLOSE_CACHE.get(key)
+    if hit is None:
+        hit = _prev_close_baselines(underlying, session_date, expiry)
+        _PREV_CLOSE_CACHE[key] = hit
+    return hit
+
+
+#: Per-leg summary of the previous archived session, keyed the same way.
+_PREV_STATS_CACHE: dict[tuple[str, str, str], tuple[dict[tuple[float, str], dict[str, float]], str | None, str | None]] = {}
+
+
+def _prev_session_stats(
+    underlying: str, session_date: date, expiry: str | None
+) -> tuple[dict[tuple[float, str], dict[str, float]], str | None, str | None]:
+    """First and last OI, and closing cumulative volume, per leg, for the last
+    archived session before ``session_date``.
+
+    Returns ``(per_leg, prior_date, note)``. One pass over the prior session's
+    rows, cached: the day is over, so none of it can change.
+
+    The two quantities are built differently on purpose, because the archive
+    stores them differently. Open interest is a LEVEL, so a session's build is
+    ``last - first``. Volume is already cumulative for the day, so a session's
+    total is the closing value alone -- subtracting the first sample there would
+    quietly drop everything that traded before the collector's first tick.
+    """
+    key = (underlying, session_date.isoformat(), str(expiry or ""))
+    hit = _PREV_STATS_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    available = [d for d in dv_store.sessions_available(underlying) if d < session_date]
+    if not available:
+        out = ({}, None, "No earlier archived session — previous-day comparison unavailable.")
+        _PREV_STATS_CACHE[key] = out
+        return out
+
+    prior = available[-1]
+    per_leg: dict[tuple[float, str], dict[str, float]] = {}
+    seen: dict[tuple[float, str], tuple[datetime, datetime]] = {}
+    for row in _session_rows(underlying, prior):
+        if expiry and str(row.get("expiry")) != str(expiry):
+            continue
+        ts = features.parse_ts(row.get("ts"))
+        strike = row.get("strike")
+        opt = str(row.get("option_type") or "").upper()
+        if ts is None or strike is None or opt not in ("CE", "PE"):
+            continue
+        k = (float(strike), opt)
+        oi = row.get("oi")
+        vol = row.get("volume")
+        entry = per_leg.setdefault(k, {})
+        first_ts, last_ts = seen.get(k, (ts, ts))
+        if oi is not None:
+            if k not in seen or ts < first_ts:
+                entry["open_oi"] = float(oi)
+                first_ts = ts
+            if k not in seen or ts >= last_ts:
+                entry["close_oi"] = float(oi)
+                last_ts = ts
+        if vol is not None and (k not in seen or ts >= last_ts):
+            entry["close_volume"] = float(vol)
+        seen[k] = (first_ts, last_ts)
+
+    if not per_leg:
+        out = ({}, prior.isoformat(), f"Previous session {prior.isoformat()} holds nothing for this expiry.")
+        _PREV_STATS_CACHE[key] = out
+        return out
+
+    out = (per_leg, prior.isoformat(), None)
+    _PREV_STATS_CACHE[key] = out
+    return out
+
+
 def _prev_close_baselines(
     underlying: str, session_date: date, expiry: str | None
 ) -> tuple[dict[tuple[float, str], float | None], str | None]:
@@ -468,10 +553,11 @@ def get_grid(
         )
         wanted = [s for s in wanted if s in set(archive_strikes)]
 
+    prev_close, prev_close_note = _prev_close_baselines_cached(u, day, chosen_expiry)
     if baseline_mode == "prev_close":
-        baselines, note = _prev_close_baselines(u, day, chosen_expiry)
-        if note:
-            notes.append(note)
+        baselines = prev_close
+        if prev_close_note:
+            notes.append(prev_close_note)
     else:
         baselines = _session_open_baselines(scoped, chosen_expiry)
 
@@ -491,6 +577,43 @@ def get_grid(
         # already scoped to, against the session being rendered.
         dte_days=_dte_days(chosen_expiry, day),
     )
+
+    # Previous-session comparison for the centre band. Both sides of it are
+    # "change since THAT session's open", so they are the same construction in
+    # the same units and can be read against each other -- which a previous-day
+    # CLOSE could not: today's open is yesterday's close, so that difference is
+    # the overnight gap (~1% of a session's build) and says nothing about pace.
+    prev_stats, prior_date, prev_note = _prev_session_stats(u, day, chosen_expiry)
+    rendered = {float(r["strike"]) for r in grid["rows"]}
+    prev_session: dict[str, Any] = {
+        "available": bool(prev_stats) and not prev_note,
+        "reason": prev_note,
+        "date": prior_date,
+        # Buy-minus-sell is absent on purpose: deriving it for the prior session
+        # means running the quote-rule classifier over that whole session, a
+        # second full pipeline pass on every poll. Withheld with a reason beats
+        # paid for silently.
+        "metrics": list(features.PREV_SESSION_METRICS),
+        "ce": None,
+        "pe": None,
+    }
+    if prev_session["available"]:
+        for side, opt in (("ce", "CE"), ("pe", "PE")):
+            legs = [v for (strike, o), v in prev_stats.items() if o == opt and strike in rendered]
+            prev_session[side] = {
+                # OI is a level: the session's build is close minus open.
+                "cum": round(
+                    sum(
+                        v["close_oi"] - v["open_oi"]
+                        for v in legs
+                        if "close_oi" in v and "open_oi" in v
+                    ),
+                    2,
+                ),
+                # Volume is already cumulative for the day: the close IS the total.
+                "cum_vol": round(sum(v["close_volume"] for v in legs if "close_volume" in v), 2),
+            }
+    grid["bucket_totals"]["prev_session"] = prev_session
 
     grid.update(
         {
@@ -588,3 +711,6 @@ def status(underlying: str = "NIFTY") -> dict[str, Any]:
 def reset_cache() -> None:
     with _CACHE_LOCK:
         _WIDEN_CACHE.clear()
+    # Cleared alongside the widen cache: a caller asking for a clean read wants
+    # every memoised archive read dropped, not just one of them.
+    _PREV_CLOSE_CACHE.clear()

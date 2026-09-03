@@ -1103,3 +1103,96 @@ def test_fine_timeframes_map_to_native_kite_intervals(tf):
 
     assert cb_flow._TIMEFRAME_KEY[tf] in KITE_INTERVALS
     assert service._timeframe_key(tf) in KITE_INTERVALS
+
+
+# ---------------------------------------------------------------------------
+# Column totals for the CE/PE strip
+# ---------------------------------------------------------------------------
+
+
+def test_bucket_totals_equal_the_column_sum():
+    """The strip must be the sum of the ladder it sits above, or it is lying."""
+    rows = [
+        {
+            "ce": {"cells": [{"d_oi": 10.0, "cum": 10.0}, {"d_oi": 5.0, "cum": 15.0}]},
+            "pe": {"cells": [{"d_oi": -2.0, "cum": -2.0}, {"d_oi": 3.0, "cum": 1.0}]},
+        },
+        {
+            "ce": {"cells": [{"d_oi": 1.0, "cum": 1.0}, {"d_oi": 2.0, "cum": 3.0}]},
+            "pe": {"cells": [{"d_oi": 4.0, "cum": 4.0}, {"d_oi": 1.0, "cum": 5.0}]},
+        },
+    ]
+    out = features.bucket_totals(rows, 2)
+    assert out["ce"]["delta"] == [11.0, 7.0]
+    assert out["ce"]["cum"] == [11.0, 18.0]
+    assert out["pe"]["delta"] == [2.0, 4.0]
+    assert out["pe"]["cum"] == [2.0, 6.0]
+
+
+def test_a_bucket_no_strike_reported_is_none_not_zero():
+    """A flat bar is the strip's strongest statement — "no net change". It must
+    never stand in for "nothing was recorded"."""
+    rows = [
+        {
+            "ce": {"cells": [{"d_oi": None, "cum": None}, {"d_oi": 4.0, "cum": 4.0}]},
+            "pe": {"cells": [{"d_oi": None, "cum": None}, {"d_oi": None, "cum": None}]},
+        }
+    ]
+    out = features.bucket_totals(rows, 2)
+    assert out["ce"]["delta"] == [None, 4.0]
+    assert out["pe"]["delta"] == [None, None]
+
+
+def test_a_real_zero_stays_zero():
+    """Distinguished from the None case above: a strike that reported no change
+    is information, and must survive as 0."""
+    rows = [{"ce": {"cells": [{"d_oi": 0.0, "cum": 0.0}]}, "pe": {"cells": [{"d_oi": 0.0, "cum": 0.0}]}}]
+    out = features.bucket_totals(rows, 1)
+    assert out["ce"]["delta"] == [0.0]
+
+
+def test_totals_scale_is_shared_across_sides():
+    """Grouped bars exist to be compared; two ceilings would make equal heights
+    mean different amounts."""
+    totals = {
+        "ce": {m: [1.0, 2.0] for m in features.TOTAL_METRICS},
+        "pe": {m: [100.0, 200.0] for m in features.TOTAL_METRICS},
+    }
+    scale = features._totals_scale(totals)
+    assert scale["cum"]["max"] == 200.0
+
+
+def test_every_metric_the_page_can_show_has_totals_and_a_scale():
+    """A metric missing from either map would render an empty strip rather than
+    failing, which is the quiet mode of breakage this pins shut."""
+    rows = [{"ce": {"cells": [dict.fromkeys(features.TOTAL_METRICS.values(), 1.0)]},
+             "pe": {"cells": [dict.fromkeys(features.TOTAL_METRICS.values(), 1.0)]}}]
+    totals = features.bucket_totals(rows, 1)
+    scale = features._totals_scale(totals)
+    for metric in features.TOTAL_METRICS:
+        assert metric in totals["ce"] and metric in totals["pe"]
+        assert metric in scale
+
+
+def test_the_band_always_reads_a_cumulative_form():
+    """The band summarises a session, so a per-bucket metric has to resolve to
+    its running total — "session cumulative" of ΔOI/bucket is cumulative ΔOI."""
+    assert set(features.CUMULATIVE_FORM) == set(features.TOTAL_METRICS)
+    for metric, form in features.CUMULATIVE_FORM.items():
+        assert form in features.TOTAL_METRICS
+        assert form.startswith("cum"), f"{metric} resolves to a non-cumulative {form}"
+    # Already-cumulative metrics resolve to themselves, not to something else.
+    for metric in ("cum", "cum_vol", "cum_delta_vol"):
+        assert features.CUMULATIVE_FORM[metric] == metric
+
+
+def test_previous_session_comparison_excludes_buy_minus_sell():
+    """Deriving it for the prior session means running the quote rule over that
+    whole session — a second full pipeline pass on every poll. Withheld with a
+    reason beats paid for silently."""
+    assert set(features.PREV_SESSION_METRICS) <= set(features.TOTAL_METRICS)
+    assert set(features.PREV_SESSION_METRICS) == {"cum", "cum_vol"}
+    assert "cum_delta_vol" not in features.PREV_SESSION_METRICS
+    # Every metric the band can resolve to is either comparable or knowably not.
+    for form in set(features.CUMULATIVE_FORM.values()):
+        assert form in features.PREV_SESSION_METRICS or form == "cum_delta_vol"
