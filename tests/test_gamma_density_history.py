@@ -1956,3 +1956,27 @@ def test_defaults_leave_detection_behaviour_unchanged() -> None:
     assert detect_spot_reversals(series, **kw) == detect_spot_reversals(
         series, **kw, right_bars=None, freeze_threshold=False, max_bar_gap_ratio=None
     )
+
+
+def test_matching_candidate_does_not_backfill_a_legacy_emit_time() -> None:
+    """The real shape of the legacy case, which an empty candidate list missed.
+
+    Detect re-produces the same candidates on every poll, so a frozen signal is
+    matched on every pass. Stamping on match backfilled every pre-existing
+    signal with the current time — after an API restart, this morning's 09:39
+    pivot claimed it was first seen at 12:10.
+    """
+    legacy = {
+        "t": "2026-07-24T09:35:00+05:30",
+        "ts_ms": 1_753_330_500_000,
+        "side": "bullish",
+        "spot": 23500.0,
+        "move_pts": 60.0,
+        "confirmed_ts_ms": 1_753_330_800_000,
+    }
+    # Same signal, re-detected — this is what actually happens every poll.
+    out = reconcile_session_reversals(
+        [dict(legacy)], [legacy], tf="1m", now_ms=1_753_340_000_000
+    )
+    assert len(out) == 1, "must match the frozen signal, not append a duplicate"
+    assert out[0]["emitted_ts_ms"] is None, "a legacy signal must not gain a fake emit time"

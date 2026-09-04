@@ -1044,7 +1044,13 @@ def reconcile_session_reversals(
             # Gates can clear after the fact; the emit stamp must not move.
             if "blocked_by" in cand:
                 match["blocked_by"] = cand.get("blocked_by")
-            _apply_emit_stamp(match, int(now_ms))
+            # Deliberately NOT stamped here. Detect re-produces the same
+            # candidates every poll, so a frozen signal matches on every pass --
+            # stamping on match backfilled every pre-existing signal with the
+            # current time. After an API restart that made this morning's 09:39
+            # pivot claim it was first seen at 12:10. A signal is stamped once,
+            # where it is appended; anything without a stamp predates the field
+            # and keeps null rather than a fabricated time.
             if _confirm_window_open(
                 match,
                 confirm_bars=confirm,
