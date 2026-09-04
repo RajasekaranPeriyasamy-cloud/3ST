@@ -23,6 +23,17 @@ An apparent 62.5% win rate for VIX-MACD-aligned signals, found on 6 sessions,
 fell to 49.8% on 36. That is what this tool exists to prevent: it is easy to
 slice a small sample until something looks like edge.
 
+A bearish asymmetry looked more durable -- 55.4% against 46.4% for bullish, and
+stable at 55-58% across every sub-period. The base-rate control dissolved it.
+NIFTY fell 0.68% over the sample, in which an arbitrary 60-minute short wins
+52.7% with no signal at all. The signal contributed +2.7 points, under 1 SE. The
+sub-period "confirmations" were nested windows inside the same downtrend, all
+re-measuring the same drift.
+
+That is why EXCESS, not the raw win rate, is the column to read. In a trending
+sample the trend-direction side wins without any signal, and a strategy tested
+without this control takes credit for the tape.
+
 Read the caveats below before believing any number this prints.
 
 Caveats that apply to every result here
@@ -30,6 +41,9 @@ Caveats that apply to every result here
 * **Spot, not fills.** No spread, brokerage, slippage or theta. A NIFTY option's
   bid-ask through delta is worth several bp on its own, so a strategy starting
   at 0.0 bp is negative after costs.
+* **Base rate.** Every bucket is scored against an unconditional entry over the
+  same bars, side-weighted to the bucket's own mix. Without it a trending sample
+  makes the trend-direction side look skilful.
 * **Multiple comparisons.** Every extra split makes a false positive more
   likely. The tool prints how many hypotheses you have tested; treat anything
   under 2 SE as noise, and prefer pre-registering a test against future data.
@@ -239,7 +253,45 @@ def score(
     return out
 
 
-def bucket(name: str, rows: list[dict[str, Any]], h: int) -> dict[str, Any] | None:
+def base_rates(bars_by_day: list[pd.DataFrame], horizons: tuple[int, ...]) -> dict[int, dict]:
+    """Unconditional return of entering at an arbitrary bar and holding ``h``.
+
+    Without this control, any strategy tested inside a trending period looks
+    good in the trend direction. Measured over 38 sessions in which NIFTY fell
+    0.68%, an arbitrary 60-minute SHORT won 52.7% of the time with no signal at
+    all -- which accounted for almost the whole apparent edge of the bearish
+    pivot signal (55.4%, so +2.7 points, under 1 SE).
+    """
+    out: dict[int, dict] = {}
+    for h in horizons:
+        longs: list[float] = []
+        for g in bars_by_day:
+            px = g["px"].to_numpy()
+            ts = g["ts_ms"].to_numpy()
+            for i in range(len(px)):
+                j = int(ts.searchsorted(ts[i] + h * 60_000, side="left"))
+                if j >= len(px):
+                    continue
+                longs.append((px[j] - px[i]) / px[i] * 10_000)
+        if not longs:
+            out[h] = {}
+            continue
+        lw = sum(1 for v in longs if v > 0) / len(longs) * 100
+        out[h] = {
+            "n": len(longs),
+            "long_win": round(lw, 1),
+            "short_win": round(100 - lw, 1),
+            "long_median_bp": round(statistics.median(longs), 2),
+        }
+    return out
+
+
+def bucket(
+    name: str,
+    rows: list[dict[str, Any]],
+    h: int,
+    base: dict | None = None,
+) -> dict[str, Any] | None:
     vals = [r[f"h{h}"] for r in rows if f"h{h}" in r]
     if len(vals) < MIN_BUCKET:
         return {"name": name, "n": len(vals), "thin": True}
@@ -247,7 +299,8 @@ def bucket(name: str, rows: list[dict[str, Any]], h: int) -> dict[str, Any] | No
     wins = sum(1 for v in vals if v > 0)
     win_pct = wins / n * 100
     se = (0.25 / n) ** 0.5 * 100
-    return {
+    scored = [r for r in rows if f"h{h}" in r]
+    out = {
         "name": name,
         "n": n,
         "thin": False,
@@ -256,6 +309,16 @@ def bucket(name: str, rows: list[dict[str, Any]], h: int) -> dict[str, Any] | No
         "win_pct": round(win_pct, 1),
         "se_from_coinflip": round((win_pct - 50) / se, 1),
     }
+    if base:
+        # Blend the base rate by the bucket's own side mix: a long-only bucket
+        # is judged against an unconditional long, a mixed one proportionally.
+        bulls = sum(1 for r in scored if r["side"] == "bullish")
+        bears = n - bulls
+        expected = (bulls * base["long_win"] + bears * base["short_win"]) / n
+        out["base_win"] = round(expected, 1)
+        out["excess_pts"] = round(win_pct - expected, 1)
+        out["excess_se"] = round((win_pct - expected) / se, 1)
+    return out
 
 
 def render(report: dict[str, Any]) -> str:
@@ -269,16 +332,29 @@ def render(report: dict[str, Any]) -> str:
              f"({m['slip_adverse_pct']}% adverse)")
     o.append("")
     for h, buckets in report["horizons"].items():
-        o.append(f"  +{h}m forward:")
+        base = report["base_rates"].get(h) or {}
+        if base:
+            o.append(f"  +{h}m forward   [base rate with no signal at all: "
+                     f"long {base['long_win']}%  short {base['short_win']}%]")
+        else:
+            o.append(f"  +{h}m forward:")
         for b in buckets:
             if b["thin"]:
-                o.append(f"    {b['name']:<36} n={b['n']:>4}  (under {MIN_BUCKET}, not read)")
+                o.append(f"    {b['name']:<32} n={b['n']:>4}  (under {MIN_BUCKET}, not read)")
                 continue
-            flag = "  <-- worth a look" if abs(b["se_from_coinflip"]) >= SIGNIFICANCE_SE else ""
+            # Judge on excess over the base rate, not the raw win rate: in a
+            # trending sample the trend-direction side wins without any signal.
+            key = "excess_se" if "excess_se" in b else "se_from_coinflip"
+            flag = "  <-- worth a look" if abs(b[key]) >= SIGNIFICANCE_SE else ""
+            excess = (
+                f"  base {b['base_win']:>4.1f}%  excess {b['excess_pts']:>+5.1f} "
+                f"({b['excess_se']:+.1f} SE)"
+                if "excess_pts" in b
+                else f"  ({b['se_from_coinflip']:+.1f} SE)"
+            )
             o.append(
-                f"    {b['name']:<36} n={b['n']:>4}  median {b['median_bp']:>6.1f} bp  "
-                f"mean {b['mean_bp']:>6.1f}  win {b['win_pct']:>4.1f}%  "
-                f"({b['se_from_coinflip']:+.1f} SE){flag}"
+                f"    {b['name']:<32} n={b['n']:>4}  median {b['median_bp']:>6.1f} bp  "
+                f"win {b['win_pct']:>4.1f}%{excess}{flag}"
             )
         o.append("")
     tests = report["meta"]["hypotheses_tested"]
@@ -286,6 +362,11 @@ def render(report: dict[str, Any]) -> str:
     o.append(f"{tests} hypotheses tested in this run. At 2 SE, roughly 1 in 20 shows up by")
     o.append("chance; the more splits, the likelier a false positive. Returns are spot in")
     o.append("basis points, before spread, brokerage, slippage and theta.")
+    d = report["meta"].get("drift_pct")
+    if d is not None:
+        o.append("")
+        o.append(f"Underlying moved {d:+.2f}% over the sample. EXCESS is the column that")
+        o.append("matters: a raw win rate flatters whichever side the tape was already going.")
     return "\n".join(o)
 
 
@@ -331,11 +412,15 @@ def main(argv: list[str] | None = None) -> int:
         cond = Conditioner(load_bars(args.condition), args.condition_col)
 
     recs: list[dict[str, Any]] = []
+    sessions: list[pd.DataFrame] = []
     for _day, g in bars.groupby("day"):
         g = g.reset_index(drop=True)
         if len(g) < 20:
             continue
+        sessions.append(g)
         recs.extend(score(g, detect_session(g, tf=args.tf, variant=variant), horizons, cond))
+
+    base = base_rates(sessions, horizons)
 
     if not recs:
         print("error: no scored signals", file=sys.stderr)
@@ -376,9 +461,14 @@ def main(argv: list[str] | None = None) -> int:
             if slips
             else None,
             "hypotheses_tested": len(splits) * len(horizons),
+            "drift_pct": round(
+                (bars["px"].iloc[-1] / bars["px"].iloc[0] - 1) * 100, 2
+            ),
         },
+        "base_rates": base,
         "horizons": {
-            h: [b for b in (bucket(n, rows, h) for n, rows in splits) if b] for h in horizons
+            h: [b for b in (bucket(n, rows, h, base.get(h)) for n, rows in splits) if b]
+            for h in horizons
         },
     }
 
