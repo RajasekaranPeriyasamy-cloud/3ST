@@ -12,6 +12,7 @@ from options.gamma_density_history import (
     fill_session_gex_series,
     in_session,
     normalize_reversal_tf,
+    reconcile_session_reversals,
     resample_chart_series,
     reversal_tf_params,
     session_history_max_points,
@@ -1634,3 +1635,206 @@ def test_pin_hold_outcomes_derives_held_at_read_time() -> None:
     # A wider tolerance re-reads the same rows to a different verdict.
     wider = pin_hold_outcomes(series, hold_steps=3.0)
     assert [r["held"] for r in wider] == [True, True]
+
+
+# --- Phase 1: lag transparency ------------------------------------------------
+#
+# Pivot and confirm times on a chip are both backdated. A signal whose gate
+# clears late therefore advertises a confirm time nobody could have acted on --
+# the 2026-09-04 report of "conf 09:49 appearing at 10:20". These pin the two
+# fields that make that delay visible instead of mysterious.
+
+
+def _blocked_series() -> list[dict]:
+    """V-shaped trough whose GEX regime stays hostile to a bullish reversal."""
+    base = 23600.0
+    ts0 = datetime(2026, 7, 24, 9, 30, tzinfo=IST)
+    path = [0, -20, -40, -60, -80, -100, -90, -50, -20, 20, 40]
+    series = []
+    for i, d in enumerate(path):
+        t = ts0.timestamp() + i * 60
+        series.append(
+            {
+                "t": datetime.fromtimestamp(t, tz=IST).isoformat(),
+                "ts_ms": int(t * 1000),
+                "spot": base + d,
+                "total_gex": -1e5,
+                "gamma_regime": "negative",  # never supportive of a bullish pivot
+            }
+        )
+    return series
+
+
+def test_blocked_by_names_the_gex_gate_when_provisional() -> None:
+    revs = detect_spot_reversals(
+        _blocked_series(),
+        swing_bars=2,
+        min_move_pts=50,
+        confirm_bars=5,
+        gex_gate=True,
+        provisional_ungated=True,
+        tf="1m",
+    )
+    bulls = [r for r in revs if r["side"] == "bullish"]
+    assert bulls, "provisional_ungated should still surface the pivot"
+    assert bulls[0]["provisional"] is True
+    assert bulls[0]["blocked_by"] == "gex"
+
+
+def test_blocked_by_is_none_once_the_gate_clears() -> None:
+    revs = detect_spot_reversals(
+        _blocked_series(),
+        swing_bars=2,
+        min_move_pts=50,
+        confirm_bars=5,
+        gex_gate=False,
+        tf="1m",
+    )
+    bulls = [r for r in revs if r["side"] == "bullish"]
+    assert bulls
+    assert bulls[0]["blocked_by"] is None
+
+
+def test_emit_stamp_is_set_on_first_sight() -> None:
+    cand = {
+        "t": "2026-07-24T09:35:00+05:30",
+        "ts_ms": 1_753_330_500_000,
+        "side": "bullish",
+        "spot": 23500.0,
+        "move_pts": 60.0,
+        "confirmed_ts_ms": 1_753_330_800_000,
+    }
+    now_ms = 1_753_332_000_000
+    out = reconcile_session_reversals([cand], [], tf="1m", now_ms=now_ms)
+    assert len(out) == 1
+    assert out[0]["emitted_ts_ms"] == now_ms
+    # Derive rather than hardcode a year: the ISO stamp must describe the same
+    # instant as the epoch stamp, in IST.
+    assert datetime.fromisoformat(out[0]["emitted_at"]) == datetime.fromtimestamp(
+        now_ms / 1000.0, tz=IST
+    )
+
+
+def test_emit_stamp_never_moves_when_the_signal_is_re_reconciled() -> None:
+    """The whole point: promotion must not rewrite when it first appeared."""
+    first_seen = 1_753_332_000_000
+    cand = {
+        "t": "2026-07-24T09:35:00+05:30",
+        "ts_ms": 1_753_330_500_000,
+        "side": "bullish",
+        "spot": 23500.0,
+        "move_pts": 60.0,
+        "confirmed_ts_ms": 1_753_330_800_000,
+        "provisional": True,
+        "blocked_by": "gex",
+    }
+    frozen = reconcile_session_reversals([cand], [], tf="1m", now_ms=first_seen)
+
+    promoted = {**cand, "provisional": False, "blocked_by": None, "gex_confirm": True}
+    later = reconcile_session_reversals(
+        [promoted], frozen, tf="1m", now_ms=first_seen + 45 * 60 * 1000
+    )
+    assert len(later) == 1
+    assert later[0]["emitted_ts_ms"] == first_seen, "emit time must not follow the promotion"
+    assert later[0]["blocked_by"] is None, "blocked_by should track the gate clearing"
+
+
+def test_legacy_frozen_signal_is_not_backfilled_with_a_fake_emit_time() -> None:
+    """A signal frozen before the field existed has no honest emit time."""
+    legacy = {
+        "t": "2026-07-24T09:35:00+05:30",
+        "ts_ms": 1_753_330_500_000,
+        "side": "bullish",
+        "spot": 23500.0,
+        "move_pts": 60.0,
+    }
+    out = reconcile_session_reversals([], [legacy], tf="1m", now_ms=1_753_340_000_000)
+    assert out[0]["emitted_ts_ms"] is None
+
+
+def test_new_fields_survive_canonicalisation() -> None:
+    """_canonical_reversal whitelists keys; unlisted fields are silently dropped."""
+    from options.gamma_density_history import FROZEN_REVERSAL_FIELDS, _canonical_reversal
+
+    for field in ("emitted_at", "emitted_ts_ms", "blocked_by"):
+        assert field in FROZEN_REVERSAL_FIELDS
+    kept = _canonical_reversal(
+        {"emitted_at": "x", "emitted_ts_ms": 1, "blocked_by": "gex", "side": "bullish"}
+    )
+    assert kept["emitted_ts_ms"] == 1
+    assert kept["blocked_by"] == "gex"
+
+
+# --- Phase 2: provisional-first needs a terminal state ------------------------
+#
+# Measured over 20 archived sessions: 18 of 18 provisional-only signals ended
+# the session unpromoted. Without `gate_expired` they read "waiting GEX" for the
+# rest of the day, which is worse than not showing them.
+
+
+def _provisional_cand(ts_ms: int, confirmed_ts_ms: int) -> dict:
+    return {
+        "t": datetime.fromtimestamp(ts_ms / 1000, tz=IST).isoformat(),
+        "ts_ms": ts_ms,
+        "side": "bullish",
+        "spot": 23500.0,
+        "move_pts": 60.0,
+        "confirmed_ts_ms": confirmed_ts_ms,
+        "provisional": True,
+        "blocked_by": "gex",
+    }
+
+
+def test_provisional_stays_pending_while_the_confirm_window_is_open() -> None:
+    pivot = 1_753_330_500_000
+    cand = _provisional_cand(pivot, pivot + 60_000)
+    # 1m TF, confirm_bars=12 -> window is 12 minutes; ask at +3.
+    out = reconcile_session_reversals(
+        [cand], [], tf="1m", now_ms=pivot + 3 * 60 * 1000
+    )
+    assert out[0]["provisional"] is True
+    assert not out[0].get("gate_expired"), "still inside the window; may yet promote"
+
+
+def test_provisional_becomes_expired_once_the_window_closes() -> None:
+    pivot = 1_753_330_500_000
+    cand = _provisional_cand(pivot, pivot + 60_000)
+    frozen = reconcile_session_reversals([cand], [], tf="1m", now_ms=pivot + 60_000)
+    # Well past confirm_bars(12) x 1 min.
+    later = reconcile_session_reversals(
+        [cand], frozen, tf="1m", now_ms=pivot + 40 * 60 * 1000
+    )
+    assert later[0]["gate_expired"] is True
+    assert later[0]["provisional"] is True
+
+
+def test_promotion_clears_expiry_rather_than_stranding_the_signal() -> None:
+    pivot = 1_753_330_500_000
+    cand = _provisional_cand(pivot, pivot + 60_000)
+    frozen = reconcile_session_reversals([cand], [], tf="1m", now_ms=pivot + 60_000)
+    promoted = {**cand, "provisional": False, "gex_confirm": True, "blocked_by": None}
+    out = reconcile_session_reversals(
+        [promoted], frozen, tf="1m", now_ms=pivot + 40 * 60 * 1000
+    )
+    assert out[0]["provisional"] is False
+    assert out[0]["gate_expired"] is False
+    assert out[0]["blocked_by"] is None
+
+
+def test_signal_first_seen_after_its_window_closed_is_terminal_immediately() -> None:
+    """The retroactive-qualification path: a pivot can surface long after its own
+    confirm window shut, because the adaptive threshold fell. It must not then
+    advertise itself as pending."""
+    pivot = 1_753_330_500_000
+    cand = _provisional_cand(pivot, pivot + 60_000)
+    out = reconcile_session_reversals(
+        [cand], [], tf="1m", now_ms=pivot + 90 * 60 * 1000
+    )
+    assert out[0]["gate_expired"] is True
+
+
+def test_gate_expired_survives_canonicalisation() -> None:
+    from options.gamma_density_history import FROZEN_REVERSAL_FIELDS, _canonical_reversal
+
+    assert "gate_expired" in FROZEN_REVERSAL_FIELDS
+    assert _canonical_reversal({"gate_expired": True})["gate_expired"] is True

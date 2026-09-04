@@ -86,6 +86,18 @@ FROZEN_REVERSAL_FIELDS = (
     "oi_gate_pass",
     "tf",
     "label",
+    # Phase 1 lag transparency. `emitted_*` is the wall-clock moment the signal
+    # first became visible, stamped once and never revised; `blocked_by` names
+    # the gate holding it. A chip whose confirm time is 40 minutes older than
+    # its emit time reads as a bug without these.
+    "emitted_at",
+    "emitted_ts_ms",
+    "blocked_by",
+    # Phase 2: the confirm window closed with the hard gate still unmet, so this
+    # pivot can never promote. Measured over 20 archived sessions, 18 of 18
+    # provisional-only signals ended the session unpromoted -- without a
+    # terminal state they read "waiting GEX" indefinitely.
+    "gate_expired",
 )
 
 # Hard OI gate: proximity to walls/pin (strike steps).
@@ -925,6 +937,24 @@ def _apply_confirm_stamp(
     return _stamp_confirmed_at(rev, int(now_ms))
 
 
+def _apply_emit_stamp(rev: dict[str, Any], now_ms: int) -> dict[str, Any]:
+    """Stamp first-visible wall-clock, once.
+
+    This is the only honest answer to "when could I have acted on this?" -- the
+    pivot and confirm times are both backdated, so a signal whose gate cleared
+    an hour later still advertises a confirm time nobody could have traded.
+
+    Never overwritten: a signal that promotes from provisional to gated keeps
+    the moment it first appeared, not the moment it firmed up. Signals frozen
+    before this field existed keep ``None`` rather than being backfilled with a
+    fabricated time.
+    """
+    if rev.get("emitted_ts_ms") is None:
+        rev["emitted_ts_ms"] = int(now_ms)
+        rev["emitted_at"] = datetime.fromtimestamp(int(now_ms) / 1000.0, tz=IST).isoformat()
+    return rev
+
+
 def _confirm_window_open(
     rev: dict[str, Any],
     *,
@@ -1011,6 +1041,10 @@ def reconcile_session_reversals(
             # wall-clock stamps from an earlier Live/GEX unlock reconcile).
             if cand.get("confirmed_ts_ms") is not None:
                 _apply_confirm_stamp(match, cand, int(now_ms))
+            # Gates can clear after the fact; the emit stamp must not move.
+            if "blocked_by" in cand:
+                match["blocked_by"] = cand.get("blocked_by")
+            _apply_emit_stamp(match, int(now_ms))
             if _confirm_window_open(
                 match,
                 confirm_bars=confirm,
@@ -1049,6 +1083,8 @@ def reconcile_session_reversals(
                     match["gex_confirm"] = bool(cand.get("gex_confirm"))
                 if bool(match.get("gex_confirm")):
                     match["provisional"] = False
+                # Window closed and still unpromoted: this one is never coming.
+                match["gate_expired"] = bool(match.get("provisional"))
                 if "gex_confirm" in cand or "provisional" in cand:
                     match["label"] = _format_reversal_label(
                         tf_key=str(match.get("tf") or tf_key),
@@ -1067,7 +1103,18 @@ def reconcile_session_reversals(
         )
         if kept:
             # Prefer detect confirm-bar; else reconcile wall-clock as fallback.
-            working.append(_apply_confirm_stamp(_canonical_reversal(cand), cand, int(now_ms)))
+            fresh = _apply_confirm_stamp(_canonical_reversal(cand), cand, int(now_ms))
+            _apply_emit_stamp(fresh, int(now_ms))
+            # First seen after its own confirm window closed (retroactive
+            # qualification): terminal immediately if the gate never cleared.
+            if bool(fresh.get("provisional")) and not _confirm_window_open(
+                fresh,
+                confirm_bars=confirm,
+                tf_minutes=int(params["minutes"]),
+                now_ms=int(now_ms),
+            ):
+                fresh["gate_expired"] = True
+            working.append(fresh)
 
     return sorted(working, key=lambda r: r.get("ts_ms") or 0)
 
@@ -2319,11 +2366,13 @@ def detect_spot_reversals(
         row = series[idx]
         hard_ok, soft_confirm = _gex_gate_result(series, idx, confirm, side)
         provisional = False
+        blocked: list[str] = []
         if gex_gate and not hard_ok:
             if not provisional_ungated:
                 continue
             provisional = True
             gex_confirm = False
+            blocked.append("gex")
         else:
             gex_confirm = hard_ok if gex_gate else soft_confirm
 
@@ -2353,6 +2402,7 @@ def detect_spot_reversals(
             if not provisional_ungated:
                 continue
             provisional = True
+            blocked.append("oi")
 
         conf_t, conf_ts = _first_confirm_bar_stamp(
             spots,
@@ -2378,6 +2428,7 @@ def detect_spot_reversals(
                 "provisional": provisional,
                 "oi_align": oi_ok,
                 "oi_gate_pass": oi_gate_pass,
+                "blocked_by": "+".join(blocked) if blocked else None,
                 "tf": tf_key,
                 "label": _format_reversal_label(
                     tf_key=tf_key,

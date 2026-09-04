@@ -306,6 +306,45 @@ export function formatReversalChipTimes(rev: Pick<GammaReversal, "t" | "ts_ms" |
   return `${pivot} pivot · conf ${conf}`;
 }
 
+/**
+ * Delay between a signal's labelled confirm bar and the moment it actually
+ * appeared, in whole minutes. Both chip times are backdated, so a signal whose
+ * gate cleared late advertises a confirm time nobody could have traded on.
+ * Returns null when there is nothing to disclose: no emit stamp (signals frozen
+ * before the field existed) or a delay too small to matter.
+ */
+function reversalEmitLagMin(
+  rev: Pick<GammaReversal, "confirmed_ts_ms" | "confirmed_at" | "emitted_ts_ms" | "emitted_at">,
+  minMinutes = 2,
+): number | null {
+  const conf = toMs(rev.confirmed_at ?? null, rev.confirmed_ts_ms);
+  const seen = toMs(rev.emitted_at ?? null, rev.emitted_ts_ms);
+  if (conf == null || seen == null) return null;
+  const mins = Math.round((seen - conf) / 60000);
+  return mins >= minMinutes ? mins : null;
+}
+
+/**
+ * Human label for the gate holding a signal back.
+ *
+ * Once the confirm window has closed the pivot can never promote, so it reads
+ * as settled rather than pending — a permanently "waiting" chip is worse than
+ * no chip.
+ */
+function formatBlockedBy(
+  blocked: string | null | undefined,
+  expired?: boolean | null,
+): string | null {
+  if (!blocked) return null;
+  const parts = String(blocked)
+    .split("+")
+    .map((p) => (p === "gex" ? "GEX" : p === "oi" ? "OI" : p))
+    .filter(Boolean);
+  if (!parts.length) return null;
+  const gates = parts.join(" + ");
+  return expired ? `${gates} never cleared` : `waiting ${gates}`;
+}
+
 function lastFinite(arr: (number | null)[]): number | null {
   for (let i = arr.length - 1; i >= 0; i--) {
     const v = arr[i];
@@ -1883,13 +1922,42 @@ export function GexSessionPlotly({
                 <span className="font-semibold tracking-wide">{underlying}</span>
                 {" · "}
                 {formatReversalChipTimes(r)}
-                {" · "}
-                {r.label}
-                {muted ? (
-                  <span className="ml-1 rounded bg-muted px-1 text-[10px] text-muted-foreground">
-                    {r.provisional === true ? "provisional" : "pre-GEX"}
-                  </span>
-                ) : null}
+                  {(() => {
+                    const lag = reversalEmitLagMin(r);
+                    if (lag == null) return null;
+                    const seen = formatHhMmIst(r.emitted_at ?? null, r.emitted_ts_ms);
+                    return (
+                      <span
+                        className="ml-1 rounded bg-slate-500/15 px-1 text-[10px] text-slate-700"
+                        title={`Confirm bar is backdated; this signal only became visible at ${seen} IST, ${lag} min later.`}
+                      >
+                        seen {seen} (+{lag}m)
+                      </span>
+                    );
+                  })()}
+                  {" · "}
+                  {r.label}
+                  {muted ? (
+                    <span className="ml-1 rounded bg-muted px-1 text-[10px] text-muted-foreground">
+                      {r.provisional === true ? "provisional" : "pre-GEX"}
+                    </span>
+                  ) : null}
+                  {formatBlockedBy(r.blocked_by, r.gate_expired) ? (
+                    <span
+                      className={
+                        r.gate_expired
+                          ? "ml-1 rounded bg-slate-500/15 px-1 text-[10px] text-slate-600"
+                          : "ml-1 rounded bg-sky-500/15 px-1 text-[10px] text-sky-800"
+                      }
+                      title={
+                        r.gate_expired
+                          ? "Confirm window closed with the gate still unmet — this pivot cannot promote."
+                          : "Hard gate not yet cleared for this pivot."
+                      }
+                    >
+                      {formatBlockedBy(r.blocked_by, r.gate_expired)}
+                    </span>
+                  ) : null}
                 {r.oi_align ? (
                   <span className="ml-1 rounded bg-amber-500/15 px-1 text-[10px] text-amber-800">
                     OI

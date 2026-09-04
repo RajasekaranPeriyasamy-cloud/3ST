@@ -939,6 +939,22 @@ export interface GammaReversal {
   /** Hard OI gate: true=supportive, false=hostile/unsupported, null=oi_unknown. */
   oi_gate_pass?: boolean | null;
   tf?: "1m" | "5m" | "15m" | string;
+  /**
+   * Wall-clock moment the signal first became visible, stamped once and never
+   * revised. Pivot and confirm times are both backdated, so without this a
+   * signal whose gate cleared an hour later still advertises a confirm time
+   * nobody could have acted on. Null for signals frozen before this existed.
+   */
+  emitted_at?: string | null;
+  emitted_ts_ms?: number | null;
+  /** Gate holding the signal back: "gex", "oi", or "gex+oi". Null once clear. */
+  blocked_by?: string | null;
+  /**
+   * Confirm window closed with the hard gate still unmet, so this pivot can
+   * never promote. Across 20 archived sessions every provisional-only signal
+   * ended unpromoted — without this they read "waiting" indefinitely.
+   */
+  gate_expired?: boolean | null;
   label: string;
 }
 
