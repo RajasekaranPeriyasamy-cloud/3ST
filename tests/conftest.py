@@ -40,6 +40,10 @@ module's *own* reference, and the call-level guard armed by
 ``data/`` — so a store added later cannot silently join the list. Tests that
 genuinely need to write there can opt out with
 ``@pytest.mark.writes_real_data`` (none do today).
+
+The session backstop only fails on writes that *completed* against live data/.
+A refused attempt changed nothing, so it never implicates the suite -- see
+``suite_attributed_changes``.
 """
 
 from __future__ import annotations
@@ -186,10 +190,14 @@ def _is_write_mode(mode: object) -> bool:
     return any(flag in str(mode) for flag in ("w", "a", "x", "+"))
 
 
-# Attempts the guard caught, as {filename: {test nodeid, ...}}. Consulted by the
-# session-scoped check so a real change can be attributed to this suite rather
-# than to the live desk running alongside it.
+# Attempts the guard caught, as {filename: {test nodeid, ...}}. Diagnostic only:
+# ``_refuse`` always raises, so a caught attempt means the bytes never landed and
+# therefore cannot explain a file that changed on disk.
 _BLOCKED: dict[str, set[str]] = {}
+# Writes that actually COMPLETED against live data/ from this process — only
+# possible while the guard is disarmed (``@pytest.mark.writes_real_data``, or
+# during collection). These are the only thing that can implicate the suite.
+_WROTE: dict[str, set[str]] = {}
 _GUARD: dict[str, object] = {"active": False, "node": "<collection>"}
 
 
@@ -208,6 +216,32 @@ def _refuse(kind: str, target: object) -> None:
     )
 
 
+def _check_write(kind: str, target: object) -> None:
+    """Refuse a live-data write while armed; record it when the guard is opted out.
+
+    The split matters for attribution. ``_refuse`` raises, so a caught attempt
+    changed nothing — treating it as evidence that "this process wrote the file"
+    made the session backstop fail every time the desk ran alongside pytest,
+    because `test_writing_a_watched_file_is_refused` deliberately attempts a
+    write to a file the desk is also updating.
+    """
+    if not _under_real_data(target):
+        return
+    if _GUARD["active"]:
+        _refuse(kind, target)  # always raises
+    name = os.path.basename(os.fspath(target))  # type: ignore[arg-type]
+    _WROTE.setdefault(name, set()).add(str(_GUARD["node"]))
+
+
+def suite_attributed_changes(changed: list[str]) -> list[str]:
+    """Of ``changed``, the files this process actually wrote.
+
+    Refused attempts are deliberately excluded: a refusal means the write never
+    reached the filesystem, so it cannot account for a change on disk.
+    """
+    return [name for name in changed if _WROTE.get(name)]
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Wrap the write syscalls once; ``_GUARD["active"]`` decides when they bite.
 
@@ -220,47 +254,38 @@ def pytest_configure(config: pytest.Config) -> None:
     real_unlink = Path.unlink
     real_replace, real_rename, real_remove = os.replace, os.rename, os.remove
 
-    def _armed() -> bool:
-        return bool(_GUARD["active"])
-
     def open_(file, mode="r", *a, **k):
-        if _armed() and _is_write_mode(mode) and _under_real_data(file):
-            _refuse(f"open({mode})", file)
+        if _is_write_mode(mode):
+            _check_write(f"open({mode})", file)
         return real_open(file, mode, *a, **k)
 
     def path_open_(self, mode="r", *a, **k):
-        if _armed() and _is_write_mode(mode) and _under_real_data(self):
-            _refuse(f"open({mode})", self)
+        if _is_write_mode(mode):
+            _check_write(f"open({mode})", self)
         return real_path_open(self, mode, *a, **k)
 
     def write_text_(self, *a, **k):
-        if _armed() and _under_real_data(self):
-            _refuse("write", self)
+        _check_write("write", self)
         return real_write_text(self, *a, **k)
 
     def write_bytes_(self, *a, **k):
-        if _armed() and _under_real_data(self):
-            _refuse("write", self)
+        _check_write("write", self)
         return real_write_bytes(self, *a, **k)
 
     def unlink_(self, *a, **k):
-        if _armed() and _under_real_data(self):
-            _refuse("delete", self)
+        _check_write("delete", self)
         return real_unlink(self, *a, **k)
 
     def replace_(src, dst, *a, **k):
-        if _armed() and _under_real_data(dst):
-            _refuse("replace", dst)
+        _check_write("replace", dst)
         return real_replace(src, dst, *a, **k)
 
     def rename_(src, dst, *a, **k):
-        if _armed() and _under_real_data(dst):
-            _refuse("rename", dst)
+        _check_write("rename", dst)
         return real_rename(src, dst, *a, **k)
 
     def remove_(path, *a, **k):
-        if _armed() and _under_real_data(path):
-            _refuse("delete", path)
+        _check_write("delete", path)
         return real_remove(path, *a, **k)
 
     builtins.open = open_
@@ -373,24 +398,39 @@ def real_store_files_untouched():
     away from the test that caused it.
 
     The live desk may legitimately be running while the suite runs, and its
-    runners write these same files. So a change is only a *failure* when the
-    call-level guard also caught this process attempting it; an otherwise
-    unexplained change is reported as a warning naming the other writer.
+    runners write these same files. So a change is only a *failure* when this
+    process actually completed a write to it; an otherwise unexplained change is
+    reported as a warning naming the other writer.
+
+    "Actually completed" is the load-bearing word. This used to key off
+    ``_BLOCKED``, the refused attempts — but ``_refuse`` raises, so those writes
+    never reached the filesystem and cannot explain a change. The result was a
+    guaranteed false failure whenever the desk was running:
+    ``test_writing_a_watched_file_is_refused`` deliberately attempts a write to
+    a watched file, the desk's runner independently updated that same file, and
+    the backstop blamed the test for the runner's bytes.
     """
     root = Path(data_dir())
     before = {name: _digest(root / name) for name in _WATCHED_FILES}
     yield
     changed = [name for name in _WATCHED_FILES if _digest(root / name) != before[name]]
-    ours = [name for name in changed if _BLOCKED.get(name)]
+    ours = suite_attributed_changes(changed)
     if ours:
-        detail = "; ".join(f"data/{n} <- {sorted(_BLOCKED[n])}" for n in ours)
+        detail = "; ".join(f"data/{n} <- {sorted(_WROTE[n])}" for n in ours)
         raise AssertionError(f"The unit suite modified live store files: {detail}")
     if changed:
         import warnings
 
+        refused = [n for n in changed if _BLOCKED.get(n)]
+        note = (
+            f" ({', '.join(refused)} also had a write refused by the guard, which "
+            "by definition did not change them)"
+            if refused
+            else ""
+        )
         warnings.warn(
             "Live store files changed while the suite ran, but no test in this "
-            f"process wrote them: {', '.join('data/' + n for n in changed)}. "
+            f"process wrote them: {', '.join('data/' + n for n in changed)}{note}. "
             "Expected when the desk is running alongside pytest.",
             stacklevel=1,
         )

@@ -81,6 +81,41 @@ def test_writing_a_watched_file_is_refused(filename: str) -> None:
             pass
 
 
+def test_a_refused_write_never_implicates_the_suite() -> None:
+    """The refusal above must not make the session backstop blame this test.
+
+    ``_refuse`` raises, so the bytes never land. Attributing a changed file to a
+    refused attempt made ``real_store_files_untouched`` fail every time the desk
+    ran alongside pytest: this test deliberately attempts a write to a watched
+    file, the desk's runner independently rewrote that same file seconds later,
+    and the backstop blamed the test for the runner's bytes.
+    """
+    from tests.conftest import _BLOCKED, _WROTE, suite_attributed_changes
+
+    filename = _WATCHED_FILES[0]
+    target = data_dir() / filename
+    with pytest.raises(RealDataWriteBlocked):
+        target.write_text("clobbered", encoding="utf-8")
+
+    # The attempt is recorded for diagnostics...
+    assert filename in _BLOCKED
+    # ...but it is not a completed write, so it cannot explain a changed file.
+    assert filename not in _WROTE
+    assert suite_attributed_changes([filename]) == []
+
+
+def test_attribution_reports_a_write_that_actually_landed() -> None:
+    """The backstop must still fire for a genuine completed write."""
+    from tests.conftest import _WROTE, suite_attributed_changes
+
+    filename = "___attribution_probe.json"
+    _WROTE.setdefault(filename, set()).add("tests/probe.py::test_probe")
+    try:
+        assert suite_attributed_changes([filename]) == [filename]
+    finally:
+        _WROTE.pop(filename, None)
+
+
 def test_reading_the_real_data_dir_is_still_allowed() -> None:
     """The guard is about writes only — read-only fixtures must keep working."""
     seed = data_dir() / "fpi_sectors_seed.json"
