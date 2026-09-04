@@ -1838,3 +1838,121 @@ def test_gate_expired_survives_canonicalisation() -> None:
 
     assert "gate_expired" in FROZEN_REVERSAL_FIELDS
     assert _canonical_reversal({"gate_expired": True})["gate_expired"] is True
+
+
+# --- Phase 3: window bounds and a threshold that cannot move backwards --------
+#
+# Measured over 20 archived sessions at 5m, these two together cut shape-lag max
+# from 163m to 34m and conf-lag max from 62m to 17m. The third candidate
+# (asymmetric swing, right_bars=1) was measured and rejected: at 1m it pushed
+# shape max from 166m to 223m, because less proof means more false pivots that
+# then take longer to resolve.
+
+
+def _gapped_series(gap_after: int, gap_minutes: int) -> list[dict]:
+    """V-shaped reclaim with a sampling hole inserted mid-window."""
+    base = 23600.0
+    ts = datetime(2026, 7, 24, 9, 30, tzinfo=IST).timestamp()
+    path = [0, -20, -40, -60, -80, -100, -90, -50, -20, 20, 40]
+    series = []
+    for i, dpx in enumerate(path):
+        if i == gap_after:
+            ts += gap_minutes * 60
+        series.append(
+            {
+                "t": datetime.fromtimestamp(ts, tz=IST).isoformat(),
+                "ts_ms": int(ts * 1000),
+                "spot": base + dpx,
+                "total_gex": 1e5,
+                "gamma_regime": "positive",
+            }
+        )
+        ts += 60
+    return series
+
+
+def test_pivot_proved_across_a_sampling_hole_is_rejected() -> None:
+    series = _gapped_series(gap_after=6, gap_minutes=135)
+    kw = {"swing_bars": 2, "min_move_pts": 50, "confirm_bars": 5, "gex_gate": False, "tf": "1m"}
+    assert detect_spot_reversals(series, **kw), "sanity: detected without the bound"
+    bounded = detect_spot_reversals(series, **kw, max_bar_gap_ratio=3.0)
+    assert bounded == [], "a pivot whose window straddles a 135-minute hole is not proven"
+
+
+def test_gap_outside_the_pivot_window_does_not_reject_it() -> None:
+    """Only the bars this pivot depends on matter; a hole elsewhere is irrelevant."""
+    series = _gapped_series(gap_after=10, gap_minutes=135)  # after the whole window
+    revs = detect_spot_reversals(
+        series,
+        swing_bars=2,
+        min_move_pts=50,
+        confirm_bars=3,
+        gex_gate=False,
+        tf="1m",
+        max_bar_gap_ratio=3.0,
+    )
+    assert revs, "a gap past the confirm window must not veto the pivot"
+
+
+def test_frozen_threshold_is_stable_as_later_bars_arrive() -> None:
+    """The retroactive-admission bug: the same pivot must qualify identically
+    whether judged now or judged with another hour of quiet tape appended."""
+    base = 23600.0
+    ts0 = datetime(2026, 7, 24, 9, 30, tzinfo=IST).timestamp()
+    path = [0, -20, -40, -60, -80, -100, -90, -50, -20, 20, 40]
+    series = []
+    for i, dpx in enumerate(path):
+        t = ts0 + i * 60
+        series.append(
+            {
+                "t": datetime.fromtimestamp(t, tz=IST).isoformat(),
+                "ts_ms": int(t * 1000),
+                "spot": base + dpx,
+                "total_gex": 1e5,
+                "gamma_regime": "positive",
+            }
+        )
+    kw = {
+        "swing_bars": 2,
+        "confirm_bars": 5,
+        "gex_gate": False,
+        "tf": "1m",
+        "freeze_threshold": True,
+    }
+    early = detect_spot_reversals(series, min_move_pts=50, **kw)
+
+    # Append an hour of near-flat tape: the *global* adaptive threshold falls,
+    # which is what used to admit old pivots after the fact.
+    quiet = list(series)
+    for i in range(60):
+        t = ts0 + (len(path) + i) * 60
+        quiet.append(
+            {
+                "t": datetime.fromtimestamp(t, tz=IST).isoformat(),
+                "ts_ms": int(t * 1000),
+                "spot": base + 40 + (i % 2),
+                "total_gex": 1e5,
+                "gamma_regime": "positive",
+            }
+        )
+    late = detect_spot_reversals(quiet, min_move_pts=50, **kw)
+
+    early_ids = {(r["ts_ms"], r["side"]) for r in early}
+    late_ids = {(r["ts_ms"], r["side"]) for r in late}
+    assert early_ids <= late_ids, "a pivot must not vanish as tape arrives"
+    new_in_window = {
+        k for k in late_ids - early_ids if k[0] <= series[-1]["ts_ms"]
+    }
+    assert not new_in_window, (
+        "no pivot inside the original window may appear only after quiet tape "
+        f"lowered the threshold: {sorted(new_in_window)}"
+    )
+
+
+def test_defaults_leave_detection_behaviour_unchanged() -> None:
+    """Every Phase 3 knob is opt-in; omitting them must match the old detector."""
+    series = _gapped_series(gap_after=6, gap_minutes=135)
+    kw = {"swing_bars": 2, "min_move_pts": 50, "confirm_bars": 5, "gex_gate": False, "tf": "1m"}
+    assert detect_spot_reversals(series, **kw) == detect_spot_reversals(
+        series, **kw, right_bars=None, freeze_threshold=False, max_bar_gap_ratio=None
+    )

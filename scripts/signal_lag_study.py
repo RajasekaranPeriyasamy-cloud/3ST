@@ -124,6 +124,7 @@ def replay(
     tf: str,
     gex_gate: bool,
     provisional: bool = False,
+    knobs: dict[str, Any] | None = None,
 ) -> dict[tuple, dict[str, Any]]:
     """Re-run detection at every tick; record when each signal first appears.
 
@@ -155,6 +156,7 @@ def replay(
                 oi_gate=False,
                 provisional_ungated=provisional,
                 tf=tf_key,
+                **(knobs or {}),
             )
         except Exception as exc:  # noqa: BLE001 - one bad tick must not end the study
             print(f"warn: detect failed at {visible[-1]['t']}: {exc}", file=sys.stderr)
@@ -315,6 +317,72 @@ def render(results: list[dict[str, Any]], keys: list[str]) -> str:
     return "\n".join(o)
 
 
+#: Phase 3 knobs, measured one at a time against the current behaviour so each
+#: change can be judged on its own rather than as a bundle.
+VARIANTS: dict[str, dict[str, Any]] = {
+    "baseline": {},
+    "gap-bound": {"max_bar_gap_ratio": 3.0},
+    "frozen-threshold": {"freeze_threshold": True},
+    # Both of these remove behaviour that is simply wrong -- a pivot proved
+    # across a sampling hole, and a pivot admitted by a threshold that fell
+    # after the fact. Neither trades proof for latency.
+    "fixes only": {"max_bar_gap_ratio": 3.0, "freeze_threshold": True},
+    "right=1": {"right_bars": 1},
+    "all three": {"max_bar_gap_ratio": 3.0, "freeze_threshold": True, "right_bars": 1},
+}
+
+
+def compare_variants(store: dict[str, Any], keys: list[str], *, tf: str) -> list[dict[str, Any]]:
+    """Per variant: signal count and the lag distribution, over every session."""
+    out: list[dict[str, Any]] = []
+    for name, knobs in VARIANTS.items():
+        shape: list[float] = []
+        conf: list[float] = []
+        n_sig = 0
+        for key in keys:
+            rows = to_rows(store["series"][key])
+            if len(rows) < 60:
+                continue
+            seen = replay(rows, tf=tf, gex_gate=True, knobs=knobs)
+            n_sig += len(seen)
+            for hit in seen.values():
+                rev = hit["rev"]
+                sl = _mins(hit["emit_ts_ms"], rev.get("ts_ms"))
+                cl = _mins(hit["emit_ts_ms"], rev.get("confirmed_ts_ms"))
+                if sl is not None:
+                    shape.append(sl)
+                if cl is not None:
+                    conf.append(cl)
+        out.append({
+            "variant": name,
+            "signals": n_sig,
+            "shape_median": round(statistics.median(shape), 1) if shape else None,
+            "shape_p90": _pct(shape, 0.90),
+            "shape_max": max(shape) if shape else None,
+            "conf_p90": _pct(conf, 0.90),
+            "conf_max": max(conf) if conf else None,
+        })
+    return out
+
+
+def render_compare(rows: list[dict[str, Any]], tf: str) -> str:
+    o = [f"PHASE 3 VARIANTS  tf={tf}  (each knob measured alone)", "=" * 84]
+    o.append(f"{'variant':<20}{'signals':>9}{'shape med':>11}{'shape p90':>11}"
+             f"{'shape max':>11}{'conf p90':>10}{'conf max':>10}")
+    o.append("-" * 84)
+    base = rows[0]
+    for r in rows:
+        d = ""
+        if r["variant"] != "baseline" and base["signals"]:
+            delta = r["signals"] - base["signals"]
+            d = f"  ({delta:+d})"
+        f = lambda v: "-" if v is None else f"{v:.0f}m"  # noqa: E731
+        o.append(f"{r['variant']:<20}{r['signals']:>9}{f(r['shape_median']):>11}"
+                 f"{f(r['shape_p90']):>11}{f(r['shape_max']):>11}"
+                 f"{f(r['conf_p90']):>10}{f(r['conf_max']):>10}{d}")
+    return chr(10).join(o)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Phase 0 - reversal signal lag study (offline replay).")
     ap.add_argument("--archive", default=None, help="path to gamma_density_history.json")
@@ -323,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tf", default="5m", choices=["1m", "5m", "15m"])
     ap.add_argument("--min-points", type=int, default=60)
     ap.add_argument("--list", action="store_true", help="list session keys and exit")
+    ap.add_argument("--compare", action="store_true", help="Phase 3 variant comparison")
     ap.add_argument("--json", dest="json_out", default=None)
     args = ap.parse_args(argv)
 
@@ -339,6 +408,10 @@ def main(argv: list[str] | None = None) -> int:
     if not keys:
         print("error: no matching session keys (try --list)", file=sys.stderr)
         return 2
+
+    if args.compare:
+        print(render_compare(compare_variants(store, keys, tf=args.tf), args.tf))
+        return 0
 
     results = []
     for k in keys:

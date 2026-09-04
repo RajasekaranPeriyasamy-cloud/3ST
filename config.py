@@ -285,6 +285,16 @@ GAMMA_DENSITY_DEFAULTS = {
     "history_max_points": 120,
     # Pin candidate when top-1 |GEX| share ≥ this (else wall midpoint / ATM)
     "pin_share_threshold": 0.18,
+    # Reject a pivot whose own swing/confirm window straddles a sampling hole
+    # wider than this many TF bars. A "bar" exists only where a sample does, so
+    # without this a polling gap lets a bar-counted window span unbounded
+    # wall-clock time. Set to None to disable.
+    "reversal_max_bar_gap_ratio": 3.0,
+    # Qualify each pivot against the move threshold as it stood AT that pivot,
+    # not as it stands now. The adaptive threshold falls in quiet stretches and
+    # would otherwise admit old pivots retroactively, stamped with their
+    # original times — the "confirm 09:49, appeared 10:20" complaint.
+    "reversal_freeze_threshold": True,
 }
 
 # Higher-order Greeks desk (1st/2nd order BS + GEX/VEX integration).

@@ -2385,6 +2385,8 @@ def build_gamma_snapshot(
                     confirm_bars=tf_params["confirm_bars"],
                     lock_ms=tf_params["lock_ms"],
                     min_move_pts=min_move,
+                    max_bar_gap_ratio=d.get("reversal_max_bar_gap_ratio"),
+                    freeze_threshold=bool(d.get("reversal_freeze_threshold", True)),
                     gex_gate=gate_for_detect,
                     oi_gate=bool(reversal_oi_gate),
                     provisional_ungated=want_provisional,

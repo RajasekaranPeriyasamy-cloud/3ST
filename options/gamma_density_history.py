@@ -1859,11 +1859,18 @@ def _is_pivot(
     swing_bars: int,
     *,
     trough: bool,
+    right_bars: int | None = None,
 ) -> bool:
-    """Local extremum; plateaus count once (leftmost bar of the flat)."""
+    """Local extremum; plateaus count once (leftmost bar of the flat).
+
+    ``right_bars`` shortens only the right-hand proof. A pivot is hindsight by
+    definition -- it needs bars after it to be an extremum -- so this trades
+    certainty for latency and suits a provisional tier, not a confirmed one.
+    Defaults to ``swing_bars`` (symmetric, unchanged).
+    """
     px = spots[j][1]
     lo = j - swing_bars
-    hi = j + swing_bars
+    hi = j + (swing_bars if right_bars is None else right_bars)
     window = [spots[k][1] for k in range(lo, hi + 1)]
     extreme = min(window) if trough else max(window)
     if px != extreme:
@@ -1872,6 +1879,53 @@ def _is_pivot(
     # (old ``count(px) == 1`` dropped most live minute pivots on rounded prints).
     first = next(k for k in range(lo, hi + 1) if spots[k][1] == extreme)
     return first == j
+
+
+def _bar_ts_ms(series: list[dict[str, Any]], idx: int) -> int | None:
+    """Wall-clock of a bar. ``spots`` carries the series index, not a timestamp."""
+    try:
+        row = series[idx]
+    except IndexError:
+        return None
+    ts = row.get("ts_ms")
+    if ts is not None:
+        try:
+            return int(ts)
+        except (TypeError, ValueError):
+            return None
+    parsed = _parse_ts(row.get("t"))
+    return int(parsed.timestamp() * 1000) if parsed is not None else None
+
+
+def _window_has_gap(
+    spots: list[tuple[int, float, str | None]],
+    j: int,
+    series: list[dict[str, Any]],
+    *,
+    swing: int,
+    right: int,
+    confirm: int,
+    max_gap_ms: int,
+) -> bool:
+    """True when the pivot's own window straddles a sampling hole.
+
+    Only the bars this pivot depends on are checked -- its swing proof and its
+    confirm lookahead. A gap elsewhere in the session says nothing about whether
+    *this* pivot is real.
+
+    Note ``spots[k][0]`` is an index into ``series``, not a timestamp; the times
+    have to be resolved through the series or the comparison is meaningless.
+    """
+    lo = max(0, j - swing)
+    hi = min(len(spots) - 1, j + max(right, confirm))
+    prev = _bar_ts_ms(series, spots[lo][0])
+    for k in range(lo + 1, hi + 1):
+        cur = _bar_ts_ms(series, spots[k][0])
+        if prev is not None and cur is not None and cur - prev > max_gap_ms:
+            return True
+        if cur is not None:
+            prev = cur
+    return False
 
 
 def _gex_sign(row: dict[str, Any]) -> int | None:
@@ -2282,6 +2336,9 @@ def detect_spot_reversals(
     oi_gate: bool = False,
     provisional_ungated: bool = False,
     tf: str | None = DEFAULT_REVERSAL_TF,
+    right_bars: int | None = None,
+    freeze_threshold: bool = False,
+    max_bar_gap_ratio: float | None = None,
     pin_strike: float | None = None,
     call_wall: float | None = None,
     put_wall: float | None = None,
@@ -2318,6 +2375,17 @@ def detect_spot_reversals(
     params = reversal_tf_params(tf_key)
     swing = int(swing_bars if swing_bars is not None else params["swing_bars"])
     confirm = int(confirm_bars if confirm_bars is not None else params["confirm_bars"])
+    right = int(right_bars) if right_bars is not None else swing
+    tf_minutes = int(params["minutes"])
+    # A "bar" only exists where a sample does, so a polling gap makes a
+    # bar-counted window span unbounded wall-clock time. Measured: a 135-minute
+    # hole on 2026-08-11 produced a 163-minute shape lag on a pivot whose right
+    # side simply did not exist until sampling resumed.
+    max_gap_ms = (
+        int(float(max_bar_gap_ratio) * tf_minutes * 60_000)
+        if max_bar_gap_ratio is not None
+        else None
+    )
     if lock_ms is not None:
         lock = int(lock_ms)
     elif dedupe_ms is not None:
@@ -2335,16 +2403,16 @@ def detect_spot_reversals(
         except (TypeError, ValueError):
             continue
     # Need left+right swing for extremum plus ≥1 future bar for the move.
-    if len(spots) < swing * 2 + 2:
+    if len(spots) < swing + right + 2:
         return []
 
     out: list[dict[str, Any]] = []
     n = len(spots)
-    # Right edge = swing (local extremum proof), not confirm_bars pad.
-    for j in range(swing, n - swing):
+    # Right edge = the extremum proof, not a confirm_bars pad.
+    for j in range(swing, n - right):
         idx, px, t = spots[j]
-        is_trough = _is_pivot(spots, j, swing, trough=True)
-        is_peak = _is_pivot(spots, j, swing, trough=False)
+        is_trough = _is_pivot(spots, j, swing, trough=True, right_bars=right)
+        is_peak = _is_pivot(spots, j, swing, trough=False, right_bars=right)
         if not is_trough and not is_peak:
             continue
 
@@ -2352,14 +2420,29 @@ def detect_spot_reversals(
         if not future:
             continue
 
+        if max_gap_ms is not None and _window_has_gap(
+            spots, j, series, swing=swing, right=right, confirm=confirm, max_gap_ms=max_gap_ms
+        ):
+            continue
+
+        # Threshold from the series as it stood AT the pivot, not as it stands
+        # now. adaptive_reversal_min_move recomputes from the whole visible
+        # series each poll, so in quiet stretches it falls and retroactively
+        # admits pivots that previously failed -- then stamps them with their
+        # original times. Keying off the prefix makes the answer stable across
+        # polls, because the prefix never changes.
+        threshold = float(min_move_pts)
+        if freeze_threshold:
+            threshold = adaptive_reversal_min_move(px, series[: idx + 1])
+
         if is_trough:
             move = max(future) - px
-            if move < min_move_pts:
+            if move < threshold:
                 continue
             side = "bullish"
         else:
             move = px - min(future)
-            if move < min_move_pts:
+            if move < threshold:
                 continue
             side = "bearish"
 
@@ -2411,7 +2494,7 @@ def detect_spot_reversals(
             confirm,
             side=side,
             pivot_px=px,
-            min_move_pts=float(min_move_pts),
+            min_move_pts=threshold,
         )
 
         move_r = round(move, 1)
