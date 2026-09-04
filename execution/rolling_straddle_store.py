@@ -75,6 +75,10 @@ DEFAULT_LEG: dict[str, Any] = {
     "exchange": None,
     "strike": None,
     "entry_price": None,
+    # "order_fill" | "order_avg" | "kite_avg" | "ltp_proxy" — see
+    # execution.rolling_straddle.EntryPriceSource. Only "ltp_proxy" is a guess.
+    "entry_price_source": None,
+    "broker_average_price": None,
     "entry_at": None,
     "entry_order_id": None,
     "last_action": None,
@@ -149,6 +153,48 @@ def order_quantity_from_config(cfg: dict[str, Any]) -> int:
 
 def validate_order_size(cfg: dict[str, Any]) -> None:
     order_quantity_from_config(cfg)
+
+
+#: Modes each stop field can actually be honoured in. ``_level()`` in
+#: backtest_engine returns None for "ATR", so an ATR stop-loss or target is
+#: silently *no stop at all* — refuse it rather than accept and ignore it.
+_STOP_FIELD_MODES: dict[str, tuple[str, ...]] = {
+    "sl_mode": ("Off", "%", "Pts"),
+    "tgt_mode": ("Off", "%", "Pts"),
+    "tsl_mode": ("Off", "ATR", "%", "Pts"),
+}
+
+
+def validate_stop_modes(cfg: dict[str, Any]) -> None:
+    """Reject a stop mode this runner cannot act on.
+
+    Silently accepting one is how a desk ends up showing "Stop loss: ATR 1.5"
+    while running with no stop at all.
+    """
+    for field, allowed in _STOP_FIELD_MODES.items():
+        mode = str(cfg.get(field) or "Off")
+        if mode not in allowed:
+            raise ValueError(
+                f"{field}={mode!r} is not supported — Rolling Straddle honours "
+                f"{', '.join(allowed)} for this field. "
+                f"(ATR is a trailing-stop mode only.)"
+            )
+        if mode != "Off":
+            value_key = field.replace("_mode", "_value")
+            try:
+                value = float(cfg.get(value_key) or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value <= 0:
+                raise ValueError(
+                    f"{field}={mode!r} needs {value_key} > 0 — a zero-distance "
+                    f"stop would fire the moment it is armed."
+                )
+
+
+def validate_config(cfg: dict[str, Any]) -> None:
+    validate_order_size(cfg)
+    validate_stop_modes(cfg)
 
 
 def apply_underlying_defaults(cfg: dict[str, Any], *, previous_underlying: str | None = None) -> dict[str, Any]:
@@ -260,7 +306,7 @@ def save_config(patch: dict[str, Any]) -> dict[str, Any]:
             current["expiry"] = resolved
     elif prev_expiry:
         current["expiry"] = prev_expiry
-    validate_order_size(current)
+    validate_config(current)
     _write_json(CONFIG_FILE, current)
     # Underlying string may already match while cached spot is from another instrument.
     from execution.rolling_straddle import _spot_state_stale

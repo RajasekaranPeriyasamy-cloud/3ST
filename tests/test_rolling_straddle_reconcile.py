@@ -146,6 +146,171 @@ def test_effective_entry_price_prefers_fill_then_avg():
     assert rs._effective_entry_price({}) is None
 
 
+# --------------------------------------------------------------------------- #
+# entry_price must be the fill, not an LTP snapshot taken just after submit.
+# Kite's place_order response carries no price, so the fill is read back from
+# the orderbook; a proxy is flagged and later replaced by Kite's average.
+# --------------------------------------------------------------------------- #
+
+
+def _order(**over):
+    row = {
+        "order_id": "OID-1",
+        "exchange": "NFO",
+        "tradingsymbol": "NIFTY2671424250CE",
+        "status": "COMPLETE",
+        "average_price": 80.6,
+    }
+    row.update(over)
+    return row
+
+
+def test_completed_order_average_reads_kite_average():
+    broker = _FakeBroker([], orders=[_order()])
+    px = rs._completed_order_average(
+        broker, "OID-1", exchange="NFO", tradingsymbol="NIFTY2671424250CE"
+    )
+    assert px == 80.6
+
+
+def test_completed_order_average_falls_back_to_price_for_paper():
+    """PaperBroker rows carry ``price`` and no ``average_price`` — that is its fill."""
+    broker = _FakeBroker([], orders=[_order(average_price=None, price=55.25)])
+    px = rs._completed_order_average(
+        broker, "OID-1", exchange="NFO", tradingsymbol="NIFTY2671424250CE"
+    )
+    assert px == 55.25
+
+
+def test_completed_order_average_none_while_order_still_working():
+    broker = _FakeBroker([], orders=[_order(status="OPEN")])
+    assert (
+        rs._completed_order_average(
+            broker, "OID-1", exchange="NFO", tradingsymbol="NIFTY2671424250CE"
+        )
+        is None
+    )
+
+
+def test_completed_order_average_ignores_other_orders():
+    broker = _FakeBroker([], orders=[_order(order_id="OTHER"), _order(tradingsymbol="NIFTY2671424250PE")])
+    assert (
+        rs._completed_order_average(
+            broker, "OID-1", exchange="NFO", tradingsymbol="NIFTY2671424250CE"
+        )
+        is None
+    )
+
+
+def test_entry_fill_price_gives_up_without_sleeping_forever(monkeypatch):
+    """A never-filling order returns None after the bounded poll, not a hang."""
+    slept: list[float] = []
+    monkeypatch.setattr(rs.time, "sleep", lambda s: slept.append(s))
+    broker = _FakeBroker([], orders=[_order(status="OPEN")])
+    px = rs._entry_fill_price(
+        broker, "OID-1", exchange="NFO", tradingsymbol="NIFTY2671424250CE"
+    )
+    assert px is None
+    assert len(slept) == rs.ENTRY_FILL_POLL_ATTEMPTS - 1
+
+
+def test_entry_fill_price_none_without_order_id():
+    broker = _FakeBroker([], orders=[_order()])
+    assert rs._entry_fill_price(broker, None, exchange="NFO", tradingsymbol="X") is None
+
+
+def test_effective_entry_price_prefers_broker_avg_over_ltp_proxy():
+    leg = {
+        "entry_price": 81.4,
+        "entry_price_source": "ltp_proxy",
+        "broker_average_price": 80.6,
+    }
+    assert rs._effective_entry_price(leg) == 80.6
+    # A real fill is never displaced by the broker average.
+    assert rs._effective_entry_price({**leg, "entry_price_source": "order_avg"}) == 81.4
+    # Proxy with no average yet still yields a usable number.
+    assert rs._effective_entry_price({"entry_price": 81.4, "entry_price_source": "ltp_proxy"}) == 81.4
+
+
+def test_reconcile_replaces_ltp_proxy_entry_with_kite_average(monkeypatch):
+    broker = _FakeBroker(
+        [
+            {
+                "exchange": "NFO",
+                "tradingsymbol": "NIFTY2671424250CE",
+                "quantity": 65,
+                "average_price": 80.6,
+            }
+        ]
+    )
+    monkeypatch.setattr(rs, "get_arm_state", lambda: {"mode": "live"})
+    state = {
+        "ce": {
+            "status": "open",
+            "managed_by": "algo",
+            "tradingsymbol": "NIFTY2671424250CE",
+            "exchange": "NFO",
+            "entry_price": 81.4,
+            "entry_price_source": "ltp_proxy",
+            "entry_at": "2026-07-13T10:00:00",
+            "last_action": "long_entry",
+        },
+        "pe": {"status": "flat"},
+    }
+    patches, _, _ = rs._reconcile_broker_legs({"underlying": "NIFTY"}, state, broker)
+    assert patches["ce"]["entry_price"] == 80.6
+    assert patches["ce"]["entry_price_source"] == "kite_avg"
+
+
+def test_reconcile_keeps_real_fill_over_kite_average(monkeypatch):
+    broker = _FakeBroker(
+        [
+            {
+                "exchange": "NFO",
+                "tradingsymbol": "NIFTY2671424250CE",
+                "quantity": 65,
+                "average_price": 80.6,
+            }
+        ]
+    )
+    monkeypatch.setattr(rs, "get_arm_state", lambda: {"mode": "live"})
+    state = {
+        "ce": {
+            "status": "open",
+            "managed_by": "algo",
+            "tradingsymbol": "NIFTY2671424250CE",
+            "exchange": "NFO",
+            "entry_price": 81.4,
+            "entry_price_source": "order_avg",
+            "entry_at": "2026-07-13T10:00:00",
+            "last_action": "long_entry",
+        },
+        "pe": {"status": "flat"},
+    }
+    patches, _, _ = rs._reconcile_broker_legs({"underlying": "NIFTY"}, state, broker)
+    assert patches["ce"]["entry_price"] == 81.4
+    assert patches["ce"]["entry_price_source"] == "order_avg"
+    assert patches["ce"]["broker_average_price"] == 80.6
+
+
+def test_exit_ladder_labels_an_ltp_proxy_entry(monkeypatch):
+    """The operator must be able to see the breakeven stop is on a guess."""
+    cfg = {"entry_exit_enabled": True, "timeframe": "5min", "tsl_mode": "Off"}
+    leg = {
+        "status": "open",
+        "managed_by": "algo",
+        "entry_side": "SELL",
+        "entry_price": 81.4,
+        "entry_price_source": "ltp_proxy",
+        "signal_close": 80.0,
+        "ltp": 80.0,
+    }
+    params = rs._leg_exit_params("ce", cfg, leg)
+    entry_row = next(r for r in params["exit_levels"] if r["category"] == "Entry")
+    assert entry_row["source"] == "ltp_proxy"
+    assert "LTP proxy" in entry_row["rule"]
+
+
 def test_reconcile_restores_flat_leg_from_3st_broker_order(monkeypatch):
     broker = _FakeBroker(
         [

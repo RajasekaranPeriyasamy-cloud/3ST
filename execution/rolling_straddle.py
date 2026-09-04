@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
@@ -32,6 +36,9 @@ from config import INDEX_OPTIONS
 from options.chain import atm_strike, get_index_spot, get_index_spot_detail, tradingsymbol_matches_underlying
 from options.legs import build_atm_leg
 from strategy_3st import compute_signals
+from utils.logging import get_logger, log_event
+
+_log = get_logger(__name__)
 
 _paper = get_paper_broker()
 _kite = KiteBroker()
@@ -181,9 +188,109 @@ def _broker_avg_price(
         return None
 
 
+#: Kite's ``place_order`` response carries an order id and nothing else — a
+#: MARKET order's true average fill has to be read back from the orderbook.
+#: Poll briefly: an entry is normally COMPLETE within a second, and a slow fill
+#: must not stall the tick (reconcile upgrades an ``ltp_proxy`` price later).
+ENTRY_FILL_POLL_ATTEMPTS = 3
+ENTRY_FILL_POLL_SLEEP_SEC = 0.4
+
+#: Where a leg's ``entry_price`` came from, best first. Only ``ltp_proxy`` is a
+#: guess — it is a snapshot taken just after submit, not a fill — so it is the
+#: one source reconcile is allowed to overwrite.
+EntryPriceSource = Literal["order_fill", "order_avg", "kite_avg", "ltp_proxy"]
+
+
+#: Suffix shown next to the entry-exit level so the operator can see whether the
+#: breakeven stop is measured against a real fill.
+_ENTRY_SOURCE_NOTES: dict[str, str] = {
+    "order_avg": "",
+    "order_fill": "",
+    "fill": "",
+    "kite_avg": " (Kite avg)",
+    "ltp_proxy": " (LTP proxy — awaiting fill)",
+}
+
+
+def _entry_price_is_proxy(leg: dict[str, Any]) -> bool:
+    """True when ``entry_price`` is the post-submit LTP snapshot, not a fill."""
+    return str(leg.get("entry_price_source") or "") == "ltp_proxy"
+
+
+def _completed_order_average(
+    broker: Broker,
+    order_id: str,
+    *,
+    exchange: str,
+    tradingsymbol: str,
+) -> float | None:
+    """Average fill of a COMPLETE order; None while it is still working.
+
+    Prefers Kite's ``average_price``. PaperBroker rows carry ``price`` instead,
+    and for paper that *is* the fill, so both keys are real fills here.
+    """
+    oid = str(order_id).strip()
+    if not oid:
+        return None
+    sym_u = tradingsymbol.strip().upper()
+    exch_u = exchange.strip().upper()
+    for row in broker.orders():
+        if str(row.get("order_id") or "").strip() != oid:
+            continue
+        if str(row.get("tradingsymbol") or "").strip().upper() != sym_u:
+            continue
+        if str(row.get("exchange") or "").strip().upper() != exch_u:
+            continue
+        if str(row.get("status") or "").upper() != "COMPLETE":
+            return None
+        for key in ("average_price", "price"):
+            try:
+                px = float(row[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if px > 0:
+                return px
+        return None
+    return None
+
+
+def _entry_fill_price(
+    broker: Broker,
+    order_id: str | None,
+    *,
+    exchange: str,
+    tradingsymbol: str,
+) -> float | None:
+    """Poll the orderbook briefly for this entry's real average fill."""
+    if not order_id:
+        return None
+    for attempt in range(ENTRY_FILL_POLL_ATTEMPTS):
+        try:
+            px = _completed_order_average(
+                broker, order_id, exchange=exchange, tradingsymbol=tradingsymbol
+            )
+        except Exception:
+            return None
+        if px is not None:
+            return px
+        if attempt < ENTRY_FILL_POLL_ATTEMPTS - 1:
+            time.sleep(ENTRY_FILL_POLL_SLEEP_SEC)
+    return None
+
+
 def _effective_entry_price(leg: dict[str, Any]) -> float | None:
-    """Prefer stored entry_price; fall back to broker average adopted on restore."""
-    for key in ("entry_price", "broker_average_price"):
+    """Prefer a real fill; an ``ltp_proxy`` entry yields to Kite's average.
+
+    An ``ltp_proxy`` ``entry_price`` was sampled just *after* the market order
+    was submitted, so it is not the fill — once the broker reports an
+    ``average_price`` for the position, that is the better number for the
+    entry-exit / SL ladder. Legs with no ``entry_price_source`` (state written
+    before this field existed) keep the historical precedence.
+    """
+    keys = ("entry_price", "broker_average_price")
+    if _entry_price_is_proxy(leg):
+        keys = ("broker_average_price", "entry_price")
+    for key in keys:
         raw = leg.get(key)
         if raw is None:
             continue
@@ -207,6 +314,7 @@ def _flat_leg_from_broker_sync(leg: dict[str, Any], *, reason: str = "broker_syn
         "exchange": None,
         "strike": None,
         "entry_price": None,
+        "entry_price_source": None,
         "broker_average_price": None,
         "entry_at": None,
         "entry_order_id": None,
@@ -416,9 +524,11 @@ def _leg_patch_from_broker(
             avg = None
         if avg is not None and avg > 0:
             patch["broker_average_price"] = avg
-            # Prefer keeping an existing algo fill; otherwise adopt Kite average.
-            if leg.get("entry_price") is None:
+            # Keep a real fill. Adopt Kite's average when we have no entry at
+            # all, or when the stored one is only the post-submit LTP proxy.
+            if leg.get("entry_price") is None or _entry_price_is_proxy(leg):
                 patch["entry_price"] = avg
+                patch["entry_price_source"] = "kite_avg"
     return {**leg, **patch}
 
 
@@ -489,11 +599,19 @@ def _reconcile_broker_legs(cfg: dict[str, Any], state: dict[str, Any], broker: B
                     f"Restored from broker qty {qty}",
                     {"symbol": sym, "exchange": exch, "average_price": entry_px},
                 )
-            elif leg.get("entry_price") is None and entry_px is not None:
+            elif entry_px is not None and (
+                leg.get("entry_price") is None or _entry_price_is_proxy(leg)
+            ):
+                was_proxy = _entry_price_is_proxy(leg)
                 append_log(
                     f"{leg_key}_entry_from_avg",
-                    f"entry_price set from Kite average_price={entry_px}",
-                    {"symbol": sym},
+                    (
+                        f"entry_price {leg.get('entry_price')} (LTP proxy) replaced by "
+                        f"Kite average_price={entry_px}"
+                        if was_proxy
+                        else f"entry_price set from Kite average_price={entry_px}"
+                    ),
+                    {"symbol": sym, "was_proxy": was_proxy},
                 )
                 action = f"Entry from Kite avg · {leg_key.upper()}"
             patched = _leg_patch_from_broker(
@@ -746,19 +864,44 @@ def _live_ref_price(signals: dict[str, Any], ltp: float | None) -> float | None:
         return None
 
 
-def _update_atr_trail_live(
+#: Trailing-stop modes this runner honours. ``_level`` (backtest_engine) returns
+#: None for "ATR", which is why ATR is a *trail* mode only and never an SL/TGT
+#: mode here — see ``validate_stop_modes``.
+TRAIL_MODES = ("ATR", "%", "Pts")
+
+
+def _trail_band(mode: str, *, ref: float, atr1: float | None, value: float) -> float | None:
+    """Distance from the live price to the trail, per mode.
+
+    The ratchet is identical for all three; only the band differs. Returns None
+    when the mode cannot be priced (unknown mode, or ATR with no ATR to hand).
+    """
+    if mode == "ATR":
+        if atr1 is None or float(atr1) <= 0:
+            return None
+        return float(atr1) * float(value)
+    if mode == "Pts":
+        return abs(float(value))
+    if mode == "%":
+        return abs(float(ref)) * abs(float(value)) / 100.0
+    return None
+
+
+def _update_trail_live(
     leg: dict[str, Any],
     *,
     side: PositionSide,
     ref: float,
-    atr1: float,
-    mult: float,
+    band: float,
 ) -> tuple[float, float | None]:
     """
-    Dynamic ATR trail from live TF price (not entry).
-    Long: ref − ATR×mult, ratchets up; Short: ref + ATR×mult, ratchets down.
+    Dynamic trail from live TF price (not entry).
+    Long: ref − band, ratchets up; Short: ref + band, ratchets down.
+
+    The persisted field names (``atr_trail`` / ``atr_extreme``) predate ``%``
+    and ``Pts`` support and are shared with premium_book's state — kept as-is so
+    existing state files and the UI keep working.
     """
-    band = float(atr1) * float(mult)
     candidate = ref - band if side == "long" else ref + band
     prev = leg.get("atr_trail")
     extreme = leg.get("atr_extreme")
@@ -939,20 +1082,24 @@ def _live_exit_fields(
         patch["zone_exit_level"] = live_st
         patch["signal_st1"] = live_st
         patch["st1_live"] = st_live
-    if str(cfg.get("tsl_mode") or "Off") == "ATR" and ref is not None:
+    tsl_mode = str(cfg.get("tsl_mode") or "Off")
+    if tsl_mode in TRAIL_MODES and ref is not None:
         atr = signals.get("atr1")
-        if atr is not None and float(atr) > 0:
-            trail, extreme = _update_atr_trail_live(
-                leg,
-                side=side,
-                ref=ref,
-                atr1=float(atr),
-                mult=float(cfg.get("tsl_value") or 1),
-            )
+        band = _trail_band(
+            tsl_mode,
+            ref=ref,
+            atr1=float(atr) if atr is not None else None,
+            value=float(cfg.get("tsl_value") or 1),
+        )
+        if band is not None and band > 0:
+            trail, extreme = _update_trail_live(leg, side=side, ref=ref, band=band)
             patch["atr_trail"] = trail
             patch["atr_extreme"] = extreme
             patch["atr_live_ref"] = round(ref, 4)
-            patch["signal_atr1"] = float(atr)
+            patch["trail_mode"] = tsl_mode
+            patch["trail_band"] = round(band, 4)
+            if atr is not None:
+                patch["signal_atr1"] = float(atr)
     return patch
 
 
@@ -1000,9 +1147,10 @@ def _should_exit_leg(
         except (TypeError, ValueError):
             pass
 
-    # 2) ATR — live trailing stop from current TF/live price (ratcheted)
+    # 2) Trailing stop — live, ratcheted, from current TF/live price.
+    #    ATR / % / Pts all land on the same stored trail; only the band differs.
     tsl_mode = str(cfg.get("tsl_mode") or "Off")
-    if tsl_mode == "ATR":
+    if tsl_mode in TRAIL_MODES:
         atr_trail = leg.get("atr_trail")
         ref = _live_ref_price(signals, ltp)
         try:
@@ -1108,15 +1256,38 @@ def _enter_leg(
         append_log(f"{leg_key}_entry_failed", msg, {"reason": reason})
         raise RuntimeError(msg or "Order failed")
 
-    fill_px = None
+    # Entry price must be the fill, not a price near it: exit ladder rule #1
+    # ("entry_exit") is a breakeven stop measured against this number.
+    fill_px: float | None = None
+    fill_source: EntryPriceSource | None = None
     raw = result.get("raw") or {}
     if raw.get("price") is not None:
+        # PaperBroker books the position at this price — it is the fill.
         fill_px = float(raw["price"])
+        fill_source = "order_fill"
     else:
+        fill_px = _entry_fill_price(
+            broker,
+            result.get("order_id"),
+            exchange=built["exchange"],
+            tradingsymbol=built["tradingsymbol"],
+        )
+        fill_source = "order_avg" if fill_px is not None else None
+
+    if fill_px is None:
+        # Order still working (or orderbook unreadable). Hold an LTP snapshot so
+        # the ladder has *something*, flagged so reconcile replaces it.
         try:
             fill_px = broker.ltp(built["exchange"], built["tradingsymbol"])
+            fill_source = "ltp_proxy"
         except Exception:
             fill_px = None
+            fill_source = None
+        append_log(
+            f"{leg_key}_entry_fill_pending",
+            "No completed fill yet — entry_price is an LTP proxy until reconcile",
+            {"order_id": result.get("order_id"), "ltp_proxy": fill_px},
+        )
 
     state = get_state()
     leg = state[leg_key]
@@ -1131,6 +1302,10 @@ def _enter_leg(
         "exchange": built["exchange"],
         "strike": built["strike"],
         "entry_price": fill_px,
+        "entry_price_source": fill_source,
+        # Stale average from the previous trade on this leg must not outrank a
+        # fresh ltp_proxy in _effective_entry_price — reconcile refills it.
+        "broker_average_price": None,
         "entry_at": datetime.now().isoformat(timespec="seconds"),
         "entry_order_id": result.get("order_id"),
         "entry_side": "SELL" if pos_side == "short" else "BUY",
@@ -1156,6 +1331,37 @@ def _enter_leg(
     return leg_patch
 
 
+def _flat_leg_exit_fields(leg: dict[str, Any], reason: str) -> dict[str, Any]:
+    """State an exited leg is left in — the one definition of "flat after exit".
+
+    Shared by both branches of ``_exit_leg`` **and** by ``decide()``, which has
+    to model the exit locally: an exit stamps ``last_action_bar_ts`` /
+    ``last_exit_bar_ts`` with this bar, and that is what makes the same-bar
+    re-entry guard fire for an entry decided later in the same tick. If this
+    drifts from what ``_exit_leg`` writes, the churn guards silently weaken —
+    which is the 2026-07-14 whipsaw incident's failure mode.
+    """
+    return {
+        "status": "flat",
+        "last_action": reason,
+        "entry_price": None,
+        "entry_price_source": None,
+        "broker_average_price": None,
+        "entry_at": None,
+        "entry_order_id": None,
+        "broker_qty": None,
+        "tradingsymbol": None,
+        "exchange": None,
+        "strike": None,
+        "last_action_bar_ts": leg.get("signal_bar_ts"),
+        "last_exit_bar_ts": leg.get("signal_bar_ts"),
+        "atr_trail": None,
+        "atr_extreme": None,
+        "atr_live_ref": None,
+        "st1_live": False,
+    }
+
+
 def _exit_leg(leg_key: LegKey, cfg: dict[str, Any], reason: str) -> dict[str, Any]:
     state = get_state()
     leg = state[leg_key]
@@ -1176,23 +1382,7 @@ def _exit_leg(leg_key: LegKey, cfg: dict[str, Any], reason: str) -> dict[str, An
     if not resolved:
         if leg.get("status") != "open":
             return leg
-        flat = {
-            "status": "flat",
-            "last_action": reason,
-            "entry_price": None,
-            "entry_at": None,
-            "entry_order_id": None,
-            "broker_qty": None,
-            "tradingsymbol": None,
-            "exchange": None,
-            "strike": None,
-            "last_action_bar_ts": leg.get("signal_bar_ts"),
-            "last_exit_bar_ts": leg.get("signal_bar_ts"),
-            "atr_trail": None,
-            "atr_extreme": None,
-            "atr_live_ref": None,
-            "st1_live": False,
-        }
+        flat = _flat_leg_exit_fields(leg, reason)
         save_state({leg_key: {**leg, **flat}})
         append_log(f"{leg_key}_exit_skipped", "Broker already flat", {"reason": reason})
         return {**leg, **flat}
@@ -1223,24 +1413,7 @@ def _exit_leg(leg_key: LegKey, cfg: dict[str, Any], reason: str) -> dict[str, An
 
     close_tx = (result.get("raw") or {}).get("transaction_type") or _close_transaction_for_qty(broker_qty)
 
-    flat = {
-        "status": "flat",
-        "last_action": reason,
-        "entry_price": None,
-        "entry_at": None,
-        "entry_order_id": None,
-        "broker_qty": None,
-        "managed_by": None,
-        "tradingsymbol": None,
-        "exchange": None,
-        "strike": None,
-        "last_action_bar_ts": leg.get("signal_bar_ts"),
-        "last_exit_bar_ts": leg.get("signal_bar_ts"),
-        "atr_trail": None,
-        "atr_extreme": None,
-        "atr_live_ref": None,
-        "st1_live": False,
-    }
+    flat = {**_flat_leg_exit_fields(leg, reason), "managed_by": None}
     save_state({leg_key: {**leg, **flat}})
     append_log(
         f"{leg_key}_exit",
@@ -1371,6 +1544,324 @@ def _ensure_config_expiry(cfg: dict[str, Any]) -> dict[str, Any]:
     if resolved and resolved != old:
         return save_config({"expiry": resolved})
     return cfg
+
+
+DecisionKind = Literal["purge", "exit", "enter", "note", "error"]
+
+#: Entry gate hook. Called with the leg, its 3ST entry reason and its signal
+#: row; returns ``(allow, note)``. ``decide()`` treats ``allow=False`` as "this
+#: entry does not happen", logging ``{leg}_entry_gated`` with the note.
+#:
+#: This is the seam an external filter (e.g. GEX regime / flip distance) plugs
+#: into. It can only ever *suppress* an entry the 3ST signal already produced —
+#: it cannot create one, and it is never consulted for exits, so a bug in a gate
+#: cannot leave a position unmanaged.
+EntryGate = Callable[[str, str, dict[str, Any]], tuple[bool, str]]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """One thing the tick has resolved to do (or to record).
+
+    ``decide()`` returns these in application order — purges, then exits, then
+    entries — and ``tick()`` is the only place that performs the side effect.
+    That split is what makes the ladder testable without a broker: everything
+    below reads state and signals and returns data.
+    """
+
+    leg_key: LegKey
+    kind: DecisionKind
+    reason: str
+    log_event: str | None = None
+    log_detail: str = ""
+    log_extra: dict[str, Any] = field(default_factory=dict)
+    patch: dict[str, Any] = field(default_factory=dict)
+
+
+def _purge_decision(leg_key: LegKey, leg: dict[str, Any], underlying: str) -> Decision | None:
+    """Flatten a leg holding a symbol from another underlying.
+
+    Happens when e.g. a watchlist CRUDEOIL position is synced into the CE leg.
+    """
+    sym = str(leg.get("tradingsymbol") or "").upper()
+    if leg.get("status") != "open" or not sym:
+        return None
+    if tradingsymbol_matches_underlying(sym, underlying):
+        return None
+    return Decision(
+        leg_key=leg_key,
+        kind="purge",
+        reason="purged_foreign_symbol",
+        patch={
+            "status": "flat",
+            "tradingsymbol": None,
+            "exchange": None,
+            "strike": None,
+            "entry_price": None,
+            "entry_price_source": None,
+            "broker_average_price": None,
+            "entry_at": None,
+            "entry_order_id": None,
+            "last_action": "purged_foreign_symbol",
+        },
+    )
+
+
+def _exit_decision(
+    leg_key: LegKey,
+    cfg: dict[str, Any],
+    leg: dict[str, Any],
+    signals: dict[str, Any],
+    *,
+    force: bool,
+    arm: dict[str, Any],
+) -> Decision | None:
+    exit_fn = _should_exit_ce if leg_key == "ce" else _should_exit_pe
+    try:
+        should_x, x_reason = exit_fn(cfg, signals, leg, force)
+    except Exception as exc:
+        return Decision(leg_key, "error", f"{leg_key} exit: {exc}")
+
+    if x_reason == "exit_deferred_ltp":
+        return Decision(
+            leg_key,
+            "note",
+            x_reason,
+            log_event=f"{leg_key}_exit_deferred_ltp",
+            log_detail="LTP crossed ST zone — waiting for bar close",
+            log_extra={
+                "ltp": leg.get("ltp"),
+                "exit_line": signals.get("exit_line"),
+                "signal_bar_ts": _bar_ts_key(signals.get("ts")),
+            },
+        )
+    if x_reason == "skipped_same_bar":
+        return Decision(
+            leg_key,
+            "note",
+            x_reason,
+            log_event=f"{leg_key}_skipped_same_bar",
+            log_detail="Exit deferred — already acted this bar",
+            log_extra={"signal_bar_ts": _bar_ts_key(signals.get("ts"))},
+        )
+    if not should_x:
+        return None
+
+    if arm.get("mode") == "live" and not arm.get("armed"):
+        return Decision(
+            leg_key,
+            "note",
+            x_reason,
+            log_event=f"{leg_key}_exit_blocked_disarm",
+            log_detail="Exit signal active — ARM required to send Kite order",
+            log_extra={
+                "reason": x_reason,
+                "signal_bar_ts": _bar_ts_key(signals.get("ts")),
+                "ltp": leg.get("ltp"),
+            },
+        )
+    return Decision(leg_key, "exit", x_reason)
+
+
+def _entry_decision(
+    leg_key: LegKey,
+    cfg: dict[str, Any],
+    leg: dict[str, Any],
+    signals: dict[str, Any],
+    *,
+    atm: float,
+    gate: EntryGate | None,
+) -> Decision | None:
+    enter_fn = _can_enter_ce if leg_key == "ce" else _can_enter_pe
+    try:
+        ok, reason = enter_fn(cfg, signals, leg)
+    except Exception as exc:
+        return Decision(leg_key, "error", f"{leg_key} entry: {exc}")
+
+    if not ok and reason == "reentry_cooldown":
+        return Decision(
+            leg_key,
+            "note",
+            reason,
+            log_event=f"{leg_key}_reentry_cooldown",
+            log_detail="Re-entry blocked until next bar closes",
+            log_extra={
+                "last_exit_bar_ts": leg.get("last_exit_bar_ts"),
+                "signal_bar_ts": _bar_ts_key(signals.get("ts")),
+            },
+        )
+    if not ok and reason == "skipped_same_bar":
+        return Decision(
+            leg_key,
+            "note",
+            reason,
+            log_event=f"{leg_key}_skipped_same_bar",
+            log_detail="Entry deferred — already acted this bar",
+            log_extra={"signal_bar_ts": _bar_ts_key(signals.get("ts"))},
+        )
+    if not ok:
+        return None
+
+    signal_log = {
+        "log_event": f"{leg_key}_entry_signal",
+        "log_detail": reason,
+        "log_extra": {
+            "atm": atm,
+            "signal_bar_ts": _bar_ts_key(signals.get("ts")),
+            "close": signals.get("close"),
+        },
+    }
+
+    if gate is not None:
+        try:
+            allow, note = gate(leg_key, reason, signals)
+        except Exception as exc:
+            # A gate must never be able to place a trade by failing. Treat any
+            # error as "no opinion" and let the 3ST signal stand.
+            allow, note = True, f"gate error ignored: {exc}"
+        if not allow:
+            return Decision(
+                leg_key,
+                "note",
+                reason,
+                log_event=f"{leg_key}_entry_gated",
+                log_detail=note or "entry suppressed by gate",
+                log_extra={**signal_log["log_extra"], "gate_note": note},
+            )
+
+    if str(cfg.get("execution_mode") or "auto") == "confirm":
+        # Operator ships it by hand from the taskbar; log the signal only.
+        return Decision(leg_key, "note", reason, **signal_log)
+
+    return Decision(leg_key, "enter", reason, **signal_log)
+
+
+def decide(
+    cfg: dict[str, Any],
+    state: dict[str, Any],
+    leg_signals: dict[str, dict[str, Any]],
+    *,
+    force: bool,
+    atm: float,
+    arm: dict[str, Any],
+    gate: EntryGate | None = None,
+) -> list[Decision]:
+    """Resolve a tick into an ordered list of actions. Pure — no broker, no I/O.
+
+    Order is load-bearing: purges flatten a foreign leg before exits are judged,
+    and exits are applied to the working state before entries are judged, so an
+    exit and a re-entry on the same bar cannot both happen.
+    """
+    out: list[Decision] = []
+    working = {
+        "ce": dict(state.get("ce") or {}),
+        "pe": dict(state.get("pe") or {}),
+    }
+
+    underlying = str(cfg.get("underlying") or "NIFTY").upper()
+    for leg_key in ("ce", "pe"):
+        purge = _purge_decision(leg_key, working[leg_key], underlying)  # type: ignore[arg-type]
+        if purge is not None:
+            out.append(purge)
+            working[leg_key] = {**working[leg_key], **purge.patch}
+
+    for leg_key in ("ce", "pe"):
+        decision = _exit_decision(
+            leg_key,  # type: ignore[arg-type]
+            cfg,
+            working[leg_key],
+            leg_signals[leg_key],
+            force=force,
+            arm=arm,
+        )
+        if decision is None:
+            continue
+        out.append(decision)
+        if decision.kind == "exit":
+            working[leg_key] = {
+                **working[leg_key],
+                **_flat_leg_exit_fields(working[leg_key], decision.reason),
+                "managed_by": None,
+            }
+
+    if force:
+        return out
+
+    # The dual-open check reads the *pre-entry* snapshot, matching the loop this
+    # replaced. See test_dual_open_pins_current_stale_read_behaviour — with
+    # allow_dual_open False and both legs flat, both can still enter on one
+    # tick. Pinned rather than endorsed; changing it is a live-behaviour call.
+    entry_snapshot = {k: dict(v) for k, v in working.items()}
+    allow_dual = bool(cfg.get("allow_dual_open", True))
+    for leg_key in ("ce", "pe"):
+        other = "pe" if leg_key == "ce" else "ce"
+        if not allow_dual and entry_snapshot[other].get("status") == "open":
+            continue
+        decision = _entry_decision(
+            leg_key,  # type: ignore[arg-type]
+            cfg,
+            working[leg_key],
+            leg_signals[leg_key],
+            atm=atm,
+            gate=gate,
+        )
+        if decision is not None:
+            out.append(decision)
+
+    return out
+
+
+def apply_decisions(
+    decisions: list[Decision],
+    cfg: dict[str, Any],
+    *,
+    atm: float,
+    spot: float,
+) -> list[str]:
+    """Perform what ``decide()`` resolved. The only side-effecting half.
+
+    Returns the error strings the tick reports, in the same
+    ``"{leg} exit: {msg}"`` / ``"{leg} entry: {msg}"`` shape as before.
+    """
+    errors: list[str] = []
+    #: ``decide()`` assumes an exit succeeds when it judges the entry that
+    #: follows. If the order actually failed the leg is still open, so an entry
+    #: for it must not proceed. The same-bar guard already blocks this (an exit
+    #: stamps ``last_action_bar_ts``), but relying on that emergently is how the
+    #: churn guards get weakened later — so refuse it explicitly.
+    failed_exit: set[str] = set()
+
+    for d in decisions:
+        if d.kind == "error":
+            errors.append(d.reason)
+            continue
+
+        if d.kind == "enter" and d.leg_key in failed_exit:
+            append_log(
+                f"{d.leg_key}_entry_skipped_after_failed_exit",
+                "Exit order failed this tick — leg may still be open",
+                {"reason": d.reason},
+            )
+            continue
+
+        if d.log_event:
+            append_log(d.log_event, d.log_detail, d.log_extra)
+
+        if d.kind == "purge":
+            save_state({d.leg_key: {**get_state()[d.leg_key], **d.patch}})
+        elif d.kind == "exit":
+            try:
+                _exit_leg(d.leg_key, cfg, d.reason)
+            except Exception as exc:
+                errors.append(f"{d.leg_key} exit: {exc}")
+                failed_exit.add(d.leg_key)
+        elif d.kind == "enter":
+            try:
+                _enter_leg(d.leg_key, cfg, atm, spot, d.reason)
+            except Exception as exc:
+                errors.append(f"{d.leg_key} entry: {exc}")
+                append_log("error", friendly_kite_message(str(exc)), {"leg": d.leg_key})
+    return errors
 
 
 def tick() -> dict[str, Any]:
@@ -1543,109 +2034,16 @@ def tick() -> dict[str, Any]:
     })
 
     state = get_state()
-    errors: list[str] = []
 
-    # Purge foreign symbols (e.g. watchlist crude synced into CE leg).
-    underlying = str(cfg.get("underlying") or "NIFTY").upper()
-    purge: dict[str, Any] = {}
-    for leg_key in ("ce", "pe"):
-        leg = state.get(leg_key) or {}
-        sym = str(leg.get("tradingsymbol") or "").upper()
-        if leg.get("status") == "open" and sym and not tradingsymbol_matches_underlying(sym, underlying):
-            purge[leg_key] = {
-                "status": "flat",
-                "tradingsymbol": None,
-                "exchange": None,
-                "strike": None,
-                "entry_price": None,
-                "entry_at": None,
-                "entry_order_id": None,
-                "last_action": "purged_foreign_symbol",
-            }
-    if purge:
-        save_state(purge)
-        state = get_state()
-
-    for leg_key, exit_fn in (("ce", _should_exit_ce), ("pe", _should_exit_pe)):
-        leg = state[leg_key]
-        signals = leg_signals[leg_key]
-        try:
-            should_x, x_reason = exit_fn(cfg, signals, leg, force)
-            if x_reason == "exit_deferred_ltp":
-                append_log(
-                    f"{leg_key}_exit_deferred_ltp",
-                    "LTP crossed ST zone — waiting for bar close",
-                    {
-                        "ltp": leg.get("ltp"),
-                        "exit_line": signals.get("exit_line"),
-                        "signal_bar_ts": _bar_ts_key(signals.get("ts")),
-                    },
-                )
-            elif x_reason == "skipped_same_bar":
-                append_log(
-                    f"{leg_key}_skipped_same_bar",
-                    "Exit deferred — already acted this bar",
-                    {"signal_bar_ts": _bar_ts_key(signals.get("ts"))},
-                )
-            elif should_x:
-                arm_st = get_arm_state()
-                if arm_st.get("mode") == "live" and not arm_st.get("armed"):
-                    append_log(
-                        f"{leg_key}_exit_blocked_disarm",
-                        "Exit signal active — ARM required to send Kite order",
-                        {
-                            "reason": x_reason,
-                            "signal_bar_ts": _bar_ts_key(signals.get("ts")),
-                            "ltp": leg.get("ltp"),
-                        },
-                    )
-                else:
-                    _exit_leg(leg_key, cfg, x_reason)  # type: ignore[arg-type]
-                    state = get_state()
-        except Exception as e:
-            errors.append(f"{leg_key} exit: {e}")
-
-    if not force:
-        state = get_state()
-        for leg_key, enter_fn in (("ce", _can_enter_ce), ("pe", _can_enter_pe)):
-            leg = state[leg_key]
-            signals = leg_signals[leg_key]
-            other_key = "pe" if leg_key == "ce" else "ce"
-            if not cfg.get("allow_dual_open", True) and state[other_key].get("status") == "open":
-                continue
-            try:
-                ok, reason = enter_fn(cfg, signals, leg)
-                if not ok and reason == "reentry_cooldown":
-                    append_log(
-                        f"{leg_key}_reentry_cooldown",
-                        "Re-entry blocked until next bar closes",
-                        {
-                            "last_exit_bar_ts": leg.get("last_exit_bar_ts"),
-                            "signal_bar_ts": _bar_ts_key(signals.get("ts")),
-                        },
-                    )
-                elif not ok and reason == "skipped_same_bar":
-                    append_log(
-                        f"{leg_key}_skipped_same_bar",
-                        "Entry deferred — already acted this bar",
-                        {"signal_bar_ts": _bar_ts_key(signals.get("ts"))},
-                    )
-                elif ok:
-                    append_log(
-                        f"{leg_key}_entry_signal",
-                        reason,
-                        {
-                            "atm": new_atm,
-                            "signal_bar_ts": _bar_ts_key(signals.get("ts")),
-                            "close": signals.get("close"),
-                        },
-                    )
-                    if str(cfg.get("execution_mode") or "auto") == "confirm":
-                        continue
-                    _enter_leg(leg_key, cfg, new_atm, spot, reason)  # type: ignore[arg-type]
-            except Exception as e:
-                errors.append(f"{leg_key} entry: {e}")
-                append_log("error", friendly_kite_message(str(e)), {"leg": leg_key})
+    decisions = decide(
+        cfg,
+        state,
+        leg_signals,
+        force=force,
+        atm=new_atm,
+        arm=get_arm_state(),
+    )
+    errors = apply_decisions(decisions, cfg, atm=new_atm, spot=spot)
 
     return {
         "ok": len(errors) == 0,
@@ -1680,10 +2078,57 @@ def tick() -> dict[str, Any]:
     }
 
 
+def price_stop_summary(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Which price-based stops are armed, and what is left if none are.
+
+    Reported rather than enforced: whether to run without a hard stop is the
+    operator's call, but it should never be a silent one. With all three off the
+    only exits are ``entry_exit`` (breakeven), the ST1 zone break and the
+    session force-exit — every one of them on bar close, so a fast move against
+    an open leg is unmanaged for up to one timeframe bar with no price floor.
+    """
+    sl = str(cfg.get("sl_mode") or "Off")
+    tgt = str(cfg.get("tgt_mode") or "Off")
+    tsl = str(cfg.get("tsl_mode") or "Off")
+    armed = [
+        f"SL {sl} {cfg.get('sl_value')}" if sl != "Off" else None,
+        f"TSL {tsl} {cfg.get('tsl_value')}" if tsl != "Off" else None,
+        f"TGT {tgt} {cfg.get('tgt_value')}" if tgt != "Off" else None,
+    ]
+    armed_list = [a for a in armed if a]
+    remaining = ["force_exit " + str(cfg.get("force_exit") or "")]
+    if _entry_exit_enabled(cfg):
+        remaining.insert(0, "entry_exit (breakeven, bar close)")
+    remaining.insert(-1, "ST1 zone break (bar close)")
+    return {
+        "has_price_stop": bool(sl != "Off" or tsl != "Off"),
+        "sl_mode": sl,
+        "tgt_mode": tgt,
+        "tsl_mode": tsl,
+        "armed": armed_list,
+        "remaining_exits": remaining,
+        "bar_close_only": _exit_on_bar_close_only(cfg),
+        "timeframe": str(cfg.get("timeframe") or "5min"),
+    }
+
+
 def start_runner() -> dict[str, Any]:
     cfg = _ensure_config_expiry(get_config())
     if not cfg.get("expiry"):
         raise RuntimeError("Set expiry before starting — no option expiries for underlying")
+
+    # Never let "no hard stop" be a silent condition on an armed live start.
+    stops = price_stop_summary(cfg)
+    if not stops["has_price_stop"]:
+        detail = (
+            f"No price-based stop configured (sl_mode/tsl_mode both Off) — "
+            f"exits are {', '.join(stops['remaining_exits'])}, all on "
+            f"{stops['timeframe']} bar close"
+        )
+        append_log("no_price_stop", detail, stops)
+        if get_arm_state().get("mode") == "live" and get_arm_state().get("armed"):
+            log_event(_log, logging.WARNING, "rolling_straddle_no_price_stop", **stops)
+
     reset_daily_state_if_needed(_today_str())
     save_state({"runner": "running", "scheduler_running": True})
     if session_status().get("authenticated") and get_arm_state().get("mode") == "live":
@@ -1866,11 +2311,17 @@ def _leg_exit_params(
     side = _leg_position_side(leg)
     ltp = leg.get("ltp")
     entry = _effective_entry_price(leg)
-    entry_source = (
-        "fill"
-        if leg.get("entry_price") is not None
-        else ("kite_avg" if leg.get("broker_average_price") is not None else None)
-    )
+    entry_source = leg.get("entry_price_source")
+    if _entry_price_is_proxy(leg) and leg.get("broker_average_price") is not None:
+        # _effective_entry_price took the broker average over the proxy.
+        entry_source = "kite_avg"
+    if entry_source is None:
+        # Legacy state, written before entry_price_source existed.
+        entry_source = (
+            "fill"
+            if leg.get("entry_price") is not None
+            else ("kite_avg" if leg.get("broker_average_price") is not None else None)
+        )
     exit_line = leg.get("zone_exit_level")
     exit_label = leg.get("zone_exit_label") or "ST1"
     force_hhmm = str(cfg.get("force_exit") or "")
@@ -1892,6 +2343,8 @@ def _leg_exit_params(
         "st_method": cfg.get("st_method"),
         "entry_exit_enabled": _entry_exit_enabled(cfg),
         "atr_tsl_enabled": str(cfg.get("tsl_mode") or "Off") == "ATR",
+        "trail_enabled": str(cfg.get("tsl_mode") or "Off") in TRAIL_MODES,
+        "trail_mode": str(cfg.get("tsl_mode") or "Off"),
         "force_exit_due": _time_reached(force_hhmm) if force_hhmm else False,
         "entry_source": entry_source,
         "exit_levels": [],
@@ -1903,7 +2356,7 @@ def _leg_exit_params(
     if _entry_exit_enabled(cfg):
         if entry is not None:
             ep = float(entry)
-            src_note = " (Kite avg)" if entry_source == "kite_avg" else ""
+            src_note = _ENTRY_SOURCE_NOTES.get(str(entry_source), "")
             if side == "long":
                 rule = f"Long: {tf} close below entry {ep:.2f}{src_note}"
                 hit = signal_close is not None and float(signal_close) < ep
@@ -1940,25 +2393,33 @@ def _leg_exit_params(
                 }
             )
 
-    # 2) ATR — live trail from current TF/live price (dynamic)
+    # 2) Trailing stop — live trail from current TF/live price (dynamic)
     tsl_mode = str(cfg.get("tsl_mode") or "Off")
-    if tsl_mode == "ATR":
+    if tsl_mode in TRAIL_MODES:
         atr_trail = leg.get("atr_trail")
         live_ref = leg.get("atr_live_ref")
-        if atr_trail is not None and atr1 is not None and float(atr1) > 0:
+        # ATR needs an ATR to describe itself; % and Pts do not.
+        priceable = tsl_mode != "ATR" or (atr1 is not None and float(atr1) > 0)
+        if atr_trail is not None and priceable:
             atr_px = round(float(atr_trail), 2)
             hit = ltp is not None and (float(ltp) <= atr_px if side == "long" else float(ltp) >= atr_px)
             dist = round(abs(float(ltp) - atr_px), 2) if ltp is not None else None
             ref_txt = f"{float(live_ref):.2f}" if live_ref is not None else "live"
+            if tsl_mode == "ATR":
+                band_txt = f"ATR1×{cfg.get('tsl_value')} ({float(atr1):.2f})"
+            elif tsl_mode == "%":
+                band_txt = f"{cfg.get('tsl_value')}%"
+            else:
+                band_txt = f"{cfg.get('tsl_value')} pts"
             row = {
                 "order": 2,
-                "category": "ATR",
+                "category": "ATR" if tsl_mode == "ATR" else f"Trail ({tsl_mode})",
                 "price": atr_px,
                 "triggered": hit,
                 "rule": (
                     f"{'Short' if side == 'short' else 'Long'} live: "
-                    f"{ref_txt} {'+' if side == 'short' else '−'} ATR1×{cfg.get('tsl_value')} "
-                    f"({float(atr1):.2f}) → trail {atr_px:.2f} (ratchets with {tf})"
+                    f"{ref_txt} {'+' if side == 'short' else '−'} {band_txt}"
+                    f" → trail {atr_px:.2f} (ratchets with {tf})"
                 ),
                 "enabled": True,
                 "dynamic": True,
@@ -2163,6 +2624,7 @@ def status_bundle(*, sync_broker: bool = True) -> dict[str, Any]:
     return {
         "config": cfg,
         "state": {**display_state, "ce": ce, "pe": pe},
+        "price_stops": price_stop_summary(cfg),
         "arm": get_arm_state(),
         "kite_authenticated": session_status().get("authenticated"),
         "broker_mismatches": broker_mismatches,

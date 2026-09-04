@@ -1,8 +1,8 @@
 # 3ST Project — Conversation Summary
 
-**Last updated:** 2026-09-02  
+**Last updated:** 2026-09-03  
 **Project path:** `C:\Dev\3ST`  
-**Session focus:** Live Market News desk — RSS + NSE filings, sentiment, ticker resolution
+**Session focus:** Live-risk repairs — real entry fills, a live `max_daily_loss`, working trailing stops, and a testable `tick()`
 
 This file captures recent development context from Cursor agent sessions. Full chat logs live in Cursor agent-transcripts (not in this repo).
 
@@ -10,7 +10,211 @@ This file captures recent development context from Cursor agent sessions. Full c
 
 ---
 
-## Session 2026-09-02 (last) — Live Market News desk
+## Session 2026-09-03 (last, part 3) — `%` / `Pts` trailing stops were silent no-ops
+
+The review item was "the live config has no price-based stop"
+(`sl_mode`/`tgt_mode`/`tsl_mode` all `Off`). Choosing a stop distance is the
+operator's call, so this session fixed the three things around it that were
+engineering:
+
+**1. Two of the three trail modes did nothing.** `_should_exit_leg` and
+`_live_exit_fields` both gated on `tsl_mode == "ATR"`. `RiskMode` is
+`Off | % | Pts | ATR`, `watchlist_exit_runner` implements all three, and
+`rolling-straddle.tsx:344` copies `tsl_mode` straight off the Stock Selection
+page — whose Trailing SL field offers `%` and `Pts`. So a `%` trail could be
+set, persisted, and *rendered in the config panel* (`rolling-straddle.tsx:982`
+only shows that field when the mode is already `%`/`Pts`) while the runner
+ignored it completely. The ratchet is identical for all three modes — only the
+band differs — so `_trail_band(mode, ...)` now computes it (`ATR`: `atr1 ×
+value`; `Pts`: `value`; `%`: `ref × value / 100`) and `_update_atr_trail_live`
+became `_update_trail_live(leg, side, ref, band)`. The persisted field names
+(`atr_trail` / `atr_extreme`) are unchanged — they are shared with premium_book
+state and predate multi-mode support.
+
+**2. An ATR stop-loss is no stop at all, silently.** `_level()` in
+`backtest_engine` returns `None` for `mode == "ATR"`, so `sl_mode="ATR"` yields
+no SL rather than an ATR-based one. Not reachable from either UI today (neither
+SL field passes `allowAtr`), but reachable over the API. New
+`validate_stop_modes` refuses it — `sl_mode`/`tgt_mode` accept `Off | % | Pts`,
+`tsl_mode` accepts those plus `ATR` — and also refuses a non-Off mode with a
+value ≤ 0, which would fire the moment it armed. Wired into `save_config` via a
+new `validate_config` (`validate_order_size` + `validate_stop_modes`).
+
+**3. "No hard stop" is now reported, never silent.** `price_stop_summary(cfg)`
+names what is armed and what is left without it; `start_runner` logs
+`no_price_stop` to the desk log, and a WARNING to `log/errors.jsonl` when
+starting **armed and live**; `status_bundle` returns it as `price_stops` for the
+UI. Deliberately *reported, not enforced* — running without a stop stays a valid
+choice, `test_all_off_is_valid` pins that.
+
+Note `has_price_stop` counts SL and TSL only: a target caps the upside and does
+nothing for the downside (`test_target_alone_is_not_a_price_stop`).
+
+**What the live config reports today**: `has_price_stop=False`, remaining exits
+`entry_exit (breakeven, bar close)`, `ST1 zone break (bar close)`,
+`force_exit 23:20`, on a 5min timeframe with `exit_on_bar_close_only=True` — so
+a fast move against an open leg is unmanaged for up to one bar with no price
+floor beneath it. The stop *value* is left for the operator to set.
+
+**Verified**: `pytest tests/` — 1353 passed, 30 new. Paper rehearsal: the live
+config still validates unchanged; a `%` trail arms at 95.0, ratchets to 114.0 at
+spot 120, holds 114.0 when spot falls back to 105, and fires `atr_exit` at 113;
+a `Pts` short trail arms at 108.0 and fires at 109; an ATR stop-loss is refused
+with a message naming the supported modes; an ATR *trailing* stop is accepted.
+Live `data/` read-only throughout.
+
+---
+
+## Session 2026-09-03 (part 2) — `max_daily_loss` was dead code
+
+`risk.limits.check_order` has enforced `max_daily_loss` since it was written.
+Nothing ever moved `_daily_pnl` off `0.0`: `record_pnl` had **no caller anywhere
+in the repo** (`rg record_pnl` → one hit, its own definition), and the Rolling
+Straddle runner computes no P&L at all (`rg "pnl|realised"` in
+`rolling_straddle.py` → nothing). `data/risk_limits.json` said ₹10,000 and
+enforced nothing. ARM, `max_qty` and `max_open_positions` were the only live
+gates.
+
+**Broker truth, not per-fill attribution.** Deriving the day's P&L from our own
+fills means every contributing order must be reported exactly once across five
+runners plus manual trades, and any miss under-reports the loss silently. Kite's
+positions payload already nets it — `pnl` per position is realised +
+unrealised, and the row survives with `quantity == 0` after the desk closes it.
+So `execution/pnl_tracker.py` reads positions and calls a new
+`risk.limits.set_daily_pnl()` with an **absolute** figure rather than
+accumulating deltas: self-correcting (a missed update is repaired by the next),
+and it covers Survivor, Wave and manual Kite trades without touching them.
+Wired into `execution/scheduler.py`'s loop, throttled to 30s, and refreshed on
+`GET /risk/limits` so opening the panel never shows a stale number.
+
+**The interaction that made this dangerous to ship naively.** `run_panic` →
+`close_watchlist_trade` → `place_leg_order` → `check_order`. Panic bypasses the
+**ARM** gate (`require_armed_for_live` returns early under
+`is_panic_active()`) but **not the risk gate**. So the moment the cutout went
+live and breached, panic-flatten and every algo exit would have been refused —
+the desk trapped in the position that caused the loss. `check_order` now skips
+the loss check when `is_closing` (derived from broker truth by the executor, not
+passed by callers). This *does* contradict what
+`skills/3st-desk-engineering/references/order-path.md` documented — "`is_closing`
+relaxes only the open-position cap — never the ... loss checks" — but that
+behaviour was unreachable while the cutout was dead, and a loss limit exists to
+stop you *opening* risk, not to trap you in it. `is_closing` still relaxes
+nothing else; `test_breach_does_not_relax_the_other_checks` pins that.
+
+**Two failure modes deliberately closed:**
+
+- *A failed positions read is not a flat day.* Mirroring
+  `execution/reconcile.py`'s invariant: on a broker read error, or when rows
+  exist but none carry a usable P&L field, the last known figure stands. Zeroing
+  it would silently reopen a cutout that had already tripped.
+- *A restart is not a fresh slate.* Day P&L persists to
+  `data/risk_daily_pnl.json`, **date-stamped**, and is restored at import. Without
+  the date stamp yesterday's loss would refuse orders this morning — which is why
+  `_roll_daily_pnl_if_stale()` is called from every read and from `check_order`.
+
+**The gap the paper rehearsal caught.** `PaperBroker.positions()` rows carry
+`quantity` and `average_price` but no `last_price` — paper keeps LTPs beside the
+position, not on it. So every paper row scored `None` and the cutout was
+silently inert *in the exact mode it is meant to be rehearsed in*.
+`pnl_tracker.enrich_last_price` fills `last_price` from `broker.ltp()` only for
+rows that carry no P&L of their own, so the Kite path never issues an extra
+quote. Pinned by `test_paper_rows_are_valued_from_the_brokers_ltp`.
+
+**Paper measures less than live, on purpose.** `PaperBroker.positions()` filters
+`quantity != 0`, so a closed paper position leaves no row and its realised P&L
+is not counted — paper day P&L is open MTM only. Live Kite is exact. Paper
+rehearses the mechanism, not the number.
+
+**Verified**: `pytest tests/` — 1323 passed, 21 new (the one pre-existing
+store-isolation error is unchanged, see part 1). Paper-mode rehearsal through the
+real `place_leg_order` / `place_leg_to_target` path: entry accepted below the
+limit; tracker reads −12,000 off broker positions; new entry refused with
+`Risk: max daily loss breached (P&L -12,000.00 vs limit -10,000.00) — exits
+still allowed`; **exit still accepted** (the panic path); figure restored after a
+simulated restart; yesterday's loss does not block today; failed broker read
+keeps −12,000.
+
+**Still open** from the same review: the live Rolling Straddle config runs
+`sl_mode/tgt_mode/tsl_mode` all `Off`, so there is no price-based stop — only
+the breakeven `entry_exit`, the ST1 zone break and the 15:20 force exit, all on
+bar close. And `tick()` is ~310 lines with no test importing it, which is the
+seam a GEX entry gate would need.
+
+---
+
+## Session 2026-09-03 (part 1) — Rolling Straddle `entry_price` is now the fill
+
+Exit ladder rule #1 (`entry_exit`, on by default) is a breakeven stop: it closes
+a leg the moment the timeframe bar closes on the adverse side of
+`leg["entry_price"]`. That number was never the fill.
+
+`KiteBroker.place_order` returns `raw={"order_id", "egress"}` — Kite's
+place-order response carries **no price**. So `_enter_leg`'s `raw.get("price")`
+branch was dead on live, and every live entry fell through to
+`broker.ltp(...)` — an LTP snapshot taken just *after* submitting a MARKET
+order, sampled before the order was necessarily even filled. On a wide option
+spread that is rupees away from the average fill, which is precisely the
+distance that decides whether the breakeven stop fires.
+
+Reconcile had the right number all along and threw it away: it read Kite's
+position `average_price`, stored it as `broker_average_price`, and wrote
+`entry_price` only `if leg.get("entry_price") is None` — never true, because
+`_enter_leg` had just set the proxy. `_effective_entry_price` then preferred
+`entry_price`. The comment at `_resolve_live_broker_leg` said the intent out
+loud ("never the local fill — callers keep `leg.entry_price` when already set");
+the flaw was that the "local fill" was not one.
+
+**What changed.** `_enter_leg` now reads the real average back from the
+orderbook (`_entry_fill_price` → `_completed_order_average`, bounded poll:
+3 attempts, 0.4s apart, ~0.8s worst case) and records **where the price came
+from** in a new leg field `entry_price_source`:
+
+| source | meaning |
+| --- | --- |
+| `order_fill` | `raw["price"]` — PaperBroker books the position at this price, so it *is* the fill |
+| `order_avg` | average of the COMPLETE order, read from the orderbook (live Kite) |
+| `kite_avg` | position `average_price` adopted by reconcile |
+| `ltp_proxy` | **a guess** — order still working, or the orderbook was unreadable |
+
+Only `ltp_proxy` is a guess, so it is the only source reconcile may overwrite; a
+real fill is still never displaced. `_effective_entry_price` also prefers
+`broker_average_price` over an `ltp_proxy` entry as a belt-and-braces path, and
+the exit-ladder row now renders `(LTP proxy — awaiting fill)` so the operator
+can see when the breakeven stop is sitting on an estimate. Legs with no
+`entry_price_source` (state written before the field existed) keep the old
+precedence exactly — which is why `test_reconcile_preserves_existing_entry_price`
+and `test_effective_entry_price_prefers_fill_then_avg` still pass untouched.
+
+**The bug this fix nearly introduced.** Preferring `broker_average_price` over a
+proxy is only safe if that field is cleared when a leg goes flat. It was not —
+`_exit_leg`'s two flat dicts and the tick-level foreign-symbol purge all reset
+`entry_price` but left `broker_average_price` behind. A leg that exited at 620
+and re-entered at 500 would have had the stale 620 outrank the fresh proxy. All
+three now clear it, and `_enter_leg` nulls it on entry.
+
+**Verified**: `pytest tests/` — 1302 passed (10 new; the one pre-existing
+session-fixture error reproduces identically with these changes stashed, see
+below). Plus a paper-mode rehearsal through the real
+`_enter_leg` → `place_leg_to_target` path against three brokers: PaperBroker
+(`order_fill`), a live-shaped broker whose order is COMPLETE at 80.60 while LTP
+reads 81.40 (`order_avg` → 80.60, where the old code stored 81.40), and one
+still working (`ltp_proxy` → upgraded to `kite_avg` by reconcile).
+
+**Pre-existing, not fixed here:** `tests/test_store_isolation.py::test_writing_a_watched_file_is_refused`
+trips the session-scoped `real_store_files_untouched` guard for
+`rolling_straddle_{state,log}.json` and `premium_book_state.json` — the guard's
+own negative test is modifying the live files it exists to protect. Reproduces
+on a clean tree with the API stopped.
+
+**Still open from the same review** (in priority order): `risk.limits.record_pnl`
+has no caller anywhere, so `max_daily_loss` is dead code and nothing computes
+P&L in the runner at all; the live config runs `sl_mode/tgt_mode/tsl_mode` all
+`Off`, leaving no price-based stop; and `tick()` is ~310 lines with no test
+importing it, which is the seam a GEX entry gate would need.
+
+---
+
+## Session 2026-09-02 — Live Market News desk
 
 New desk: `analysis/news_desk/` + `/newsfeed/*` + the SPA page `/news`. Eleven
 public sources (ten publisher RSS feeds and NSE corporate announcements), each
