@@ -139,6 +139,7 @@ _REDIRECTS: tuple[tuple[str, str | None, str | None], ...] = (
     ("execution.position_ledger", "LEDGER_FILE", "position_ledger.json"),
     ("execution.latency_log", None, None),
     ("risk.limits", "LIMITS_FILE", "risk_limits.json"),
+    ("risk.limits", "DAILY_PNL_FILE", "risk_daily_pnl.json"),
     ("watchlist_store", "WATCHLIST_FILE", "watchlist.json"),
     ("selection_store", "SELECTION_FILE", "selection.json"),
     ("broker.paper_broker", "_PAPER_FILE", "paper_broker.json"),

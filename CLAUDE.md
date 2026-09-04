@@ -165,6 +165,7 @@ Flat-JSON-per-concern, no central database. Each file is owned by exactly one mo
 | --- | --- |
 | `arm_state.json` | `execution/arming.py` |
 | `risk_limits.json` | `risk/limits.py` |
+| `risk_daily_pnl.json` | `risk/limits.py` (date-stamped day P&L; fed by `execution/pnl_tracker.py`) |
 | `position_ledger.json` | `execution/position_ledger.py` (not yet populated — see above) |
 | `rolling_straddle_{config,state,log}.json` | `execution/rolling_straddle_store.py` |
 | `premium_book_{config,state,log}.json` | `execution/premium_book_store.py` |
@@ -241,6 +242,7 @@ the older `generate_content` surface does not carry these tools.
 
 - **ARM gate lives in `broker/kite_broker.py`** (`KiteBroker.place_order`/`cancel_order` call `require_armed_for_live()`), not in individual callers. Do not add a new order-placement path that talks to Kite without going through `KiteBroker`, or this gate is bypassed.
 - **Risk checks live in `risk/limits.py`, invoked only from `execution/order_executor.py`** (`place_leg_order` / `place_leg_to_target`). Every runner places orders through these two functions — never call `broker.place_order()` directly from a runner. `execution/order_router.py` wraps these same two functions rather than reimplementing risk/ARM logic; keep it that way.
+- **The `max_daily_loss` cutout refuses new entries but never exits.** `check_order` skips the loss check when `is_closing` — because `run_panic` → `close_watchlist_trade` → `place_leg_order` → `check_order`, and panic bypasses the ARM gate but *not* the risk gate. Blocking closing orders on a loss breach would make the kill-switch unusable at the one moment it matters. `is_closing` still relaxes nothing else (qty/product/exchange/rate all apply). Day P&L is fed from broker truth by `execution/pnl_tracker.py` on the scheduler heartbeat — **a failed positions read must leave the last known figure alone**, never reset it to zero, or a tripped cutout silently reopens.
 - **Per-symbol locking**: `broker/execution_support.acquire_symbol_lock(exchange, tradingsymbol, product)` must wrap any order placement to prevent concurrent double-orders on the same instrument.
 - **Order tag convention**: `execution/order_executor.order_tag(leg_key, kind)` → `3ST-{LEG_KEY}-{YYYYMMDD}-{kind}`, truncated to Kite's 20-character tag limit. Reconcile/orphan-detection logic matches on this prefix — don't change the format without updating every matcher.
 - **Bar-close-only exits are the default anti-churn control** (`exit_on_bar_close_only`). A prior whipsaw-loop incident (2026-07-14) came from intrabar zone exits re-triggering same-bar re-entries. TSL/force-exit intentionally stay tick-live; zone exits default to bar-close.

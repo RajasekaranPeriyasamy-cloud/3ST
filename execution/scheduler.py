@@ -84,6 +84,14 @@ def _run_sync_loop() -> None:
 
         _safe_tick("reconcile", maybe_reconcile_periodic, lambda _k, _m: None)
 
+        # Day P&L -> risk.limits, so max_daily_loss can actually fire. Runs
+        # unconditionally: the cutout is account-wide rather than per-runner, and
+        # it has to keep tracking while every runner is stopped — manual Kite
+        # trades and adopted orphans still move the day's P&L.
+        from execution.pnl_tracker import maybe_refresh_daily_pnl_periodic
+
+        _safe_tick("daily_pnl", maybe_refresh_daily_pnl_periodic, lambda _k, _m: None)
+
         # OI Movers chart history — CE/PE/PCR lines need samples from ~09:20 even
         # when the desk page is not open (spot candles alone leave those blank).
         try:

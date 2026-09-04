@@ -1606,6 +1606,15 @@ def live_reconcile_apply(body: ReconcileIn) -> dict[str, Any]:
 
 @app.get("/risk/limits")
 def risk_get() -> dict[str, Any]:
+    # Refresh day P&L on read as well as on the scheduler heartbeat, so opening
+    # the risk panel always shows a current figure rather than one up to
+    # REFRESH_MIN_INTERVAL_SEC old.
+    try:
+        from execution.pnl_tracker import maybe_refresh_daily_pnl_periodic
+
+        maybe_refresh_daily_pnl_periodic()
+    except Exception:
+        pass
     out = get_limits()
     try:
         from execution.order_executor import _open_position_count
